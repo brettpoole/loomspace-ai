@@ -26,11 +26,13 @@ Use `app.yaml` as a static site.
 ## Current slice
 
 - editable title node at the top of each thread
-- chat node beneath the title node
+- first chat node beneath the title node
 - request/response pairs append as new nodes
 - active thread context stays with that lane
 - browser-saved OpenAI API key + model in the settings panel
-- flowchart-style threadlines rendered as rope
+- bounded pan/zoom viewport on the canvas
+- threadlines stay anchored to the title/chat nodes
+- mobile layout keeps the viewport inside the screen
 
 ## Security
 

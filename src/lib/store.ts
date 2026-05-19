@@ -10,8 +10,8 @@ import type {
   ThreadTitleNode,
 } from './types';
 
-const WORKSPACE_KEY = 'loomspace.workspace.v5';
-const SETTINGS_KEY = 'loomspace.settings.v1';
+const WORKSPACE_KEY = 'loomspace.workspace.v6';
+const SETTINGS_KEY = 'loomspace.settings.v2';
 
 export function loadWorkspace(): LoomspaceState {
   try {

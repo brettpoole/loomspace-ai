@@ -46,6 +46,9 @@ export interface LoomspaceState {
   selectedThreadId: string | null;
   selectedNodeId: string | null;
   densityOverlay: boolean;
+  panX: number;
+  panY: number;
+  zoom: number;
   version: number;
 }
 

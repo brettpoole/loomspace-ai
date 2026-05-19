@@ -7,5 +7,8 @@ export const sampleState: LoomspaceState = {
   selectedThreadId: null,
   selectedNodeId: null,
   densityOverlay: true,
+  panX: 0,
+  panY: 0,
+  zoom: 1,
   version: 1,
 };

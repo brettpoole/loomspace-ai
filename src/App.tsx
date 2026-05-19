@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   appendChatToThread,
   computeMetrics,
@@ -8,7 +8,6 @@ import {
   loadWorkspace,
   saveSettings,
   saveWorkspace,
-  summarize,
   threadWithActiveNode,
   threadWithInfo,
   updateThreadTitle,
@@ -16,13 +15,15 @@ import {
 import type { ChatMessage, LoomspaceState, OpenAISettings, ThreadChatNode, ThreadLane, ThreadNode } from './lib/types';
 
 const LANE_WIDTH = 320;
-const LANE_GAP = 44;
-const LEFT_PAD = 44;
-const TOP_PAD = 24;
+const LANE_GAP = 56;
+const LEFT_PAD = 64;
+const TOP_PAD = 28;
 const TITLE_HEIGHT = 66;
 const CHAT_HEIGHT = 92;
-const NODE_GAP = 34;
+const NODE_GAP = 30;
 const NODE_WIDTH = 232;
+const MIN_ZOOM = 0.7;
+const MAX_ZOOM = 1.6;
 
 export default function App() {
   const [state, setState] = useState<LoomspaceState>(() => loadWorkspace());
@@ -32,38 +33,44 @@ export default function App() {
   const [composerDraft, setComposerDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const panGesture = useRef<{ active: boolean; startX: number; startY: number; panX: number; panY: number } | null>(null);
 
-  useEffect(() => {
-    saveWorkspace(state);
-  }, [state]);
-
-  useEffect(() => {
-    saveSettings(settings);
-  }, [settings]);
+  useEffect(() => saveWorkspace(state), [state]);
+  useEffect(() => saveSettings(settings), [settings]);
 
   const metrics = useMemo(() => computeMetrics(state), [state]);
   const activeThread = state.threads.find((thread) => thread.id === state.selectedThreadId) ?? state.threads[0] ?? null;
   const activeNode = activeThread?.nodes.find((node) => node.id === state.selectedNodeId) ?? activeThread?.nodes.at(-1) ?? null;
 
-  const canvasWidth = Math.max(1200, LEFT_PAD * 2 + state.threads.length * LANE_WIDTH + Math.max(0, state.threads.length - 1) * LANE_GAP);
+  const canvasWidth = Math.max(
+    1280,
+    LEFT_PAD * 2 + Math.max(0, state.threads.length - 1) * (LANE_WIDTH + LANE_GAP) + LANE_WIDTH,
+  );
+
+  const canvasHeight = Math.max(
+    720,
+    ...state.threads.map((thread) => {
+      let cursor = TOP_PAD;
+      for (const node of thread.nodes) cursor += nodeHeight(node) + NODE_GAP;
+      return cursor + 80;
+    }),
+  );
 
   const lanes = useMemo(() => {
     return state.threads.map((thread, index) => {
-      const laneCenterX = state.threads.length === 1 ? canvasWidth / 2 : LEFT_PAD + index * (LANE_WIDTH + LANE_GAP) + LANE_WIDTH / 2;
-      const nodeEntries: Array<{ node: ThreadNode; top: number }> = [];
-      let cursorTop = TOP_PAD;
+      const centerX = state.threads.length === 1 ? canvasWidth / 2 : LEFT_PAD + index * (LANE_WIDTH + LANE_GAP) + LANE_WIDTH / 2;
+      const nodes: Array<{ node: ThreadNode; top: number }> = [];
+      let top = TOP_PAD;
       for (const node of thread.nodes) {
-        nodeEntries.push({ node, top: cursorTop });
-        cursorTop += nodeKindHeight(node) + NODE_GAP;
+        nodes.push({ node, top });
+        top += nodeHeight(node) + NODE_GAP;
       }
-      const laneHeight = Math.max(cursorTop + 80 + (thread.infoOpen ? 90 : 0), 420);
-
       return {
         thread,
-        laneCenterX,
-        spineX: laneCenterX,
-        nodeEntries,
-        laneHeight,
+        centerX,
+        nodes,
+        height: top + 72 + (thread.infoOpen ? 86 : 0),
       };
     });
   }, [canvasWidth, state.threads]);
@@ -74,9 +81,7 @@ export default function App() {
       selectedThreadId: threadId,
       selectedNodeId: nodeId ?? current.threads.find((thread) => thread.id === threadId)?.activeNodeId ?? null,
       threads: current.threads.map((thread) =>
-        thread.id === threadId
-          ? threadWithActiveNode(thread, nodeId ?? thread.activeNodeId)
-          : threadWithActiveNode(thread, thread.activeNodeId),
+        thread.id === threadId ? threadWithActiveNode(thread, nodeId ?? thread.activeNodeId) : threadWithActiveNode(thread, thread.activeNodeId),
       ),
     }));
   }
@@ -85,14 +90,15 @@ export default function App() {
     const title = threadTitleDraft.trim() || `Thread ${state.threads.length + 1}`;
     const description = threadDescriptionDraft.trim() || 'A new lane for a project idea and its AI chat context.';
     const thread = createThread(title, description, state.threads.length);
-    const selectedChat = thread.nodes.find((node): node is ThreadChatNode => node.kind === 'chat') ?? null;
+    const firstChat = thread.nodes.find((node): node is ThreadChatNode => node.kind === 'chat') ?? null;
 
     setState((current) => ({
       ...current,
       version: current.version + 1,
       threads: [...current.threads, thread],
       selectedThreadId: thread.id,
-      selectedNodeId: selectedChat?.id ?? null,
+      selectedNodeId: firstChat?.id ?? null,
+      panX: current.threads.length === 0 ? current.panX : current.panX - 40,
     }));
 
     setThreadTitleDraft('');
@@ -109,11 +115,7 @@ export default function App() {
     }
 
     const userText = composerDraft.trim();
-    const userMessage: ChatMessage = {
-      id: `msg-${crypto.randomUUID().slice(0, 8)}`,
-      role: 'user',
-      text: userText,
-    };
+    const userMessage: ChatMessage = { id: `msg-${crypto.randomUUID().slice(0, 8)}`, role: 'user', text: userText };
 
     setSending(true);
     setError(null);
@@ -132,9 +134,7 @@ export default function App() {
         ...current,
         version: current.version + 1,
         threads: current.threads.map((thread) =>
-          thread.id === activeThread.id
-            ? appendChatToThread(thread, newChatNode, [userMessage, assistantMessage])
-            : thread,
+          thread.id === activeThread.id ? appendChatToThread(thread, newChatNode, [userMessage, assistantMessage]) : thread,
         ),
         selectedThreadId: activeThread.id,
         selectedNodeId: newChatNode.id,
@@ -176,14 +176,80 @@ export default function App() {
   }
 
   function resetWorkspace() {
-    localStorage.removeItem('loomspace.workspace.v5');
-    localStorage.removeItem('loomspace.settings.v1');
+    localStorage.removeItem('loomspace.workspace.v6');
+    localStorage.removeItem('loomspace.settings.v2');
     setState(loadWorkspace());
     setSettings(loadSettings());
     setThreadTitleDraft('');
     setThreadDescriptionDraft('');
     setComposerDraft('');
     setError(null);
+  }
+
+  function beginPan(event: React.PointerEvent<HTMLDivElement>) {
+    if (event.target !== event.currentTarget) return;
+    panGesture.current = {
+      active: true,
+      startX: event.clientX,
+      startY: event.clientY,
+      panX: state.panX,
+      panY: state.panY,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function movePan(event: React.PointerEvent<HTMLDivElement>) {
+    if (!panGesture.current?.active) return;
+    const deltaX = event.clientX - panGesture.current.startX;
+    const deltaY = event.clientY - panGesture.current.startY;
+    setState((current) => ({
+      ...current,
+      panX: panGesture.current!.panX + deltaX,
+      panY: panGesture.current!.panY + deltaY,
+    }));
+  }
+
+  function endPan() {
+    panGesture.current = null;
+  }
+
+  function zoomAt(clientX: number, clientY: number, nextZoom: number) {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const rect = viewport.getBoundingClientRect();
+    const zoom = clamp(nextZoom, MIN_ZOOM, MAX_ZOOM);
+    const pointX = clientX - rect.left;
+    const pointY = clientY - rect.top;
+
+    setState((current) => {
+      const scale = zoom / current.zoom;
+      return {
+        ...current,
+        zoom,
+        panX: pointX - (pointX - current.panX) * scale,
+        panY: pointY - (pointY - current.panY) * scale,
+      };
+    });
+  }
+
+  function zoomFromButton(direction: 1 | -1) {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const rect = viewport.getBoundingClientRect();
+    zoomAt(rect.left + rect.width / 2, rect.top + rect.height / 2, state.zoom + direction * 0.1);
+  }
+
+  function onWheel(event: React.WheelEvent<HTMLDivElement>) {
+    if (event.ctrlKey || event.metaKey) {
+      event.preventDefault();
+      zoomAt(event.clientX, event.clientY, state.zoom - event.deltaY * 0.0015);
+      return;
+    }
+    setState((current) => ({
+      ...current,
+      panX: current.panX - event.deltaX,
+      panY: current.panY - event.deltaY,
+    }));
   }
 
   return (
@@ -195,9 +261,9 @@ export default function App() {
         </div>
         <div className="topbar-actions">
           <button onClick={createNewThread}>New thread</button>
-          <button onClick={() => setState((current) => ({ ...current, densityOverlay: !current.densityOverlay }))}>
-            {state.densityOverlay ? 'Hide' : 'Show'} threadlines
-          </button>
+          <button onClick={() => zoomFromButton(-1)}>−</button>
+          <button onClick={() => setState((current) => ({ ...current, zoom: 1, panX: 0, panY: 0 }))}>Reset view</button>
+          <button onClick={() => zoomFromButton(1)}>+</button>
           <button onClick={resetWorkspace} className="quiet">
             Reset fabric
           </button>
@@ -263,35 +329,42 @@ export default function App() {
         <section className="canvas-panel">
           <div className="canvas-toolbar">
             <span>{state.densityOverlay ? 'Threadlines on' : 'Threadlines off'}</span>
+            <span>{Math.round(state.zoom * 100)}%</span>
             <span>{metrics.saturation * 100 < 50 ? 'light weave' : 'dense weave'}</span>
           </div>
 
-          <div className={`fabric-canvas ${state.densityOverlay ? 'overlay' : ''}`}>
-            <div className="fabric-stage" style={{ width: canvasWidth, height: Math.max(...lanes.map((lane) => lane.laneHeight), 480) }}>
+          <div ref={viewportRef} className={`canvas-viewport ${state.densityOverlay ? 'overlay' : ''}`} onWheel={onWheel}>
+            <div
+              className="canvas-stage"
+              style={{
+                width: canvasWidth,
+                height: canvasHeight,
+                transform: `translate(${state.panX}px, ${state.panY}px) scale(${state.zoom})`,
+              }}
+              onPointerDown={beginPan}
+              onPointerMove={movePan}
+              onPointerUp={endPan}
+              onPointerLeave={endPan}
+            >
               {lanes.length === 0 ? (
                 <div className="empty-state">
                   <p className="eyebrow">Canvas idle</p>
                   <h2>Start a thread to begin the weave</h2>
-                  <p>The first thread will center itself. New threads line up to the right.</p>
+                  <p>The first thread centers itself. New threads line up to the right.</p>
                   <button onClick={createNewThread}>Create first thread</button>
                 </div>
               ) : null}
 
-              <svg className="edges-layer" viewBox={`0 0 ${canvasWidth} ${Math.max(...lanes.map((lane) => lane.laneHeight), 480)}`} preserveAspectRatio="none">
+              <svg className="edges-layer" viewBox={`0 0 ${canvasWidth} ${canvasHeight}`} preserveAspectRatio="none">
                 {lanes.map((lane) => {
-                  const nodes = lane.nodeEntries;
-                  const startY = nodes[0]?.top ?? TOP_PAD;
-                  const endY = (nodes.at(-1)?.top ?? TOP_PAD) + nodeKindHeight(nodes.at(-1)?.node ?? null);
-                  const startX = lane.spineX;
+                  const anchors = buildAnchorPoints(lane.centerX, lane.nodes.map((entry) => entry.node));
+                  const path = anchorsToPath(anchors);
                   return (
                     <g key={lane.thread.id}>
-                      <path d={`M ${startX} ${startY} L ${startX} ${endY}`} className={`rope-shadow ${lane.thread.id === activeThread?.id ? 'active' : ''}`} />
-                      <path d={`M ${startX} ${startY} L ${startX} ${endY}`} className={`rope ${lane.thread.id === activeThread?.id ? 'active' : ''}`} />
-                      {nodes.map(({ node, top }) => (
-                        <g key={node.id}>
-                          <circle cx={startX} cy={top} r="4" className="knot" />
-                          <path d={`M ${startX} ${top} L ${startX} ${top + nodeKindHeight(node)}`} className="link-line" />
-                        </g>
+                      <path d={path} className={`rope-shadow ${lane.thread.id === activeThread?.id ? 'active' : ''}`} />
+                      <path d={path} className={`rope ${lane.thread.id === activeThread?.id ? 'active' : ''}`} />
+                      {anchors.map((point, index) => (
+                        <circle key={`${lane.thread.id}-${index}`} cx={point.x} cy={point.y} r="4" className="knot" />
                       ))}
                     </g>
                   );
@@ -305,26 +378,17 @@ export default function App() {
                   <div
                     key={thread.id}
                     className={`thread-lane ${isActiveLane ? 'active' : ''}`}
-                    style={{ left: lane.laneCenterX - LANE_WIDTH / 2, top: 0, width: LANE_WIDTH, height: lane.laneHeight }}
+                    style={{ left: lane.centerX - NODE_WIDTH / 2, top: 0, width: NODE_WIDTH, height: lane.height }}
                   >
-                    {lane.nodeEntries.map(({ node, top }) => {
+                    {lane.nodes.map(({ node, top }) => {
                       if (node.kind === 'title') {
                         const titleNode = node;
                         return (
                           <div key={node.id} className={`title-node-wrap ${thread.infoOpen ? 'open' : ''}`} style={{ top }}>
                             <article className="title-node">
                               <div className="title-node-head">
-                                <input
-                                  value={titleNode.title}
-                                  onChange={(event) => updateTitle(thread.id, event.target.value)}
-                                  onFocus={() => selectThread(thread.id, node.id)}
-                                />
-                                <button
-                                  type="button"
-                                  className="info-button"
-                                  onClick={() => toggleInfo(thread.id)}
-                                  aria-label="Thread info"
-                                >
+                                <input value={titleNode.title} onChange={(event) => updateTitle(thread.id, event.target.value)} onFocus={() => selectThread(thread.id, node.id)} />
+                                <button type="button" className="info-button" onClick={() => toggleInfo(thread.id)} aria-label="Thread info">
                                   ⓘ
                                 </button>
                               </div>
@@ -340,7 +404,7 @@ export default function App() {
                         <button
                           key={node.id}
                           className={`chat-node ${isSelected ? 'selected' : ''}`}
-                          style={{ top, left: lane.spineX - NODE_WIDTH / 2 }}
+                          style={{ top, left: 0 }}
                           onClick={() => selectNode(thread.id, node.id)}
                         >
                           <div className="exchange-head">
@@ -426,11 +490,7 @@ export default function App() {
             </label>
             <label className="field">
               Model
-              <input
-                value={settings.model}
-                onChange={(event) => setSettings((current) => ({ ...current, model: event.target.value }))}
-                placeholder="gpt-4o-mini"
-              />
+              <input value={settings.model} onChange={(event) => setSettings((current) => ({ ...current, model: event.target.value }))} placeholder="gpt-4o-mini" />
             </label>
             <p className="muted">Stored locally in this browser only.</p>
           </section>
@@ -479,7 +539,28 @@ async function requestAiReply(settings: OpenAISettings, thread: ThreadLane, mess
   return assistantText;
 }
 
-function nodeKindHeight(node: ThreadNode | null) {
+function nodeHeight(node: ThreadNode | null) {
   if (!node) return 0;
   return node.kind === 'title' ? TITLE_HEIGHT : CHAT_HEIGHT;
+}
+
+function buildAnchorPoints(centerX: number, nodes: ThreadNode[]) {
+  const points: Array<{ x: number; y: number }> = [];
+  let cursorY = TOP_PAD;
+  for (const node of nodes) {
+    points.push({ x: centerX, y: cursorY });
+    cursorY += nodeHeight(node);
+    points.push({ x: centerX, y: cursorY });
+    cursorY += NODE_GAP;
+  }
+  return points;
+}
+
+function anchorsToPath(points: Array<{ x: number; y: number }>) {
+  if (!points.length) return '';
+  return points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`).join(' ');
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
 }
