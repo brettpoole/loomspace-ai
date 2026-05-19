@@ -1,129 +1,113 @@
-import { useMemo, useRef, useState } from 'react';
-import { appendEvent, applyEvent, computeMetrics, getNodeLabel, loadLog } from './lib/store';
+import { useMemo, useState } from 'react';
+import { appendEvent, applyEvent, computeMetrics, loadLog, summarize } from './lib/store';
 import { sampleState } from './lib/sample';
-import type { FabricNode, LoomspaceEvent, LoomspaceState, WorkspaceThread } from './lib/types';
+import type { ChatMessage, LoomspaceEvent, LoomspaceState, ThreadExchange, ThreadLane } from './lib/types';
+
+const LANE_WIDTH = 300;
+const LANE_GAP = 40;
+const HEADER_TOP = 28;
+const HEADER_HEIGHT = 66;
+const FIRST_EXCHANGE_TOP = 118;
+const EXCHANGE_HEIGHT = 60;
+const EXCHANGE_GAP = 22;
+const LEFT_PAD = 36;
+const SPINE_OFFSET = 18;
+const CARD_OFFSET = 40;
 
 export default function App() {
   const [events, setEvents] = useState<LoomspaceEvent[]>(() => loadLog().events);
-  const [dragId, setDragId] = useState<string | null>(null);
-  const dragOffset = useRef({ x: 0, y: 0 });
-  const canvasRef = useRef<HTMLDivElement>(null);
+  const [threadTitleDraft, setThreadTitleDraft] = useState('');
+  const [exchangeDraft, setExchangeDraft] = useState('');
 
-  const state = useMemo<LoomspaceState>(() => {
-    return events.reduce(applyEvent, structuredClone(sampleState));
-  }, [events]);
-
+  const state = useMemo<LoomspaceState>(() => events.reduce(applyEvent, structuredClone(sampleState)), [events]);
   const metrics = useMemo(() => computeMetrics(state), [state]);
-  const selected = state.nodes.find((node) => node.id === state.selectedId) ?? null;
-  const relatedEdges = selected
-    ? state.edges.filter((edge) => edge.from === selected.id || edge.to === selected.id)
-    : [];
-  const relatedNodeIds = new Set(relatedEdges.flatMap((edge) => [edge.from, edge.to]));
+  const activeThread = state.threads.find((thread) => thread.id === state.selectedThreadId) ?? state.threads[0] ?? null;
+  const activeExchange = activeThread
+    ? activeThread.exchanges.find((exchange) => exchange.id === state.selectedExchangeId) ?? activeThread.exchanges.at(-1) ?? null
+    : null;
+
+  const lanes = useMemo(() => {
+    return state.threads.map((thread, index) => {
+      const laneX = LEFT_PAD + index * (LANE_WIDTH + LANE_GAP);
+      const spineX = laneX + SPINE_OFFSET;
+      const exchangePositions = thread.exchanges.map((exchange, exchangeIndex) => ({
+        exchange,
+        top: FIRST_EXCHANGE_TOP + exchangeIndex * (EXCHANGE_HEIGHT + EXCHANGE_GAP),
+      }));
+      const laneHeight = Math.max(FIRST_EXCHANGE_TOP + thread.exchanges.length * (EXCHANGE_HEIGHT + EXCHANGE_GAP) + 80, 340);
+      return {
+        thread,
+        laneX,
+        spineX,
+        laneHeight,
+        exchangePositions,
+      };
+    });
+  }, [state.threads]);
+
+  const canvasHeight = Math.max(...lanes.map((lane) => lane.laneHeight), 460);
+  const canvasWidth = Math.max(1200, LEFT_PAD * 2 + state.threads.length * LANE_WIDTH + Math.max(state.threads.length - 1, 0) * LANE_GAP);
 
   function commit(event: LoomspaceEvent) {
     setEvents((current) => appendEvent(current, event));
   }
 
-  function createThread() {
-    const id = `thread-${crypto.randomUUID().slice(0, 8)}`;
-    const thread: WorkspaceThread = {
-      id,
-      title: 'New side thread',
-      color: '#ffd166',
+  function startThread() {
+    const title = threadTitleDraft.trim() || `Thread ${state.threads.length + 1}`;
+    const exchangeText = exchangeDraft.trim() || 'Thread opened.';
+    const threadId = `thread-${crypto.randomUUID().slice(0, 8)}`;
+    const exchangeId = `exchange-${crypto.randomUUID().slice(0, 8)}`;
+    const thread: ThreadLane = {
+      id: threadId,
+      title,
+      summary: summarize(exchangeText, 48),
+      color: pickColor(state.threads.length),
       status: 'active',
+      exchanges: [
+        makeExchange(exchangeId, exchangeText, 'high', [
+          { id: `msg-${crypto.randomUUID().slice(0, 8)}`, role: 'user', text: exchangeText },
+          { id: `msg-${crypto.randomUUID().slice(0, 8)}`, role: 'assistant', text: summarize(exchangeText, 64) },
+        ]),
+      ],
     };
 
     commit({ type: 'thread.add', thread });
-    commit({
-      type: 'node.add',
-      node: {
-        id: `node-${crypto.randomUUID().slice(0, 8)}`,
-        kind: 'thread',
-        threadId: id,
-        title: 'Untitled thread',
-        summary: 'Spawned from the canvas.',
-        x: 120 + Math.random() * 900,
-        y: 120 + Math.random() * 500,
-        confidence: 'medium',
-        provenance: ['User created thread'],
-      },
-    });
+    commit({ type: 'thread.select', threadId });
+    commit({ type: 'exchange.select', threadId, exchangeId });
+    setThreadTitleDraft('');
+    setExchangeDraft('');
   }
 
-  function promoteToStitch() {
-    if (!selected) return;
-    const stitchId = `stitch-${crypto.randomUUID().slice(0, 8)}`;
-    commit({
-      type: 'node.add',
-      node: {
-        id: stitchId,
-        kind: 'stitch',
-        title: `Stitch from ${selected.title}`,
-        summary: 'Promoted into the main fabric for review.',
-        x: selected.x + 180,
-        y: selected.y + 40,
-        confidence: 'high',
-        provenance: [`Promoted from ${selected.id}`],
-      },
-    });
-    commit({
-      type: 'edge.add',
-      edge: {
-        id: `edge-${crypto.randomUUID().slice(0, 8)}`,
-        from: selected.id,
-        to: stitchId,
-        kind: 'promotes',
-        label: 'stitches',
-      },
-    });
+  function addExchange() {
+    if (!activeThread) return;
+    const text = exchangeDraft.trim();
+    if (!text) return;
+    const exchangeId = `exchange-${crypto.randomUUID().slice(0, 8)}`;
+    const exchange = makeExchange(exchangeId, text, 'medium', [
+      { id: `msg-${crypto.randomUUID().slice(0, 8)}`, role: 'user', text },
+      { id: `msg-${crypto.randomUUID().slice(0, 8)}`, role: 'assistant', text: summarize(text, 72) },
+    ]);
+
+    commit({ type: 'exchange.add', threadId: activeThread.id, exchange });
+    commit({ type: 'exchange.select', threadId: activeThread.id, exchangeId });
+    setExchangeDraft('');
   }
 
-  function addContradiction() {
-    if (!selected || state.nodes.length < 2) return;
-    const peer = state.nodes.find((node) => node.id !== selected.id);
-    if (!peer) return;
-    commit({
-      type: 'edge.add',
-      edge: {
-        id: `edge-${crypto.randomUUID().slice(0, 8)}`,
-        from: selected.id,
-        to: peer.id,
-        kind: 'contradicts',
-        label: 'fray',
-      },
-    });
+  function selectThread(thread: ThreadLane) {
+    const latest = thread.exchanges.at(-1) ?? null;
+    commit({ type: 'thread.select', threadId: thread.id });
+    commit({ type: 'exchange.select', threadId: thread.id, exchangeId: latest?.id ?? null });
+  }
+
+  function selectExchange(threadId: string, exchangeId: string) {
+    commit({ type: 'exchange.select', threadId, exchangeId });
   }
 
   function resetLog() {
-    localStorage.removeItem('loomspace.fabric-log.v1');
+    localStorage.removeItem('loomspace.thread-log.v2');
     setEvents([]);
-  }
-
-  function onNodePointerDown(node: FabricNode, event: React.PointerEvent<HTMLButtonElement>) {
-    event.preventDefault();
-    commit({ type: 'ui.select', id: node.id });
-    setDragId(node.id);
-    dragOffset.current = {
-      x: event.clientX - node.x,
-      y: event.clientY - node.y,
-    };
-    (event.currentTarget as HTMLButtonElement).setPointerCapture(event.pointerId);
-  }
-
-  function onCanvasPointerMove(event: React.PointerEvent<HTMLDivElement>) {
-    if (!dragId) return;
-    const rect = canvasRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    commit({
-      type: 'node.move',
-      id: dragId,
-      x: event.clientX - rect.left - dragOffset.current.x,
-      y: event.clientY - rect.top - dragOffset.current.y,
-    });
-  }
-
-  function onCanvasPointerUp() {
-    setDragId(null);
+    setExchangeDraft('');
+    setThreadTitleDraft('');
   }
 
   return (
@@ -134,15 +118,9 @@ export default function App() {
           <h1>{state.title}</h1>
         </div>
         <div className="topbar-actions">
-          <button onClick={createThread}>New thread</button>
-          <button onClick={promoteToStitch} disabled={!selected}>
-            Stitch selected
-          </button>
-          <button onClick={addContradiction} disabled={!selected}>
-            Mark contradiction
-          </button>
+          <button onClick={startThread}>New thread</button>
           <button onClick={() => commit({ type: 'ui.toggleDensityOverlay' })}>
-            {state.densityOverlay ? 'Hide' : 'Show'} density
+            {state.densityOverlay ? 'Hide' : 'Show'} threadlines
           </button>
           <button onClick={resetLog} className="quiet">
             Reset fabric
@@ -153,30 +131,58 @@ export default function App() {
       <main className="layout">
         <aside className="panel left">
           <section className="metric-card accent">
-            <span>Fabric density</span>
+            <span>Threads</span>
+            <strong>{metrics.threadCount}</strong>
+          </section>
+          <section className="metric-card">
+            <span>Exchanges</span>
+            <strong>{metrics.exchangeCount}</strong>
+          </section>
+          <section className="metric-card">
+            <span>Active lanes</span>
+            <strong>{metrics.activeExchangeCount}</strong>
+          </section>
+          <section className="metric-card">
+            <span>Density</span>
             <strong>{metrics.density.toFixed(2)}</strong>
           </section>
-          <section className="metric-card">
-            <span>Stitches</span>
-            <strong>{metrics.stitchedCount}</strong>
-          </section>
-          <section className="metric-card">
-            <span>Contradictions</span>
-            <strong>{metrics.contradictionCount}</strong>
-          </section>
+
+          <h2>Start a thread</h2>
+          <label className="field">
+            Thread title
+            <input
+              value={threadTitleDraft}
+              onChange={(event) => setThreadTitleDraft(event.target.value)}
+              placeholder="e.g. deployment plan"
+            />
+          </label>
+          <label className="field">
+            First exchange summary
+            <textarea
+              value={exchangeDraft}
+              onChange={(event) => setExchangeDraft(event.target.value)}
+              placeholder="Short summary of the exchange"
+              rows={4}
+            />
+          </label>
+          <button onClick={startThread}>Create thread</button>
 
           <h2>Threads</h2>
           <div className="thread-list">
+            {state.threads.length === 0 ? <p className="muted">No threads yet.</p> : null}
             {state.threads.map((thread) => (
               <button
                 key={thread.id}
-                className="thread-chip"
+                className={`thread-chip ${thread.id === activeThread?.id ? 'selected' : ''}`}
                 style={{ borderColor: thread.color }}
-                onClick={() => commit({ type: 'ui.select', id: state.nodes.find((n) => n.threadId === thread.id)?.id ?? null })}
+                onClick={() => selectThread(thread)}
               >
                 <span className="dot" style={{ background: thread.color }} />
-                <span>{thread.title}</span>
-                <small>{thread.status}</small>
+                <span>
+                  {thread.title}
+                  <small>{thread.summary}</small>
+                </span>
+                <small>{thread.exchanges.length} ex</small>
               </button>
             ))}
           </div>
@@ -184,104 +190,154 @@ export default function App() {
 
         <section className="canvas-panel">
           <div className="canvas-toolbar">
-            <span>{state.densityOverlay ? 'Fabric overlay on' : 'Overlay off'}</span>
-            <span>{Math.round(state.zoom * 100)}%</span>
+            <span>{state.densityOverlay ? 'Threadlines on' : 'Threadlines off'}</span>
+            <span>{metrics.saturation * 100 < 50 ? 'light weave' : 'dense weave'}</span>
           </div>
-          <div
-            ref={canvasRef}
-            className={`fabric-canvas ${state.densityOverlay ? 'overlay' : ''}`}
-            onPointerMove={onCanvasPointerMove}
-            onPointerUp={onCanvasPointerUp}
-            onPointerLeave={onCanvasPointerUp}
-          >
-            <svg className="edges-layer" viewBox="0 0 1200 760" preserveAspectRatio="none">
-              {state.edges.map((edge) => {
-                const from = state.nodes.find((node) => node.id === edge.from);
-                const to = state.nodes.find((node) => node.id === edge.to);
-                if (!from || !to) return null;
-                const ctrlX = (from.x + to.x) / 2;
-                const ctrlY = Math.min(from.y, to.y) - 80;
-                const stroke = edge.kind === 'contradicts' ? '#ff7b89' : edge.kind === 'promotes' ? '#7cf7c2' : '#8db0ff';
+
+          <div className={`fabric-canvas ${state.densityOverlay ? 'overlay' : ''}`}>
+            <div className="fabric-stage" style={{ width: canvasWidth, height: canvasHeight }}>
+              {lanes.length === 0 ? (
+                <div className="empty-state">
+                  <p className="eyebrow">Canvas idle</p>
+                  <h2>Start a thread to begin the weave</h2>
+                  <p>Each exchange becomes a short box on the line; the right sidebar shows the active chat.</p>
+                  <button onClick={startThread}>Create first thread</button>
+                </div>
+              ) : null}
+
+              <svg className="edges-layer" viewBox={`0 0 ${canvasWidth} ${canvasHeight}`} preserveAspectRatio="none">
+                {lanes.map((lane) => {
+                  const lastTop = lane.exchangePositions.at(-1)?.top ?? FIRST_EXCHANGE_TOP;
+                  const lineEnd = lastTop + EXCHANGE_HEIGHT;
+                  return (
+                    <g key={lane.thread.id}>
+                      <path
+                        d={`M ${lane.spineX} ${HEADER_TOP + HEADER_HEIGHT} L ${lane.spineX} ${lineEnd + 28}`}
+                        className={`spine ${lane.thread.id === activeThread?.id ? 'active' : ''}`}
+                      />
+                      <path
+                        d={`M ${lane.spineX} ${HEADER_TOP + HEADER_HEIGHT / 2} L ${lane.spineX + 14} ${HEADER_TOP + HEADER_HEIGHT / 2}`}
+                        className="spine-tip"
+                      />
+                      {lane.exchangePositions.map(({ exchange, top }) => {
+                        const centerY = top + EXCHANGE_HEIGHT / 2;
+                        return (
+                          <g key={exchange.id}>
+                            <path d={`M ${lane.spineX} ${centerY} L ${lane.laneX + CARD_OFFSET} ${centerY}`} className="link-line" />
+                            <circle cx={lane.spineX} cy={centerY} r="4" className="link-dot" />
+                          </g>
+                        );
+                      })}
+                    </g>
+                  );
+                })}
+              </svg>
+
+              {lanes.map((lane) => {
+                const isActiveLane = lane.thread.id === activeThread?.id;
                 return (
-                  <g key={edge.id} opacity={state.selectedId && state.selectedId !== edge.from && state.selectedId !== edge.to ? 0.4 : 1}>
-                    <path
-                      d={`M ${from.x} ${from.y} Q ${ctrlX} ${ctrlY} ${to.x} ${to.y}`}
-                      className={`edge ${edge.kind}`}
-                      stroke={stroke}
-                    />
-                    <text x={ctrlX} y={ctrlY - 10} className="edge-label">
-                      {edge.label}
-                    </text>
-                  </g>
+                  <div key={lane.thread.id} className={`thread-lane ${isActiveLane ? 'active' : ''}`} style={{ left: lane.laneX, top: 0, width: LANE_WIDTH, height: lane.laneHeight }}>
+                    <button className="thread-header" style={{ top: HEADER_TOP }} onClick={() => selectThread(lane.thread)}>
+                      <span className="thread-header-line" style={{ background: lane.thread.color }} />
+                      <div>
+                        <strong>{lane.thread.title}</strong>
+                        <p>{lane.thread.summary}</p>
+                      </div>
+                      <small>{lane.thread.exchanges.length} exchanges</small>
+                    </button>
+
+                    {lane.exchangePositions.map(({ exchange, top }) => {
+                      const isSelected = exchange.id === activeExchange?.id;
+                      return (
+                        <button
+                          key={exchange.id}
+                          className={`exchange-card ${isSelected ? 'selected' : ''}`}
+                          style={{ top, left: CARD_OFFSET }}
+                          onClick={() => selectExchange(lane.thread.id, exchange.id)}
+                        >
+                          <div className="exchange-head">
+                            <span>Exchange</span>
+                            <span className={`confidence ${exchange.confidence}`}>{exchange.confidence}</span>
+                          </div>
+                          <strong>{exchange.summary}</strong>
+                        </button>
+                      );
+                    })}
+                  </div>
                 );
               })}
-            </svg>
-
-            {state.nodes.map((node) => {
-              const isSelected = node.id === state.selectedId;
-              const isRelated = relatedNodeIds.has(node.id);
-              return (
-                <button
-                  key={node.id}
-                  className={`node ${node.kind} ${isSelected ? 'selected' : ''} ${isRelated || !selected ? '' : 'dimmed'}`}
-                  style={{ left: node.x, top: node.y }}
-                  onPointerDown={(event) => onNodePointerDown(node, event)}
-                  onClick={() => commit({ type: 'ui.select', id: node.id })}
-                  onDoubleClick={() => commit({ type: 'node.toggleCollapse', id: node.id })}
-                >
-                  <div className="node-head">
-                    <span>{getNodeLabel(node.kind)}</span>
-                    <span className={`confidence ${node.confidence}`}>{node.confidence}</span>
-                  </div>
-                  <strong>{node.title}</strong>
-                  {!node.collapsed && <p>{node.summary}</p>}
-                  {node.threadId && <small>thread · {node.threadId}</small>}
-                </button>
-              );
-            })}
+            </div>
           </div>
         </section>
 
         <aside className="panel right">
-          <h2>Inspector</h2>
-          {selected ? (
-            <article className="inspector-card">
-              <p className="eyebrow">{getNodeLabel(selected.kind)}</p>
-              <h3>{selected.title}</h3>
-              <p>{selected.summary}</p>
-              <div className="meta-row">
-                <span>confidence {selected.confidence}</span>
-                <span>{selected.pinned ? 'pinned' : 'movable'}</span>
-              </div>
-              <h4>Why this exists</h4>
-              <ul>
-                {selected.provenance.map((source) => (
-                  <li key={source}>{source}</li>
-                ))}
-              </ul>
-              <h4>Connected weave</h4>
-              <ul>
-                {relatedEdges.map((edge) => (
-                  <li key={edge.id}>
-                    {edge.kind} · {edge.label}
-                  </li>
-                ))}
-              </ul>
-            </article>
-          ) : (
-            <p className="muted">Select a node to see provenance and connections.</p>
-          )}
+          <h2>Active chat</h2>
+          {activeThread ? (
+            <>
+              <article className="inspector-card">
+                <p className="eyebrow">{activeThread.title}</p>
+                <h3>{activeThread.summary}</h3>
+                <p>{activeThread.exchanges.length} exchanges in this lane.</p>
+              </article>
 
-          <section className="inspector-card">
-            <h4>System view</h4>
-            <ul>
-              <li>{metrics.nodeCount} nodes</li>
-              <li>{metrics.edgeCount} edges</li>
-              <li>{Math.round(metrics.saturation * 100)}% saturation</li>
-            </ul>
-          </section>
+              <section className="chat-panel">
+                {activeThread.exchanges.length === 0 ? (
+                  <p className="muted">No exchanges yet.</p>
+                ) : (
+                  activeThread.exchanges.map((exchange) => (
+                    <button
+                      key={exchange.id}
+                      className={`chat-card ${exchange.id === activeExchange?.id ? 'selected' : ''}`}
+                      onClick={() => selectExchange(activeThread.id, exchange.id)}
+                    >
+                      <div className="chat-card-top">
+                        <span>{exchange.createdAt.slice(0, 10)}</span>
+                        <span className={`confidence ${exchange.confidence}`}>{exchange.confidence}</span>
+                      </div>
+                      {exchange.messages.map((message) => (
+                        <div key={message.id} className={`bubble ${message.role}`}>
+                          <strong>{message.role}</strong>
+                          <p>{message.text}</p>
+                        </div>
+                      ))}
+                    </button>
+                  ))
+                )}
+              </section>
+
+              <section className="inspector-card">
+                <h4>Add exchange</h4>
+                <textarea
+                  value={exchangeDraft}
+                  onChange={(event) => setExchangeDraft(event.target.value)}
+                  placeholder="Short exchange summary"
+                  rows={4}
+                />
+                <button onClick={addExchange} disabled={!exchangeDraft.trim()}>
+                  Append exchange
+                </button>
+              </section>
+            </>
+          ) : (
+            <p className="muted">Create a thread or select one to see the chat here.</p>
+          )}
         </aside>
       </main>
     </div>
   );
+}
+
+function makeExchange(id: string, text: string, confidence: 'low' | 'medium' | 'high', messages: ChatMessage[]): ThreadExchange {
+  return {
+    id,
+    summary: summarize(text, 56),
+    messages,
+    confidence,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+function pickColor(index: number) {
+  const palette = ['#7cf7c2', '#7ea8ff', '#d48bff', '#ffd166', '#ff8f70'];
+  return palette[index % palette.length];
 }
