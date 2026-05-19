@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   appendChatToThread,
   computeMetrics,
@@ -8,7 +8,6 @@ import {
   loadWorkspace,
   saveSettings,
   saveWorkspace,
-  summarize,
   threadWithActiveNode,
   threadWithInfo,
   updateThreadTitle,
@@ -16,13 +15,17 @@ import {
 import type { ChatMessage, LoomspaceState, OpenAISettings, ThreadChatNode, ThreadLane, ThreadNode } from './lib/types';
 
 const LANE_WIDTH = 320;
-const LANE_GAP = 44;
-const LEFT_PAD = 44;
-const TOP_PAD = 24;
+const LANE_GAP = 56;
+const LEFT_PAD = 64;
+const TOP_PAD = 28;
 const TITLE_HEIGHT = 66;
+const TITLE_INFO_EXTRA = 84;
 const CHAT_HEIGHT = 92;
-const NODE_GAP = 34;
+const NODE_GAP = 30;
 const NODE_WIDTH = 232;
+const MIN_ZOOM = 0.7;
+const MAX_ZOOM = 1.6;
+const EDGE_PADDING = 80;
 
 export default function App() {
   const [state, setState] = useState<LoomspaceState>(() => loadWorkspace());
@@ -32,41 +35,69 @@ export default function App() {
   const [composerDraft, setComposerDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const panGesture = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
 
-  useEffect(() => {
-    saveWorkspace(state);
-  }, [state]);
-
-  useEffect(() => {
-    saveSettings(settings);
-  }, [settings]);
+  useEffect(() => saveWorkspace(state), [state]);
+  useEffect(() => saveSettings(settings), [settings]);
 
   const metrics = useMemo(() => computeMetrics(state), [state]);
   const activeThread = state.threads.find((thread) => thread.id === state.selectedThreadId) ?? state.threads[0] ?? null;
   const activeNode = activeThread?.nodes.find((node) => node.id === state.selectedNodeId) ?? activeThread?.nodes.at(-1) ?? null;
 
-  const canvasWidth = Math.max(1200, LEFT_PAD * 2 + state.threads.length * LANE_WIDTH + Math.max(0, state.threads.length - 1) * LANE_GAP);
+  const canvasWidth = Math.max(
+    1280,
+    LEFT_PAD * 2 + Math.max(0, state.threads.length - 1) * (LANE_WIDTH + LANE_GAP) + LANE_WIDTH,
+  );
 
   const lanes = useMemo(() => {
     return state.threads.map((thread, index) => {
-      const laneCenterX = state.threads.length === 1 ? canvasWidth / 2 : LEFT_PAD + index * (LANE_WIDTH + LANE_GAP) + LANE_WIDTH / 2;
-      const nodeEntries: Array<{ node: ThreadNode; top: number }> = [];
+      const centerX = state.threads.length === 1 ? canvasWidth / 2 : LEFT_PAD + index * (LANE_WIDTH + LANE_GAP) + LANE_WIDTH / 2;
+      const nodes: Array<{ node: ThreadNode; top: number }> = [];
       let cursorTop = TOP_PAD;
       for (const node of thread.nodes) {
-        nodeEntries.push({ node, top: cursorTop });
-        cursorTop += nodeKindHeight(node) + NODE_GAP;
+        nodes.push({ node, top: cursorTop });
+        cursorTop += nodeHeight(thread, node) + NODE_GAP;
       }
-      const laneHeight = Math.max(cursorTop + 80 + (thread.infoOpen ? 90 : 0), 420);
-
       return {
         thread,
-        laneCenterX,
-        spineX: laneCenterX,
-        nodeEntries,
-        laneHeight,
+        centerX,
+        nodes,
+        height: cursorTop + 72,
       };
     });
   }, [canvasWidth, state.threads]);
+
+  const canvasHeight = Math.max(720, ...lanes.map((lane) => lane.height));
+
+  useEffect(() => {
+    clampViewport();
+  }, [canvasWidth, canvasHeight]);
+
+  useEffect(() => {
+    const onResize = () => clampViewport();
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [canvasWidth, canvasHeight]);
+
+  function clampViewport(next?: Partial<Pick<LoomspaceState, 'panX' | 'panY' | 'zoom'>>) {
+    const viewport = viewportRef.current;
+    const width = viewport?.clientWidth ?? window.innerWidth;
+    const height = viewport?.clientHeight ?? window.innerHeight;
+    const zoom = clamp(next?.zoom ?? state.zoom, MIN_ZOOM, MAX_ZOOM);
+    const panX = next?.panX ?? state.panX;
+    const panY = next?.panY ?? state.panY;
+    const nextBounds = boundedPan(panX, panY, zoom, width, height, canvasWidth, canvasHeight);
+    if (
+      nextBounds.panX === state.panX &&
+      nextBounds.panY === state.panY &&
+      zoom === state.zoom &&
+      !next
+    ) {
+      return;
+    }
+    setState((current) => ({ ...current, ...nextBounds, zoom }));
+  }
 
   function selectThread(threadId: string, nodeId?: string | null) {
     setState((current) => ({
@@ -85,14 +116,15 @@ export default function App() {
     const title = threadTitleDraft.trim() || `Thread ${state.threads.length + 1}`;
     const description = threadDescriptionDraft.trim() || 'A new lane for a project idea and its AI chat context.';
     const thread = createThread(title, description, state.threads.length);
-    const selectedChat = thread.nodes.find((node): node is ThreadChatNode => node.kind === 'chat') ?? null;
+    const firstChat = thread.nodes.find((node): node is ThreadChatNode => node.kind === 'chat') ?? null;
 
     setState((current) => ({
       ...current,
       version: current.version + 1,
       threads: [...current.threads, thread],
       selectedThreadId: thread.id,
-      selectedNodeId: selectedChat?.id ?? null,
+      selectedNodeId: firstChat?.id ?? null,
+      panX: current.threads.length === 0 ? current.panX : current.panX - 40,
     }));
 
     setThreadTitleDraft('');
@@ -109,11 +141,7 @@ export default function App() {
     }
 
     const userText = composerDraft.trim();
-    const userMessage: ChatMessage = {
-      id: `msg-${crypto.randomUUID().slice(0, 8)}`,
-      role: 'user',
-      text: userText,
-    };
+    const userMessage: ChatMessage = { id: `msg-${crypto.randomUUID().slice(0, 8)}`, role: 'user', text: userText };
 
     setSending(true);
     setError(null);
@@ -132,9 +160,7 @@ export default function App() {
         ...current,
         version: current.version + 1,
         threads: current.threads.map((thread) =>
-          thread.id === activeThread.id
-            ? appendChatToThread(thread, newChatNode, [userMessage, assistantMessage])
-            : thread,
+          thread.id === activeThread.id ? appendChatToThread(thread, newChatNode, [userMessage, assistantMessage]) : thread,
         ),
         selectedThreadId: activeThread.id,
         selectedNodeId: newChatNode.id,
@@ -176,14 +202,109 @@ export default function App() {
   }
 
   function resetWorkspace() {
-    localStorage.removeItem('loomspace.workspace.v5');
-    localStorage.removeItem('loomspace.settings.v1');
+    localStorage.removeItem('loomspace.workspace.v6');
+    localStorage.removeItem('loomspace.settings.v2');
     setState(loadWorkspace());
     setSettings(loadSettings());
     setThreadTitleDraft('');
     setThreadDescriptionDraft('');
     setComposerDraft('');
     setError(null);
+  }
+
+  function beginPan(event: React.PointerEvent<HTMLDivElement>) {
+    if (event.target !== event.currentTarget) return;
+    panGesture.current = {
+      startX: event.clientX,
+      startY: event.clientY,
+      panX: state.panX,
+      panY: state.panY,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function movePan(event: React.PointerEvent<HTMLDivElement>) {
+    if (!panGesture.current) return;
+    const deltaX = event.clientX - panGesture.current.startX;
+    const deltaY = event.clientY - panGesture.current.startY;
+    const viewport = viewportRef.current;
+    const width = viewport?.clientWidth ?? window.innerWidth;
+    const height = viewport?.clientHeight ?? window.innerHeight;
+    const next = boundedPan(
+      panGesture.current.panX + deltaX,
+      panGesture.current.panY + deltaY,
+      state.zoom,
+      width,
+      height,
+      canvasWidth,
+      canvasHeight,
+    );
+    setState((current) => ({ ...current, ...next }));
+  }
+
+  function endPan() {
+    panGesture.current = null;
+  }
+
+  function zoomAt(clientX: number, clientY: number, nextZoom: number) {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const rect = viewport.getBoundingClientRect();
+    const zoom = clamp(nextZoom, MIN_ZOOM, MAX_ZOOM);
+    const pointX = clientX - rect.left;
+    const pointY = clientY - rect.top;
+
+    setState((current) => {
+      const scale = zoom / current.zoom;
+      const transformed = {
+        panX: pointX - (pointX - current.panX) * scale,
+        panY: pointY - (pointY - current.panY) * scale,
+      };
+      return {
+        ...current,
+        zoom,
+        ...boundedPan(transformed.panX, transformed.panY, zoom, rect.width, rect.height, canvasWidth, canvasHeight),
+      };
+    });
+  }
+
+  function zoomFromButton(direction: 1 | -1) {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const rect = viewport.getBoundingClientRect();
+    zoomAt(rect.left + rect.width / 2, rect.top + rect.height / 2, state.zoom + direction * 0.1);
+  }
+
+  function resetView() {
+    const viewport = viewportRef.current;
+    if (!viewport) {
+      setState((current) => ({ ...current, zoom: 1, panX: 0, panY: 0 }));
+      return;
+    }
+    const rect = viewport.getBoundingClientRect();
+    const centered = boundedPan(
+      Math.max(0, (rect.width - canvasWidth) / 2),
+      Math.max(0, (rect.height - canvasHeight) / 2),
+      1,
+      rect.width,
+      rect.height,
+      canvasWidth,
+      canvasHeight,
+    );
+    setState((current) => ({ ...current, zoom: 1, ...centered }));
+  }
+
+  function onWheel(event: React.WheelEvent<HTMLDivElement>) {
+    event.preventDefault();
+    if (event.ctrlKey || event.metaKey) {
+      zoomAt(event.clientX, event.clientY, state.zoom - event.deltaY * 0.0015);
+      return;
+    }
+    const viewport = viewportRef.current;
+    const width = viewport?.clientWidth ?? window.innerWidth;
+    const height = viewport?.clientHeight ?? window.innerHeight;
+    const next = boundedPan(state.panX - event.deltaX, state.panY - event.deltaY, state.zoom, width, height, canvasWidth, canvasHeight);
+    setState((current) => ({ ...current, ...next }));
   }
 
   return (
@@ -195,9 +316,9 @@ export default function App() {
         </div>
         <div className="topbar-actions">
           <button onClick={createNewThread}>New thread</button>
-          <button onClick={() => setState((current) => ({ ...current, densityOverlay: !current.densityOverlay }))}>
-            {state.densityOverlay ? 'Hide' : 'Show'} threadlines
-          </button>
+          <button onClick={() => zoomFromButton(-1)}>−</button>
+          <button onClick={resetView}>Reset view</button>
+          <button onClick={() => zoomFromButton(1)}>+</button>
           <button onClick={resetWorkspace} className="quiet">
             Reset fabric
           </button>
@@ -263,35 +384,46 @@ export default function App() {
         <section className="canvas-panel">
           <div className="canvas-toolbar">
             <span>{state.densityOverlay ? 'Threadlines on' : 'Threadlines off'}</span>
+            <span>{Math.round(state.zoom * 100)}%</span>
             <span>{metrics.saturation * 100 < 50 ? 'light weave' : 'dense weave'}</span>
           </div>
 
-          <div className={`fabric-canvas ${state.densityOverlay ? 'overlay' : ''}`}>
-            <div className="fabric-stage" style={{ width: canvasWidth, height: Math.max(...lanes.map((lane) => lane.laneHeight), 480) }}>
+          <div
+            ref={viewportRef}
+            className={`canvas-viewport ${state.densityOverlay ? 'overlay' : ''}`}
+            onWheel={onWheel}
+          >
+            <div
+              className="canvas-stage"
+              style={{
+                width: canvasWidth,
+                height: canvasHeight,
+                transform: `translate(${state.panX}px, ${state.panY}px) scale(${state.zoom})`,
+              }}
+              onPointerDown={beginPan}
+              onPointerMove={movePan}
+              onPointerUp={endPan}
+              onPointerLeave={endPan}
+            >
               {lanes.length === 0 ? (
                 <div className="empty-state">
                   <p className="eyebrow">Canvas idle</p>
                   <h2>Start a thread to begin the weave</h2>
-                  <p>The first thread will center itself. New threads line up to the right.</p>
+                  <p>The first thread centers itself. New threads line up to the right.</p>
                   <button onClick={createNewThread}>Create first thread</button>
                 </div>
               ) : null}
 
-              <svg className="edges-layer" viewBox={`0 0 ${canvasWidth} ${Math.max(...lanes.map((lane) => lane.laneHeight), 480)}`} preserveAspectRatio="none">
+              <svg className="edges-layer" viewBox={`0 0 ${canvasWidth} ${canvasHeight}`} preserveAspectRatio="none">
                 {lanes.map((lane) => {
-                  const nodes = lane.nodeEntries;
-                  const startY = nodes[0]?.top ?? TOP_PAD;
-                  const endY = (nodes.at(-1)?.top ?? TOP_PAD) + nodeKindHeight(nodes.at(-1)?.node ?? null);
-                  const startX = lane.spineX;
+                  const path = buildThreadPath(lane.centerX, lane.nodes.map((entry) => entry.node), lane.thread);
+                  const anchors = buildAnchors(lane.centerX, lane.nodes.map((entry) => entry.node), lane.thread);
                   return (
                     <g key={lane.thread.id}>
-                      <path d={`M ${startX} ${startY} L ${startX} ${endY}`} className={`rope-shadow ${lane.thread.id === activeThread?.id ? 'active' : ''}`} />
-                      <path d={`M ${startX} ${startY} L ${startX} ${endY}`} className={`rope ${lane.thread.id === activeThread?.id ? 'active' : ''}`} />
-                      {nodes.map(({ node, top }) => (
-                        <g key={node.id}>
-                          <circle cx={startX} cy={top} r="4" className="knot" />
-                          <path d={`M ${startX} ${top} L ${startX} ${top + nodeKindHeight(node)}`} className="link-line" />
-                        </g>
+                      <path d={path} className={`rope-shadow ${lane.thread.id === activeThread?.id ? 'active' : ''}`} />
+                      <path d={path} className={`rope ${lane.thread.id === activeThread?.id ? 'active' : ''}`} />
+                      {anchors.map((point, index) => (
+                        <circle key={`${lane.thread.id}-${index}`} cx={point.x} cy={point.y} r="4" className="knot" />
                       ))}
                     </g>
                   );
@@ -305,9 +437,9 @@ export default function App() {
                   <div
                     key={thread.id}
                     className={`thread-lane ${isActiveLane ? 'active' : ''}`}
-                    style={{ left: lane.laneCenterX - LANE_WIDTH / 2, top: 0, width: LANE_WIDTH, height: lane.laneHeight }}
+                    style={{ left: lane.centerX - NODE_WIDTH / 2, top: 0, width: NODE_WIDTH, height: lane.height }}
                   >
-                    {lane.nodeEntries.map(({ node, top }) => {
+                    {lane.nodes.map(({ node, top }) => {
                       if (node.kind === 'title') {
                         const titleNode = node;
                         return (
@@ -319,12 +451,7 @@ export default function App() {
                                   onChange={(event) => updateTitle(thread.id, event.target.value)}
                                   onFocus={() => selectThread(thread.id, node.id)}
                                 />
-                                <button
-                                  type="button"
-                                  className="info-button"
-                                  onClick={() => toggleInfo(thread.id)}
-                                  aria-label="Thread info"
-                                >
+                                <button type="button" className="info-button" onClick={() => toggleInfo(thread.id)} aria-label="Thread info">
                                   ⓘ
                                 </button>
                               </div>
@@ -340,7 +467,7 @@ export default function App() {
                         <button
                           key={node.id}
                           className={`chat-node ${isSelected ? 'selected' : ''}`}
-                          style={{ top, left: lane.spineX - NODE_WIDTH / 2 }}
+                          style={{ top, left: 0 }}
                           onClick={() => selectNode(thread.id, node.id)}
                         >
                           <div className="exchange-head">
@@ -479,7 +606,65 @@ async function requestAiReply(settings: OpenAISettings, thread: ThreadLane, mess
   return assistantText;
 }
 
-function nodeKindHeight(node: ThreadNode | null) {
-  if (!node) return 0;
-  return node.kind === 'title' ? TITLE_HEIGHT : CHAT_HEIGHT;
+function nodeHeight(thread: ThreadLane, node: ThreadNode) {
+  if (node.kind === 'title') return TITLE_HEIGHT + (thread.infoOpen ? TITLE_INFO_EXTRA : 0);
+  return CHAT_HEIGHT;
+}
+
+function buildThreadPath(centerX: number, nodes: ThreadNode[], thread: ThreadLane) {
+  if (!nodes.length) return '';
+  const commands: string[] = [];
+  let cursor = TOP_PAD;
+  commands.push(`M ${centerX} ${cursor}`);
+
+  nodes.forEach((node, index) => {
+    const height = nodeHeight(thread, node);
+    commands.push(`L ${centerX} ${cursor + height}`);
+    cursor += height;
+    if (index < nodes.length - 1) {
+      commands.push(`L ${centerX} ${cursor + NODE_GAP}`);
+      cursor += NODE_GAP;
+    }
+  });
+
+  return commands.join(' ');
+}
+
+function buildAnchors(centerX: number, nodes: ThreadNode[], thread: ThreadLane) {
+  const points: Array<{ x: number; y: number }> = [];
+  let cursor = TOP_PAD;
+  for (const node of nodes) {
+    const height = nodeHeight(thread, node);
+    points.push({ x: centerX, y: cursor });
+    points.push({ x: centerX, y: cursor + height });
+    cursor += height + NODE_GAP;
+  }
+  return points;
+}
+
+function boundedPan(
+  panX: number,
+  panY: number,
+  zoom: number,
+  viewportWidth: number,
+  viewportHeight: number,
+  contentWidth: number,
+  contentHeight: number,
+) {
+  const renderedWidth = contentWidth * zoom;
+  const renderedHeight = contentHeight * zoom;
+
+  const minX = renderedWidth <= viewportWidth ? (viewportWidth - renderedWidth) / 2 : viewportWidth - renderedWidth - EDGE_PADDING;
+  const maxX = renderedWidth <= viewportWidth ? (viewportWidth - renderedWidth) / 2 : EDGE_PADDING;
+  const minY = renderedHeight <= viewportHeight ? (viewportHeight - renderedHeight) / 2 : viewportHeight - renderedHeight - EDGE_PADDING;
+  const maxY = renderedHeight <= viewportHeight ? (viewportHeight - renderedHeight) / 2 : EDGE_PADDING;
+
+  return {
+    panX: clamp(panX, minX, maxX),
+    panY: clamp(panY, minY, maxY),
+  };
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
 }

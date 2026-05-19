@@ -209,6 +209,7 @@ button.quiet {
 .canvas-toolbar {
   display: flex;
   justify-content: space-between;
+  gap: 10px;
   padding: 12px 16px;
   font-size: 13px;
   color: #9cadcf;
@@ -216,16 +217,24 @@ button.quiet {
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
-.fabric-canvas {
+.canvas-viewport {
   position: relative;
-  overflow: auto;
+  overflow: hidden;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  cursor: grab;
   background:
     radial-gradient(circle at 20% 20%, rgba(124, 247, 194, 0.06), transparent 18%),
     radial-gradient(circle at 70% 40%, rgba(126, 168, 255, 0.08), transparent 20%),
     linear-gradient(135deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0.01));
 }
 
-.fabric-canvas.overlay {
+.canvas-viewport:active {
+  cursor: grabbing;
+}
+
+.canvas-viewport.overlay {
   background-image:
     linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
     linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
@@ -235,9 +244,11 @@ button.quiet {
   background-size: 48px 48px, 48px 48px, auto, auto, auto;
 }
 
-.fabric-stage {
+.canvas-stage {
   position: relative;
   min-height: 100%;
+  transform-origin: 0 0;
+  will-change: transform;
 }
 
 .edges-layer {
@@ -473,7 +484,7 @@ button.quiet {
   margin: 10px 0 12px;
 }
 
-@media (max-width: 1280px) {
+@media (max-width: 1200px) {
   .layout {
     grid-template-columns: 280px minmax(0, 1fr);
   }
@@ -483,12 +494,22 @@ button.quiet {
   }
 }
 
-@media (max-width: 900px) {
+@media (max-width: 860px) {
   .layout {
     grid-template-columns: 1fr;
   }
 
   .panel.left {
     display: none;
+  }
+
+  .topbar {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .topbar-actions {
+    width: 100%;
   }
 }
