@@ -6,18 +6,21 @@ import type { ChatMessage, LoomspaceEvent, LoomspaceState, ThreadExchange, Threa
 const LANE_WIDTH = 300;
 const LANE_GAP = 40;
 const HEADER_TOP = 28;
-const HEADER_HEIGHT = 66;
-const FIRST_EXCHANGE_TOP = 118;
-const EXCHANGE_HEIGHT = 60;
-const EXCHANGE_GAP = 22;
+const HEADER_HEIGHT = 54;
+const HEADER_POP_HEIGHT = 72;
+const FIRST_EXCHANGE_TOP = 134;
+const EXCHANGE_HEIGHT = 56;
+const EXCHANGE_GAP = 34;
 const LEFT_PAD = 36;
 const SPINE_OFFSET = 18;
 const CARD_OFFSET = 40;
+const ROPE_TENSION = 12;
 
 export default function App() {
   const [events, setEvents] = useState<LoomspaceEvent[]>(() => loadLog().events);
   const [threadTitleDraft, setThreadTitleDraft] = useState('');
   const [exchangeDraft, setExchangeDraft] = useState('');
+  const [openInfoThreadId, setOpenInfoThreadId] = useState<string | null>(null);
 
   const state = useMemo<LoomspaceState>(() => events.reduce(applyEvent, structuredClone(sampleState)), [events]);
   const metrics = useMemo(() => computeMetrics(state), [state]);
@@ -34,7 +37,12 @@ export default function App() {
         exchange,
         top: FIRST_EXCHANGE_TOP + exchangeIndex * (EXCHANGE_HEIGHT + EXCHANGE_GAP),
       }));
-      const laneHeight = Math.max(FIRST_EXCHANGE_TOP + thread.exchanges.length * (EXCHANGE_HEIGHT + EXCHANGE_GAP) + 80, 340);
+      const lastExchangeBottom = exchangePositions.at(-1)?.top ?? FIRST_EXCHANGE_TOP - EXCHANGE_GAP;
+      const laneHeight = Math.max(
+        lastExchangeBottom + EXCHANGE_HEIGHT + 72,
+        HEADER_TOP + HEADER_HEIGHT + (openInfoThreadId === thread.id ? HEADER_POP_HEIGHT : 0) + 120,
+        320,
+      );
       return {
         thread,
         laneX,
@@ -43,7 +51,7 @@ export default function App() {
         exchangePositions,
       };
     });
-  }, [state.threads]);
+  }, [state.threads, openInfoThreadId]);
 
   const canvasHeight = Math.max(...lanes.map((lane) => lane.laneHeight), 460);
   const canvasWidth = Math.max(1200, LEFT_PAD * 2 + state.threads.length * LANE_WIDTH + Math.max(state.threads.length - 1, 0) * LANE_GAP);
@@ -54,26 +62,21 @@ export default function App() {
 
   function startThread() {
     const title = threadTitleDraft.trim() || `Thread ${state.threads.length + 1}`;
-    const exchangeText = exchangeDraft.trim() || 'Thread opened.';
+    const description = exchangeDraft.trim() || 'Start a new thread when the idea needs its own lane.';
     const threadId = `thread-${crypto.randomUUID().slice(0, 8)}`;
-    const exchangeId = `exchange-${crypto.randomUUID().slice(0, 8)}`;
     const thread: ThreadLane = {
       id: threadId,
       title,
-      summary: summarize(exchangeText, 48),
+      summary: summarize(description, 48),
+      description,
       color: pickColor(state.threads.length),
-      status: 'active',
-      exchanges: [
-        makeExchange(exchangeId, exchangeText, 'high', [
-          { id: `msg-${crypto.randomUUID().slice(0, 8)}`, role: 'user', text: exchangeText },
-          { id: `msg-${crypto.randomUUID().slice(0, 8)}`, role: 'assistant', text: summarize(exchangeText, 64) },
-        ]),
-      ],
+      status: 'draft',
+      exchanges: [],
     };
 
     commit({ type: 'thread.add', thread });
     commit({ type: 'thread.select', threadId });
-    commit({ type: 'exchange.select', threadId, exchangeId });
+    commit({ type: 'exchange.select', threadId, exchangeId: null });
     setThreadTitleDraft('');
     setExchangeDraft('');
   }
@@ -90,6 +93,7 @@ export default function App() {
 
     commit({ type: 'exchange.add', threadId: activeThread.id, exchange });
     commit({ type: 'exchange.select', threadId: activeThread.id, exchangeId });
+    commit({ type: 'thread.update', id: activeThread.id, patch: { status: 'active', summary: summarize(text, 48) } });
     setExchangeDraft('');
   }
 
@@ -97,6 +101,7 @@ export default function App() {
     const latest = thread.exchanges.at(-1) ?? null;
     commit({ type: 'thread.select', threadId: thread.id });
     commit({ type: 'exchange.select', threadId: thread.id, exchangeId: latest?.id ?? null });
+    setOpenInfoThreadId((current) => (current === thread.id ? current : null));
   }
 
   function selectExchange(threadId: string, exchangeId: string) {
@@ -104,10 +109,11 @@ export default function App() {
   }
 
   function resetLog() {
-    localStorage.removeItem('loomspace.thread-log.v2');
+    localStorage.removeItem('loomspace.thread-log.v3');
     setEvents([]);
     setExchangeDraft('');
     setThreadTitleDraft('');
+    setOpenInfoThreadId(null);
   }
 
   return (
@@ -157,11 +163,11 @@ export default function App() {
             />
           </label>
           <label className="field">
-            First exchange summary
+            Thread description
             <textarea
               value={exchangeDraft}
               onChange={(event) => setExchangeDraft(event.target.value)}
-              placeholder="Short summary of the exchange"
+              placeholder="A short description of why this thread exists"
               rows={4}
             />
           </label>
@@ -207,17 +213,18 @@ export default function App() {
 
               <svg className="edges-layer" viewBox={`0 0 ${canvasWidth} ${canvasHeight}`} preserveAspectRatio="none">
                 {lanes.map((lane) => {
-                  const lastTop = lane.exchangePositions.at(-1)?.top ?? FIRST_EXCHANGE_TOP;
-                  const lineEnd = lastTop + EXCHANGE_HEIGHT;
+                  const lastExchange = lane.exchangePositions.at(-1);
+                  const lastCenterY = lastExchange ? lastExchange.top + EXCHANGE_HEIGHT / 2 : HEADER_TOP + HEADER_HEIGHT + 1;
+                  const ropeStartY = HEADER_TOP + HEADER_HEIGHT;
                   return (
                     <g key={lane.thread.id}>
                       <path
-                        d={`M ${lane.spineX} ${HEADER_TOP + HEADER_HEIGHT} L ${lane.spineX} ${lineEnd + 28}`}
-                        className={`spine ${lane.thread.id === activeThread?.id ? 'active' : ''}`}
+                        d={`M ${lane.spineX} ${ropeStartY} C ${lane.spineX} ${ropeStartY + ROPE_TENSION} ${lane.spineX} ${lastCenterY - ROPE_TENSION} ${lane.spineX} ${lastCenterY}`}
+                        className={`rope-shadow ${lane.thread.id === activeThread?.id ? 'active' : ''}`}
                       />
                       <path
-                        d={`M ${lane.spineX} ${HEADER_TOP + HEADER_HEIGHT / 2} L ${lane.spineX + 14} ${HEADER_TOP + HEADER_HEIGHT / 2}`}
-                        className="spine-tip"
+                        d={`M ${lane.spineX} ${ropeStartY} C ${lane.spineX} ${ropeStartY + ROPE_TENSION} ${lane.spineX} ${lastCenterY - ROPE_TENSION} ${lane.spineX} ${lastCenterY}`}
+                        className={`rope ${lane.thread.id === activeThread?.id ? 'active' : ''}`}
                       />
                       {lane.exchangePositions.map(({ exchange, top }) => {
                         const centerY = top + EXCHANGE_HEIGHT / 2;
@@ -235,16 +242,29 @@ export default function App() {
 
               {lanes.map((lane) => {
                 const isActiveLane = lane.thread.id === activeThread?.id;
+                const infoOpen = openInfoThreadId === lane.thread.id;
                 return (
                   <div key={lane.thread.id} className={`thread-lane ${isActiveLane ? 'active' : ''}`} style={{ left: lane.laneX, top: 0, width: LANE_WIDTH, height: lane.laneHeight }}>
-                    <button className="thread-header" style={{ top: HEADER_TOP }} onClick={() => selectThread(lane.thread)}>
-                      <span className="thread-header-line" style={{ background: lane.thread.color }} />
-                      <div>
-                        <strong>{lane.thread.title}</strong>
-                        <p>{lane.thread.summary}</p>
-                      </div>
-                      <small>{lane.thread.exchanges.length} exchanges</small>
-                    </button>
+                    <div className={`thread-header-wrap ${infoOpen ? 'open' : ''}`} style={{ top: HEADER_TOP }}>
+                      <button className="thread-header" onClick={() => selectThread(lane.thread)}>
+                        <div>
+                          <strong>{lane.thread.title}</strong>
+                        </div>
+                        <span className="thread-count">{lane.thread.exchanges.length}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="info-button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setOpenInfoThreadId((current) => (current === lane.thread.id ? null : lane.thread.id));
+                        }}
+                        aria-label="Thread info"
+                      >
+                        ⓘ
+                      </button>
+                      {infoOpen ? <div className="thread-popout">{lane.thread.description}</div> : null}
+                    </div>
 
                     {lane.exchangePositions.map(({ exchange, top }) => {
                       const isSelected = exchange.id === activeExchange?.id;
@@ -277,12 +297,13 @@ export default function App() {
               <article className="inspector-card">
                 <p className="eyebrow">{activeThread.title}</p>
                 <h3>{activeThread.summary}</h3>
+                <p>{activeThread.description}</p>
                 <p>{activeThread.exchanges.length} exchanges in this lane.</p>
               </article>
 
               <section className="chat-panel">
                 {activeThread.exchanges.length === 0 ? (
-                  <p className="muted">No exchanges yet.</p>
+                  <p className="muted">No exchanges yet. Add one below.</p>
                 ) : (
                   activeThread.exchanges.map((exchange) => (
                     <button

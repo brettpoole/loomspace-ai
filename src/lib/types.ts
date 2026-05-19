@@ -20,6 +20,7 @@ export interface ThreadLane {
   id: string;
   title: string;
   summary: string;
+  description: string;
   color: string;
   status: ThreadStatus;
   exchanges: ThreadExchange[];
