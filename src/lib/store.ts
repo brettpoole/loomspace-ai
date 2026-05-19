@@ -1,7 +1,7 @@
 import { sampleState } from './sample';
 import type { FabricMetrics, LoomspaceEvent, LoomspaceState, PersistedLog } from './types';
 
-const STORAGE_KEY = 'loomspace.thread-log.v2';
+const STORAGE_KEY = 'loomspace.thread-log.v3';
 
 export function loadWorkspace(): LoomspaceState {
   const log = loadLog();
@@ -48,9 +48,7 @@ export function applyEvent(state: LoomspaceState, event: LoomspaceEvent): Loomsp
         ...state,
         version: state.version + 1,
         threads: state.threads.map((thread) =>
-          thread.id === event.threadId
-            ? { ...thread, exchanges: [...thread.exchanges, event.exchange] }
-            : thread,
+          thread.id === event.threadId ? { ...thread, exchanges: [...thread.exchanges, event.exchange] } : thread,
         ),
       };
     case 'thread.select':
