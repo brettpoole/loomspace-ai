@@ -1,11 +1,21 @@
 import { sampleState } from './sample';
-import type { ChatMessage, FabricMetrics, LoomspaceState, PersistedWorkspace, ThreadChatNode, ThreadLane, ThreadTitleNode } from './types';
+import type {
+  ChatMessage,
+  FabricMetrics,
+  LoomspaceState,
+  OpenAISettings,
+  PersistedWorkspace,
+  ThreadChatNode,
+  ThreadLane,
+  ThreadTitleNode,
+} from './types';
 
-const STORAGE_KEY = 'loomspace.workspace.v4';
+const WORKSPACE_KEY = 'loomspace.workspace.v5';
+const SETTINGS_KEY = 'loomspace.settings.v1';
 
 export function loadWorkspace(): LoomspaceState {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(WORKSPACE_KEY);
     if (!raw) return structuredClone(sampleState);
     const parsed = JSON.parse(raw) as PersistedWorkspace;
     return parsed.state ?? structuredClone(sampleState);
@@ -15,7 +25,25 @@ export function loadWorkspace(): LoomspaceState {
 }
 
 export function saveWorkspace(state: LoomspaceState) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify({ state } satisfies PersistedWorkspace));
+  localStorage.setItem(WORKSPACE_KEY, JSON.stringify({ state } satisfies PersistedWorkspace));
+}
+
+export function loadSettings(): OpenAISettings {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    if (!raw) return { apiKey: '', model: 'gpt-4o-mini' };
+    const parsed = JSON.parse(raw) as OpenAISettings;
+    return {
+      apiKey: typeof parsed.apiKey === 'string' ? parsed.apiKey : '',
+      model: typeof parsed.model === 'string' && parsed.model.trim() ? parsed.model : 'gpt-4o-mini',
+    };
+  } catch {
+    return { apiKey: '', model: 'gpt-4o-mini' };
+  }
+}
+
+export function saveSettings(settings: OpenAISettings) {
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
 }
 
 export function computeMetrics(state: LoomspaceState): FabricMetrics {

@@ -1,7 +1,7 @@
 name: loomspace-ai
 region: nyc
 
-services:
+static_sites:
   - name: loomspace-web
     github:
       repo: brettpoole/loomspace-ai
@@ -9,13 +9,5 @@ services:
       deploy_on_push: true
     source_dir: /
     build_command: npm ci && npm run build
-    run_command: npm run start
-    http_port: 8787
-    envs:
-      - key: OPENAI_API_KEY
-        scope: RUN_TIME
-        type: SECRET
-      - key: OPENAI_MODEL
-        scope: RUN_TIME
-        type: GENERAL
-        value: gpt-4o-mini
+    output_dir: dist
+    catchall_document: index.html

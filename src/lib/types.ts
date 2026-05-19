@@ -49,6 +49,11 @@ export interface LoomspaceState {
   version: number;
 }
 
+export interface OpenAISettings {
+  apiKey: string;
+  model: string;
+}
+
 export interface FabricMetrics {
   threadCount: number;
   nodeCount: number;
@@ -56,8 +61,6 @@ export interface FabricMetrics {
   density: number;
   saturation: number;
 }
-
-export type LoomspaceEvent = never;
 
 export interface PersistedWorkspace {
   state: LoomspaceState;

@@ -113,7 +113,7 @@ button.quiet {
 .layout {
   min-height: 0;
   display: grid;
-  grid-template-columns: 300px minmax(0, 1fr) 340px;
+  grid-template-columns: 300px minmax(0, 1fr) 360px;
 }
 
 .panel {
@@ -159,7 +159,12 @@ button.quiet {
   display: block;
   color: #aab8d8;
   font-size: 13px;
-  margin-bottom: 10px;
+  margin-top: 10px;
+}
+
+.field input,
+.field textarea {
+  margin-top: 6px;
 }
 
 .thread-list {
@@ -453,6 +458,15 @@ button.quiet {
 .error {
   color: #ffb4b4;
   margin-bottom: 10px;
+}
+
+.settings-card {
+  border-color: rgba(126, 168, 255, 0.16);
+}
+
+.inspector-card ul {
+  padding-left: 18px;
+  margin-top: 8px;
 }
 
 .inspector-card textarea {

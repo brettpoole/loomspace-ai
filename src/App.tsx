@@ -4,13 +4,16 @@ import {
   computeMetrics,
   createChatNode,
   createThread,
+  loadSettings,
   loadWorkspace,
+  saveSettings,
   saveWorkspace,
+  summarize,
   threadWithActiveNode,
   threadWithInfo,
   updateThreadTitle,
 } from './lib/store';
-import type { ChatMessage, LoomspaceState, ThreadChatNode, ThreadLane, ThreadNode } from './lib/types';
+import type { ChatMessage, LoomspaceState, OpenAISettings, ThreadChatNode, ThreadLane, ThreadNode } from './lib/types';
 
 const LANE_WIDTH = 320;
 const LANE_GAP = 44;
@@ -20,10 +23,10 @@ const TITLE_HEIGHT = 66;
 const CHAT_HEIGHT = 92;
 const NODE_GAP = 34;
 const NODE_WIDTH = 232;
-const SPINE_OFFSET = NODE_WIDTH / 2;
 
 export default function App() {
   const [state, setState] = useState<LoomspaceState>(() => loadWorkspace());
+  const [settings, setSettings] = useState<OpenAISettings>(() => loadSettings());
   const [threadTitleDraft, setThreadTitleDraft] = useState('');
   const [threadDescriptionDraft, setThreadDescriptionDraft] = useState('');
   const [composerDraft, setComposerDraft] = useState('');
@@ -33,6 +36,10 @@ export default function App() {
   useEffect(() => {
     saveWorkspace(state);
   }, [state]);
+
+  useEffect(() => {
+    saveSettings(settings);
+  }, [settings]);
 
   const metrics = useMemo(() => computeMetrics(state), [state]);
   const activeThread = state.threads.find((thread) => thread.id === state.selectedThreadId) ?? state.threads[0] ?? null;
@@ -96,6 +103,10 @@ export default function App() {
 
   async function sendMessage() {
     if (!activeThread || !composerDraft.trim() || sending) return;
+    if (!settings.apiKey.trim()) {
+      setError('Add your OpenAI API key in settings first.');
+      return;
+    }
 
     const userText = composerDraft.trim();
     const userMessage: ChatMessage = {
@@ -109,7 +120,7 @@ export default function App() {
     setComposerDraft('');
 
     try {
-      const assistantText = await requestAiReply(activeThread, [...activeThread.context, userMessage]);
+      const assistantText = await requestAiReply(settings, activeThread, [...activeThread.context, userMessage]);
       const assistantMessage: ChatMessage = {
         id: `msg-${crypto.randomUUID().slice(0, 8)}`,
         role: 'assistant',
@@ -165,8 +176,10 @@ export default function App() {
   }
 
   function resetWorkspace() {
-    localStorage.removeItem('loomspace.workspace.v4');
+    localStorage.removeItem('loomspace.workspace.v5');
+    localStorage.removeItem('loomspace.settings.v1');
     setState(loadWorkspace());
+    setSettings(loadSettings());
     setThreadTitleDraft('');
     setThreadDescriptionDraft('');
     setComposerDraft('');
@@ -272,14 +285,8 @@ export default function App() {
                   const startX = lane.spineX;
                   return (
                     <g key={lane.thread.id}>
-                      <path
-                        d={`M ${startX} ${startY} L ${startX} ${endY}`}
-                        className={`rope-shadow ${lane.thread.id === activeThread?.id ? 'active' : ''}`}
-                      />
-                      <path
-                        d={`M ${startX} ${startY} L ${startX} ${endY}`}
-                        className={`rope ${lane.thread.id === activeThread?.id ? 'active' : ''}`}
-                      />
+                      <path d={`M ${startX} ${startY} L ${startX} ${endY}`} className={`rope-shadow ${lane.thread.id === activeThread?.id ? 'active' : ''}`} />
+                      <path d={`M ${startX} ${startY} L ${startX} ${endY}`} className={`rope ${lane.thread.id === activeThread?.id ? 'active' : ''}`} />
                       {nodes.map(({ node, top }) => (
                         <g key={node.id}>
                           <circle cx={startX} cy={top} r="4" className="knot" />
@@ -300,7 +307,7 @@ export default function App() {
                     className={`thread-lane ${isActiveLane ? 'active' : ''}`}
                     style={{ left: lane.laneCenterX - LANE_WIDTH / 2, top: 0, width: LANE_WIDTH, height: lane.laneHeight }}
                   >
-                    {lane.nodeEntries.map(({ node, top }, index) => {
+                    {lane.nodeEntries.map(({ node, top }) => {
                       if (node.kind === 'title') {
                         const titleNode = node;
                         return (
@@ -403,34 +410,73 @@ export default function App() {
           ) : (
             <p className="muted">Create a thread and it will open here with its chat context.</p>
           )}
+
+          <section className="inspector-card settings-card">
+            <h4>AI settings</h4>
+            <label className="field">
+              OpenAI API key
+              <input
+                type="password"
+                value={settings.apiKey}
+                onChange={(event) => setSettings((current) => ({ ...current, apiKey: event.target.value }))}
+                placeholder="sk-..."
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </label>
+            <label className="field">
+              Model
+              <input
+                value={settings.model}
+                onChange={(event) => setSettings((current) => ({ ...current, model: event.target.value }))}
+                placeholder="gpt-4o-mini"
+              />
+            </label>
+            <p className="muted">Stored locally in this browser only.</p>
+          </section>
         </aside>
       </main>
     </div>
   );
 }
 
-async function requestAiReply(thread: ThreadLane, messages: ChatMessage[]) {
-  const response = await fetch('/api/chat', {
+async function requestAiReply(settings: OpenAISettings, thread: ThreadLane, messages: ChatMessage[]) {
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
+      Authorization: `Bearer ${settings.apiKey}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      threadId: thread.id,
-      threadTitle: thread.title,
-      threadDescription: thread.description,
-      messages,
+      model: settings.model,
+      messages: [
+        {
+          role: 'system',
+          content: [
+            `Thread title: ${thread.title}`,
+            `Thread description: ${thread.description}`,
+            'Keep replies concise and useful.',
+            'Do not mention internal tools or policies.',
+          ].join(' '),
+        },
+        ...messages.map((message) => ({
+          role: message.role === 'assistant' ? 'assistant' : message.role === 'system' ? 'system' : 'user',
+          content: message.text,
+        })),
+      ],
+      temperature: 0.4,
     }),
   });
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || 'AI service unavailable');
+    throw new Error(text || 'OpenAI request failed');
   }
 
-  const data = (await response.json()) as { assistantText?: string };
-  if (!data.assistantText) throw new Error('AI service returned no text');
-  return data.assistantText;
+  const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
+  const assistantText = data.choices?.[0]?.message?.content?.trim();
+  if (!assistantText) throw new Error('OpenAI returned no assistant text');
+  return assistantText;
 }
 
 function nodeKindHeight(node: ThreadNode | null) {
