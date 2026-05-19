@@ -1,6 +1,7 @@
 export type Confidence = 'low' | 'medium' | 'high';
 export type ThreadStatus = 'draft' | 'active' | 'stitch-ready' | 'closed';
 export type MessageRole = 'user' | 'assistant' | 'system';
+export type ThreadNodeKind = 'title' | 'chat';
 
 export interface ChatMessage {
   id: string;
@@ -8,22 +9,34 @@ export interface ChatMessage {
   text: string;
 }
 
-export interface ThreadExchange {
+export interface ThreadTitleNode {
   id: string;
+  kind: 'title';
+  title: string;
+  description: string;
+}
+
+export interface ThreadChatNode {
+  id: string;
+  kind: 'chat';
   summary: string;
   messages: ChatMessage[];
   confidence: Confidence;
   createdAt: string;
 }
 
+export type ThreadNode = ThreadTitleNode | ThreadChatNode;
+
 export interface ThreadLane {
   id: string;
-  title: string;
-  summary: string;
-  description: string;
   color: string;
   status: ThreadStatus;
-  exchanges: ThreadExchange[];
+  title: string;
+  description: string;
+  context: ChatMessage[];
+  nodes: ThreadNode[];
+  activeNodeId: string | null;
+  infoOpen: boolean;
 }
 
 export interface LoomspaceState {
@@ -31,27 +44,24 @@ export interface LoomspaceState {
   title: string;
   threads: ThreadLane[];
   selectedThreadId: string | null;
-  selectedExchangeId: string | null;
+  selectedNodeId: string | null;
   densityOverlay: boolean;
   version: number;
 }
 
+export interface OpenAISettings {
+  apiKey: string;
+  model: string;
+}
+
 export interface FabricMetrics {
   threadCount: number;
-  exchangeCount: number;
-  activeExchangeCount: number;
+  nodeCount: number;
+  chatCount: number;
   density: number;
   saturation: number;
 }
 
-export type LoomspaceEvent =
-  | { type: 'thread.add'; thread: ThreadLane }
-  | { type: 'thread.update'; id: string; patch: Partial<Omit<ThreadLane, 'id' | 'exchanges'>> }
-  | { type: 'exchange.add'; threadId: string; exchange: ThreadExchange }
-  | { type: 'thread.select'; threadId: string | null }
-  | { type: 'exchange.select'; threadId: string | null; exchangeId: string | null }
-  | { type: 'ui.toggleDensityOverlay' };
-
-export interface PersistedLog {
-  events: LoomspaceEvent[];
+export interface PersistedWorkspace {
+  state: LoomspaceState;
 }

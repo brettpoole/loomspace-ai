@@ -1,0 +1,13 @@
+name: loomspace-ai
+region: nyc
+
+static_sites:
+  - name: loomspace-web
+    github:
+      repo: brettpoole/loomspace-ai
+      branch: main
+      deploy_on_push: true
+    source_dir: /
+    build_command: npm ci && npm run build
+    output_dir: dist
+    catchall_document: index.html

@@ -1,18 +1,8 @@
 # Loomspace
 
-A glassy spatial workspace for side streams you can stitch back into the main line.
+A woven thread canvas for project ideas and AI chats.
 
-## What’s in this slice
-
-- React + TypeScript app shell
-- local event log persisted in `localStorage`
-- draggable canvas nodes
-- typed links for supports / promotes / contradicts / links
-- provenance inspector for every selected node
-- density overlay + basic fabric metrics
-- thread spawn, stitch promotion, contradiction marking
-
-## Run
+## Run locally
 
 ```bash
 npm install
@@ -25,15 +15,23 @@ npm run dev
 npm run build
 ```
 
-## Model
+## DigitalOcean App Platform
 
-- **Loom**: workspace
-- **Warp**: primary stream
-- **Thread**: side stream
-- **Stitch**: promoted pair or decision anchor
-- **Evidence**: provenance-bearing node
-- **Fabric**: the graph and its visible state
+Use `app.yaml` as a static site.
 
-## Design rule
+- build: `npm ci && npm run build`
+- output: `dist`
+- fallback: `index.html`
 
-If an object exists, the inspector should be able to answer why.
+## Current slice
+
+- editable title node at the top of each thread
+- chat node beneath the title node
+- request/response pairs append as new nodes
+- active thread context stays with that lane
+- browser-saved OpenAI API key + model in the settings panel
+- flowchart-style threadlines rendered as rope
+
+## Security
+
+No HTML is injected from user content. API settings stay in browser storage only.
