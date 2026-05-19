@@ -1,7 +1,7 @@
 import { sampleState } from './sample';
 import type { FabricMetrics, LoomspaceEvent, LoomspaceState, PersistedLog } from './types';
 
-const STORAGE_KEY = 'loomspace.fabric-log.v1';
+const STORAGE_KEY = 'loomspace.thread-log.v2';
 
 export function loadWorkspace(): LoomspaceState {
   const log = loadLog();
@@ -31,90 +31,55 @@ export function appendEvent(events: LoomspaceEvent[], event: LoomspaceEvent) {
 
 export function applyEvent(state: LoomspaceState, event: LoomspaceEvent): LoomspaceState {
   switch (event.type) {
-    case 'node.add':
-      return { ...state, nodes: [...state.nodes, event.node], version: state.version + 1 };
-    case 'node.update':
-      return {
-        ...state,
-        version: state.version + 1,
-        nodes: state.nodes.map((node) => (node.id === event.id ? { ...node, ...event.patch } : node)),
-      };
-    case 'node.move':
-      return {
-        ...state,
-        version: state.version + 1,
-        nodes: state.nodes.map((node) => (node.id === event.id ? { ...node, x: event.x, y: event.y } : node)),
-      };
-    case 'node.remove':
-      return { ...state, version: state.version + 1, nodes: state.nodes.filter((node) => node.id !== event.id) };
-    case 'edge.add':
-      return { ...state, version: state.version + 1, edges: [...state.edges, event.edge] };
     case 'thread.add':
-      return { ...state, version: state.version + 1, threads: [...state.threads, event.thread] };
+      return {
+        ...state,
+        version: state.version + 1,
+        threads: [...state.threads, event.thread],
+      };
     case 'thread.update':
       return {
         ...state,
         version: state.version + 1,
         threads: state.threads.map((thread) => (thread.id === event.id ? { ...thread, ...event.patch } : thread)),
       };
-    case 'ui.select':
-      return { ...state, selectedId: event.id };
-    case 'ui.zoom':
-      return { ...state, zoom: clamp(event.zoom, 0.5, 1.5) };
-    case 'ui.pan':
-      return { ...state, panX: event.panX, panY: event.panY };
-    case 'ui.toggleDensityOverlay':
-      return { ...state, densityOverlay: !state.densityOverlay };
-    case 'node.toggleCollapse':
+    case 'exchange.add':
       return {
         ...state,
         version: state.version + 1,
-        nodes: state.nodes.map((node) =>
-          node.id === event.id ? { ...node, collapsed: !node.collapsed } : node,
+        threads: state.threads.map((thread) =>
+          thread.id === event.threadId
+            ? { ...thread, exchanges: [...thread.exchanges, event.exchange] }
+            : thread,
         ),
       };
+    case 'thread.select':
+      return { ...state, selectedThreadId: event.threadId };
+    case 'exchange.select':
+      return { ...state, selectedThreadId: event.threadId, selectedExchangeId: event.exchangeId };
+    case 'ui.toggleDensityOverlay':
+      return { ...state, densityOverlay: !state.densityOverlay };
     default:
       return state;
   }
 }
 
 export function computeMetrics(state: LoomspaceState): FabricMetrics {
-  const stitchedCount = state.nodes.filter((node) => node.kind === 'stitch').length;
-  const contradictionCount = state.edges.filter((edge) => edge.kind === 'contradicts').length;
-  const density = state.edges.length / Math.max(state.nodes.length, 1);
-  const saturation = Math.min(1, (stitchedCount + contradictionCount + state.nodes.filter((n) => n.confidence === 'high').length) / Math.max(state.nodes.length, 1));
+  const exchangeCount = state.threads.reduce((total, thread) => total + thread.exchanges.length, 0);
+  const activeExchangeCount = state.threads.filter((thread) => thread.exchanges.length > 0).length;
+  const density = exchangeCount / Math.max(state.threads.length || 1, 1);
+  const saturation = Math.min(1, (exchangeCount + activeExchangeCount) / Math.max(state.threads.length * 4 || 1, 1));
 
   return {
-    nodeCount: state.nodes.length,
-    edgeCount: state.edges.length,
-    stitchedCount,
-    contradictionCount,
+    threadCount: state.threads.length,
+    exchangeCount,
+    activeExchangeCount,
     density,
     saturation,
   };
 }
 
-export function getNodeLabel(kind: string) {
-  switch (kind) {
-    case 'loom':
-      return 'Loom';
-    case 'warp':
-      return 'Warp';
-    case 'thread':
-      return 'Thread';
-    case 'idea':
-      return 'Idea';
-    case 'evidence':
-      return 'Evidence';
-    case 'stitch':
-      return 'Stitch';
-    case 'decision':
-      return 'Decision';
-    default:
-      return 'Node';
-  }
-}
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
+export function summarize(text: string, limit = 62) {
+  const compact = text.replace(/\s+/g, ' ').trim();
+  return compact.length > limit ? `${compact.slice(0, limit - 1)}…` : compact;
 }

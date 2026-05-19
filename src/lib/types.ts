@@ -1,73 +1,55 @@
-export type NodeKind = 'loom' | 'warp' | 'thread' | 'idea' | 'evidence' | 'stitch' | 'decision';
-export type EdgeKind = 'supports' | 'questions' | 'contradicts' | 'promotes' | 'links';
-
 export type Confidence = 'low' | 'medium' | 'high';
+export type ThreadStatus = 'draft' | 'active' | 'stitch-ready' | 'closed';
+export type MessageRole = 'user' | 'assistant' | 'system';
 
-export interface FabricNode {
+export interface ChatMessage {
   id: string;
-  kind: NodeKind;
+  role: MessageRole;
+  text: string;
+}
+
+export interface ThreadExchange {
+  id: string;
+  summary: string;
+  messages: ChatMessage[];
+  confidence: Confidence;
+  createdAt: string;
+}
+
+export interface ThreadLane {
+  id: string;
   title: string;
   summary: string;
-  x: number;
-  y: number;
-  confidence: Confidence;
-  threadId?: string;
-  provenance: string[];
-  collapsed?: boolean;
-  pinned?: boolean;
-}
-
-export interface FabricEdge {
-  id: string;
-  from: string;
-  to: string;
-  kind: EdgeKind;
-  label: string;
-}
-
-export interface WorkspaceThread {
-  id: string;
-  title: string;
   color: string;
-  status: 'active' | 'stitch-ready' | 'dormant';
+  status: ThreadStatus;
+  exchanges: ThreadExchange[];
 }
 
 export interface LoomspaceState {
   workspaceId: string;
   title: string;
-  nodes: FabricNode[];
-  edges: FabricEdge[];
-  threads: WorkspaceThread[];
-  selectedId: string | null;
-  zoom: number;
-  panX: number;
-  panY: number;
+  threads: ThreadLane[];
+  selectedThreadId: string | null;
+  selectedExchangeId: string | null;
   densityOverlay: boolean;
   version: number;
 }
 
 export interface FabricMetrics {
-  nodeCount: number;
-  edgeCount: number;
-  stitchedCount: number;
-  contradictionCount: number;
+  threadCount: number;
+  exchangeCount: number;
+  activeExchangeCount: number;
   density: number;
   saturation: number;
 }
 
 export type LoomspaceEvent =
-  | { type: 'node.add'; node: FabricNode }
-  | { type: 'node.update'; id: string; patch: Partial<FabricNode> }
-  | { type: 'node.move'; id: string; x: number; y: number }
-  | { type: 'node.remove'; id: string }
-  | { type: 'edge.add'; edge: FabricEdge }
-  | { type: 'thread.add'; thread: WorkspaceThread }
-  | { type: 'thread.update'; id: string; patch: Partial<WorkspaceThread> }
-  | { type: 'ui.select'; id: string | null }
-  | { type: 'ui.zoom'; zoom: number }
-  | { type: 'ui.pan'; panX: number; panY: number }
-  | { type: 'ui.toggleDensityOverlay' }
-  | { type: 'node.toggleCollapse'; id: string };
+  | { type: 'thread.add'; thread: ThreadLane }
+  | { type: 'thread.update'; id: string; patch: Partial<Omit<ThreadLane, 'id' | 'exchanges'>> }
+  | { type: 'exchange.add'; threadId: string; exchange: ThreadExchange }
+  | { type: 'thread.select'; threadId: string | null }
+  | { type: 'exchange.select'; threadId: string | null; exchangeId: string | null }
+  | { type: 'ui.toggleDensityOverlay' };
 
 export interface PersistedLog {
   events: LoomspaceEvent[];
