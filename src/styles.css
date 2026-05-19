@@ -55,7 +55,6 @@ button:disabled {
 input,
 textarea {
   width: 100%;
-  margin-top: 6px;
   border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   background: rgba(9, 12, 22, 0.72);
@@ -88,7 +87,8 @@ h1,
 h2,
 h3,
 h4,
-p {
+p,
+ul {
   margin: 0;
 }
 
@@ -245,27 +245,26 @@ button.quiet {
 
 .rope,
 .rope-shadow,
-.link-line,
-.spine-tip {
+.link-line {
   fill: none;
   stroke-linecap: round;
 }
 
 .rope-shadow {
-  stroke: rgba(24, 31, 48, 0.9);
-  stroke-width: 7;
+  stroke: rgba(24, 31, 48, 0.92);
+  stroke-width: 8;
   filter: blur(0.5px);
 }
 
 .rope {
-  stroke: rgba(209, 220, 255, 0.45);
-  stroke-width: 3.2;
-  stroke-dasharray: none;
+  stroke: rgba(210, 223, 255, 0.42);
+  stroke-width: 3.4;
+  stroke-dasharray: 2 10;
   filter: drop-shadow(0 0 8px rgba(127, 156, 255, 0.16));
 }
 
 .rope.active {
-  stroke: rgba(124, 247, 194, 0.54);
+  stroke: rgba(124, 247, 194, 0.58);
 }
 
 .link-line {
@@ -273,7 +272,7 @@ button.quiet {
   stroke-width: 2.5;
 }
 
-.link-dot {
+.knot {
   fill: #d8e4ff;
   stroke: rgba(8, 10, 18, 0.8);
   stroke-width: 2;
@@ -283,42 +282,41 @@ button.quiet {
   position: absolute;
 }
 
-.thread-header-wrap {
+.title-node-wrap {
   position: absolute;
   left: 0;
-  width: 244px;
+  width: 232px;
 }
 
-.thread-header {
+.title-node {
   width: 100%;
-  height: 54px;
-  padding: 12px 14px 12px 18px;
-  text-align: left;
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 12px;
-  align-items: center;
-  background: linear-gradient(180deg, rgba(16, 20, 34, 0.9), rgba(11, 15, 26, 0.82));
   border-radius: 18px;
   border: 1px solid rgba(255, 255, 255, 0.12);
+  background: linear-gradient(180deg, rgba(16, 20, 34, 0.9), rgba(11, 15, 26, 0.82));
+  box-shadow:
+    0 18px 50px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  padding: 10px;
 }
 
-.thread-header strong,
-.exchange-card strong {
-  display: block;
-  font-size: 14px;
-  line-height: 1.3;
+.title-node-head {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: center;
 }
 
-.thread-count {
-  color: #8ea1c8;
-  font-size: 11px;
+.title-node input {
+  font-size: 16px;
+  font-weight: 700;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  outline: none;
+  box-shadow: none;
 }
 
 .info-button {
-  position: absolute;
-  right: 8px;
-  top: 9px;
   width: 28px;
   height: 28px;
   border-radius: 999px;
@@ -329,10 +327,7 @@ button.quiet {
 }
 
 .thread-popout {
-  position: absolute;
-  top: 62px;
-  left: 12px;
-  width: 220px;
+  margin-top: 10px;
   padding: 12px 13px;
   border-radius: 16px;
   background: rgba(9, 12, 22, 0.94);
@@ -343,31 +338,36 @@ button.quiet {
   box-shadow: 0 18px 45px rgba(0, 0, 0, 0.36);
 }
 
-.thread-header-wrap.open .thread-header {
-  border-bottom-left-radius: 10px;
-  border-bottom-right-radius: 10px;
-}
-
-.exchange-card {
+.chat-node {
   position: absolute;
-  width: 204px;
-  height: 56px;
+  width: 232px;
+  height: 92px;
   text-align: left;
   padding: 11px 12px 10px;
   background: linear-gradient(180deg, rgba(14, 18, 30, 0.95), rgba(8, 11, 20, 0.86));
   border-radius: 16px;
   border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow:
+    0 18px 50px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
-.exchange-card.selected,
-.chat-card.selected {
+.chat-node.selected {
   border-color: rgba(124, 247, 194, 0.34);
   box-shadow: 0 0 0 1px rgba(124, 247, 194, 0.14), 0 18px 50px rgba(0, 0, 0, 0.42);
 }
 
-.exchange-card strong {
+.chat-node strong {
+  display: block;
   margin-top: 6px;
   color: #edf2ff;
+  line-height: 1.3;
+}
+
+.chat-node small {
+  display: block;
+  margin-top: 8px;
+  color: #93a2c4;
 }
 
 .exchange-head,
@@ -420,17 +420,7 @@ button.quiet {
   margin-bottom: 12px;
 }
 
-.chat-card {
-  width: 100%;
-  text-align: left;
-  padding: 12px;
-  background: linear-gradient(180deg, rgba(16, 20, 34, 0.9), rgba(11, 15, 26, 0.82));
-  border-radius: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-}
-
 .bubble {
-  margin-top: 10px;
   border-radius: 14px;
   padding: 10px 12px;
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -458,6 +448,11 @@ button.quiet {
 .inspector-card p,
 .inspector-card li {
   color: #94a3c8;
+}
+
+.error {
+  color: #ffb4b4;
+  margin-bottom: 10px;
 }
 
 .inspector-card textarea {

@@ -1,83 +1,98 @@
 import { sampleState } from './sample';
-import type { FabricMetrics, LoomspaceEvent, LoomspaceState, PersistedLog } from './types';
+import type { ChatMessage, FabricMetrics, LoomspaceState, PersistedWorkspace, ThreadChatNode, ThreadLane, ThreadTitleNode } from './types';
 
-const STORAGE_KEY = 'loomspace.thread-log.v3';
+const STORAGE_KEY = 'loomspace.workspace.v4';
 
 export function loadWorkspace(): LoomspaceState {
-  const log = loadLog();
-  return log.events.reduce(applyEvent, structuredClone(sampleState));
-}
-
-export function loadLog(): PersistedLog {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { events: [] };
-    const parsed = JSON.parse(raw) as PersistedLog;
-    return Array.isArray(parsed.events) ? parsed : { events: [] };
+    if (!raw) return structuredClone(sampleState);
+    const parsed = JSON.parse(raw) as PersistedWorkspace;
+    return parsed.state ?? structuredClone(sampleState);
   } catch {
-    return { events: [] };
+    return structuredClone(sampleState);
   }
 }
 
-export function saveLog(events: LoomspaceEvent[]) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify({ events } satisfies PersistedLog));
-}
-
-export function appendEvent(events: LoomspaceEvent[], event: LoomspaceEvent) {
-  const next = [...events, event];
-  saveLog(next);
-  return next;
-}
-
-export function applyEvent(state: LoomspaceState, event: LoomspaceEvent): LoomspaceState {
-  switch (event.type) {
-    case 'thread.add':
-      return {
-        ...state,
-        version: state.version + 1,
-        threads: [...state.threads, event.thread],
-      };
-    case 'thread.update':
-      return {
-        ...state,
-        version: state.version + 1,
-        threads: state.threads.map((thread) => (thread.id === event.id ? { ...thread, ...event.patch } : thread)),
-      };
-    case 'exchange.add':
-      return {
-        ...state,
-        version: state.version + 1,
-        threads: state.threads.map((thread) =>
-          thread.id === event.threadId ? { ...thread, exchanges: [...thread.exchanges, event.exchange] } : thread,
-        ),
-      };
-    case 'thread.select':
-      return { ...state, selectedThreadId: event.threadId };
-    case 'exchange.select':
-      return { ...state, selectedThreadId: event.threadId, selectedExchangeId: event.exchangeId };
-    case 'ui.toggleDensityOverlay':
-      return { ...state, densityOverlay: !state.densityOverlay };
-    default:
-      return state;
-  }
+export function saveWorkspace(state: LoomspaceState) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify({ state } satisfies PersistedWorkspace));
 }
 
 export function computeMetrics(state: LoomspaceState): FabricMetrics {
-  const exchangeCount = state.threads.reduce((total, thread) => total + thread.exchanges.length, 0);
-  const activeExchangeCount = state.threads.filter((thread) => thread.exchanges.length > 0).length;
-  const density = exchangeCount / Math.max(state.threads.length || 1, 1);
-  const saturation = Math.min(1, (exchangeCount + activeExchangeCount) / Math.max(state.threads.length * 4 || 1, 1));
+  const chatCount = state.threads.reduce((sum, thread) => sum + thread.nodes.filter((node) => node.kind === 'chat').length, 0);
+  const nodeCount = state.threads.reduce((sum, thread) => sum + thread.nodes.length, 0);
+  const density = chatCount / Math.max(state.threads.length || 1, 1);
+  const saturation = Math.min(1, nodeCount / Math.max(state.threads.length * 6 || 1, 1));
+
+  return { threadCount: state.threads.length, nodeCount, chatCount, density, saturation };
+}
+
+export function summarize(text: string, limit = 60) {
+  const compact = text.replace(/\s+/g, ' ').trim();
+  return compact.length > limit ? `${compact.slice(0, limit - 1)}…` : compact;
+}
+
+export function createThread(title: string, description: string, index: number): ThreadLane {
+  const threadId = `thread-${crypto.randomUUID().slice(0, 8)}`;
+  const titleNode: ThreadTitleNode = {
+    id: `title-${crypto.randomUUID().slice(0, 8)}`,
+    kind: 'title',
+    title,
+    description,
+  };
+  const firstChatNode = createChatNode('AI chat ready', 'medium');
 
   return {
-    threadCount: state.threads.length,
-    exchangeCount,
-    activeExchangeCount,
-    density,
-    saturation,
+    id: threadId,
+    color: pickColor(index),
+    status: 'draft',
+    title,
+    description,
+    context: [],
+    nodes: [titleNode, firstChatNode],
+    activeNodeId: firstChatNode.id,
+    infoOpen: false,
   };
 }
 
-export function summarize(text: string, limit = 62) {
-  const compact = text.replace(/\s+/g, ' ').trim();
-  return compact.length > limit ? `${compact.slice(0, limit - 1)}…` : compact;
+export function createChatNode(summarySource: string, confidence: 'low' | 'medium' | 'high', messages: ChatMessage[] = []): ThreadChatNode {
+  return {
+    id: `chat-${crypto.randomUUID().slice(0, 8)}`,
+    kind: 'chat',
+    summary: summarize(summarySource, 52),
+    messages,
+    confidence,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+export function updateThreadTitle(thread: ThreadLane, title: string): ThreadLane {
+  return {
+    ...thread,
+    title,
+    nodes: thread.nodes.map((node) => (node.kind === 'title' ? { ...node, title } : node)),
+  };
+}
+
+export function appendChatToThread(thread: ThreadLane, chat: ThreadChatNode, messages: ChatMessage[]): ThreadLane {
+  return {
+    ...thread,
+    status: 'active',
+    context: [...thread.context, ...messages],
+    nodes: [...thread.nodes, chat],
+    activeNodeId: chat.id,
+  };
+}
+
+export function threadWithInfo(thread: ThreadLane, infoOpen: boolean): ThreadLane {
+  return { ...thread, infoOpen };
+}
+
+export function threadWithActiveNode(thread: ThreadLane, nodeId: string | null): ThreadLane {
+  return { ...thread, activeNodeId: nodeId };
+}
+
+export function pickColor(index: number) {
+  const palette = ['#7cf7c2', '#7ea8ff', '#d48bff', '#ffd166', '#ff8f70'];
+  return palette[index % palette.length];
 }

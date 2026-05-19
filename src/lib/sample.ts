@@ -5,7 +5,7 @@ export const sampleState: LoomspaceState = {
   title: 'Loomspace',
   threads: [],
   selectedThreadId: null,
-  selectedExchangeId: null,
+  selectedNodeId: null,
   densityOverlay: true,
   version: 1,
 };
