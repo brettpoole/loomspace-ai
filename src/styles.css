@@ -547,6 +547,18 @@ button.quiet {
   margin: 10px 0 12px;
 }
 
+.editor-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+.editor-actions.left-aligned {
+  justify-content: flex-start;
+}
+
 @media (max-width: 1200px) {
   .layout {
     grid-template-columns: 280px minmax(0, 1fr);

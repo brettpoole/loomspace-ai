@@ -1,3 +1,4 @@
+export type AIProvider = 'openai';
 export type Confidence = 'low' | 'medium' | 'high';
 export type ThreadStatus = 'draft' | 'active' | 'stitch-ready' | 'closed';
 export type MessageRole = 'user' | 'assistant' | 'system';
@@ -53,8 +54,10 @@ export interface LoomspaceState {
 }
 
 export interface OpenAISettings {
-  apiKey: string;
+  provider: AIProvider;
   model: string;
+  apiKey: string;
+  hasEncryptedApiKey: boolean;
 }
 
 export interface FabricMetrics {
