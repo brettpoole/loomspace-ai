@@ -494,23 +494,6 @@ export default function App() {
 
       <main className="layout">
         <aside className="panel left">
-          <section className="metric-card accent">
-            <span>Threads</span>
-            <strong>{metrics.threadCount}</strong>
-          </section>
-          <section className="metric-card">
-            <span>Nodes</span>
-            <strong>{metrics.nodeCount}</strong>
-          </section>
-          <section className="metric-card">
-            <span>Chats</span>
-            <strong>{metrics.chatCount}</strong>
-          </section>
-          <section className="metric-card">
-            <span>Density</span>
-            <strong>{metrics.density.toFixed(2)}</strong>
-          </section>
-
           {activeThread ? (
             <section className="inspector-card editor-summary">
               <div className="meta-row">
@@ -730,26 +713,22 @@ export default function App() {
                 )}
               </section>
 
-              <section className="inspector-card send-card">
-                <h4>Send to AI</h4>
-                {activeNodeIsChat ? (
-                  <>
-                    <textarea
-                      value={composerDraft}
-                      onChange={(event) => setComposerDraft(event.target.value)}
-                      placeholder="Ask the thread something"
-                      rows={5}
-                    />
-                    {settingsLockState === 'locked' ? <p className="muted">Unlock the key to send a message.</p> : null}
-                    {error ? <p className="error">{error}</p> : null}
-                    <button onClick={sendMessage} disabled={!composerDraft.trim() || sending || !settings.apiKey.trim()}>
-                      {sending ? 'Thinking…' : settingsLockState === 'locked' ? 'Unlock to send' : 'Send'}
-                    </button>
-                  </>
-                ) : (
-                  <p className="muted">Select an active chat node to unlock the composer.</p>
-                )}
-              </section>
+              {activeNodeIsChat ? (
+                <section className="inspector-card send-card">
+                  <h4>Send to AI</h4>
+                  <textarea
+                    value={composerDraft}
+                    onChange={(event) => setComposerDraft(event.target.value)}
+                    placeholder="Ask the thread something"
+                    rows={5}
+                  />
+                  {settingsLockState === 'locked' ? <p className="muted">Unlock the key to send a message.</p> : null}
+                  {error ? <p className="error">{error}</p> : null}
+                  <button onClick={sendMessage} disabled={!composerDraft.trim() || sending || !settings.apiKey.trim()}>
+                    {sending ? 'Thinking…' : settingsLockState === 'locked' ? 'Unlock to send' : 'Send'}
+                  </button>
+                </section>
+              ) : null}
 
               {activeNode?.kind === 'chat' ? (
                 <section className={`inspector-card node-card ${sending && activeNode.id === activeThread.activeNodeId ? 'sending' : ''}`}>
