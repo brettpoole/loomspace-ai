@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent, type WheelEvent } from 'react';
+import Markdown from 'react-markdown';
 import {
   PROVIDERS,
   appendChatToThread,
@@ -1422,7 +1423,7 @@ function FormattedMessage({ text }: { text: string }) {
           return (
             <ul key={index}>
               {block.items.map((item, itemIndex) => (
-                <li key={itemIndex}>{item}</li>
+                <li key={itemIndex}><Markdown>{item}</Markdown></li>
               ))}
             </ul>
           );

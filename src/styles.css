@@ -342,6 +342,11 @@ button.quiet {
 
 .thread-meta-row.stack {
   margin-top: 12px;
+  align-items: flex-end;
+}
+
+.thread-meta-row.stack > .pill {
+  height: 2.5rem;
 }
 
 .editor-summary {
