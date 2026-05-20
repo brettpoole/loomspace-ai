@@ -69,7 +69,7 @@ export default function App() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
-  const [passphraseDraft, setPassphraseDraft] = useState('');
+  const [passphraseModal, setPassphraseModal] = useState<{ mode: 'encrypt' | 'unlock'; passphrase: string; busy: boolean; pendingKey?: string } | null>(null);
   const [savingSettings, setSavingSettings] = useState(false);
   const [chatModalOpen, setChatModalOpen] = useState(false);
   const [threadEditorOpen, setThreadEditorOpen] = useState(false);
@@ -91,12 +91,12 @@ export default function App() {
     (activeThread ? activeThread.nodes.find((node) => node.id === activeThread.activeNodeId) ?? null : null);
   const activeNodeIsChat = activeNode?.kind === 'chat';
   const settingsLockState = settings.hasEncryptedApiKey ? (settings.apiKey.trim() ? 'unlocked' : 'locked') : 'none';
-  const settingsHint =
-    settingsLockState === 'locked'
-      ? 'The stored key is encrypted. Unlock it with your passphrase before sending.'
-      : settingsLockState === 'unlocked'
-        ? 'The key is loaded in memory only. Lock it now when you want it out of the UI.'
-        : 'No encrypted key is stored yet. Enter a key + passphrase, then save.';
+
+  useEffect(() => {
+    if (settings.hasEncryptedApiKey && !settings.apiKey.trim() && !passphraseModal) {
+      setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false });
+    }
+  }, [settings.hasEncryptedApiKey, settings.apiKey, passphraseModal]);
 
   const settingsModels = useMemo(
     () => modelsForProvider(modelCache, settings.provider, settings.model),
@@ -303,64 +303,64 @@ export default function App() {
     }));
   }
 
-  async function unlockStoredKey() {
-    if (!settings.hasEncryptedApiKey) {
-      setSettingsNotice('No encrypted key is stored yet.');
+  function requestSaveKey() {
+    const candidate = settings.apiKey.trim();
+    if (!candidate) {
+      if (settings.hasEncryptedApiKey) {
+        setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false });
+      } else {
+        setError('Enter your API key first.');
+      }
       return;
     }
-
-    try {
-      const apiKey = await unlockApiKey(passphraseDraft);
-      setSettings((current) => ({ ...current, apiKey, hasEncryptedApiKey: true }));
-      setSettingsNotice('API key unlocked in memory.');
-      setError(null);
-    } catch (err) {
-      setSettings((current) => ({ ...current, apiKey: '' }));
-      setError(err instanceof Error ? err.message : 'Unable to unlock the API key.');
-    }
+    setError(null);
+    setPassphraseModal({ mode: 'encrypt', passphrase: '', busy: false, pendingKey: candidate });
   }
 
-  async function saveSecureSettings() {
-    const hasKey = Boolean(settings.apiKey.trim());
-    if (settings.hasEncryptedApiKey && hasKey) {
-      const overwrite = window.confirm('Overwrite the encrypted API key stored in cookies?');
-      if (!overwrite) return;
-    }
-
-    setSavingSettings(true);
+  function deleteSavedKey() {
+    const confirmed = settings.hasEncryptedApiKey
+      ? window.confirm('Delete the saved encrypted key from this browser?')
+      : true;
+    if (!confirmed) return;
+    clearSecretCookie();
+    setSettings((current) => ({ ...current, apiKey: '', hasEncryptedApiKey: false }));
+    setSettingsNotice('Saved key deleted from this browser.');
     setError(null);
+  }
+
+  async function submitPassphraseModal() {
+    if (!passphraseModal) return;
+    const passphrase = passphraseModal.passphrase;
+    if (!passphrase.trim()) {
+      setError('Enter a passphrase.');
+      return;
+    }
+    setPassphraseModal({ ...passphraseModal, busy: true });
+    setError(null);
+    setSavingSettings(true);
     try {
-      await saveSettings(settings, passphraseDraft);
-      setSettings((current) => ({
-        ...current,
-        apiKey: '',
-        hasEncryptedApiKey: hasKey ? true : current.hasEncryptedApiKey,
-      }));
-      setSettingsNotice(hasKey ? 'Encrypted API key saved to cookies and cleared from memory.' : 'Provider and model saved to cookies.');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to save encrypted settings.');
-      if (hasKey) {
-        setSettingsNotice('Wrong passphrase or save failed — the encrypted key was not changed.');
+      if (passphraseModal.mode === 'unlock') {
+        const apiKey = await unlockApiKey(passphrase);
+        setSettings((current) => ({ ...current, apiKey, hasEncryptedApiKey: true }));
+        setSettingsNotice('Key unlocked — loaded in memory for this session.');
+      } else {
+        const keyToSave = passphraseModal.pendingKey?.trim() ?? settings.apiKey.trim();
+        if (!keyToSave) throw new Error('No key to save.');
+        await saveSettings({ ...settings, apiKey: keyToSave }, passphrase);
+        setSettings((current) => ({ ...current, apiKey: keyToSave, hasEncryptedApiKey: true }));
+        setSettingsNotice('Key encrypted and saved. Loaded in memory for this session.');
       }
+      setPassphraseModal(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Passphrase action failed.');
+      setPassphraseModal((current) => (current ? { ...current, busy: false } : current));
     } finally {
       setSavingSettings(false);
     }
   }
 
-  function forgetUnlockedKey() {
-    setSettings((current) => ({ ...current, apiKey: '' }));
-    setSettingsNotice('Cleared from memory. The encrypted cookie stays put until you overwrite it.');
-  }
-
-  function lockNow() {
-    setSettings((current) => ({ ...current, apiKey: '' }));
-    setSettingsNotice('Locked. The encrypted key stays in the cookie.');
-  }
-
-  function removeStoredKey() {
-    clearSecretCookie();
-    setSettings((current) => ({ ...current, apiKey: '', hasEncryptedApiKey: false }));
-    setSettingsNotice('Encrypted API key removed from cookies.');
+  function closePassphraseModal() {
+    setPassphraseModal(null);
   }
 
   function resetWorkspace() {
@@ -369,7 +369,7 @@ export default function App() {
     setState(loadWorkspace());
     setSettings(loadSettings());
     setComposerDraft('');
-    setPassphraseDraft('');
+    setPassphraseModal(null);
     setSettingsNotice(null);
     setError(null);
     setModelCache({});
@@ -805,7 +805,9 @@ export default function App() {
               <section className="inspector-card settings-card">
                 <div className="meta-row">
                   <h4>AI settings</h4>
-                  <span className={`pill settings-pill ${settingsLockState}`}>{settingsLockState === 'none' ? 'no stored key' : settingsLockState}</span>
+                  <span className={`pill settings-pill ${settingsLockState}`}>
+                    {settingsLockState === 'none' ? 'no saved key' : settingsLockState === 'unlocked' ? 'unlocked for session' : 'saved, locked'}
+                  </span>
                 </div>
                 <label className="field">
                   AI Provider
@@ -842,29 +844,13 @@ export default function App() {
                     {modelsLoading ? 'Loading models…' : modelCache[settings.provider] ? 'Refresh models' : 'List models'}
                   </button>
                 </div>
-                <p className="muted">
-                  {modelCache[settings.provider]
-                    ? `Showing ${modelCache[settings.provider]!.length} models from ${settings.provider}.`
-                    : `Unlock your ${settings.provider} key, then list models to populate this dropdown.`}
-                </p>
-                <label className="field">
-                  Passphrase
-                  <input
-                    type="password"
-                    value={passphraseDraft}
-                    onChange={(event) => setPassphraseDraft(event.target.value)}
-                    placeholder="unlock / encrypt the API key"
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                </label>
                 <label className="field">
                   {providerInfo(settings.provider).label} API key
                   <input
                     type="password"
                     value={settings.apiKey}
                     onChange={(event) => setSettings((current) => ({ ...current, apiKey: event.target.value }))}
-                    placeholder={settings.hasEncryptedApiKey ? 'locked in cookie — unlock to load' : apiKeyPlaceholder(settings.provider)}
+                    placeholder={settings.hasEncryptedApiKey && !settings.apiKey ? 'saved key — tap Unlock to load' : apiKeyPlaceholder(settings.provider)}
                     autoComplete="off"
                     spellCheck={false}
                   />
@@ -880,23 +866,22 @@ export default function App() {
                   ) : null}
                 </label>
                 <div className="editor-actions left-aligned">
-                  <button type="button" onClick={unlockStoredKey} disabled={savingSettings || !settings.hasEncryptedApiKey}>
-                    Unlock key
+                  <button type="button" onClick={requestSaveKey} disabled={savingSettings}>
+                    {savingSettings
+                      ? 'Working…'
+                      : settings.apiKey.trim()
+                        ? settings.hasEncryptedApiKey ? 'Update saved key' : 'Save key'
+                        : settings.hasEncryptedApiKey ? 'Unlock saved key' : 'Save key'}
                   </button>
-                  <button type="button" onClick={lockNow} disabled={savingSettings || !settings.apiKey.trim()}>
-                    Lock now
-                  </button>
-                  <button type="button" onClick={forgetUnlockedKey} disabled={savingSettings || !settings.apiKey.trim()}>
-                    Forget from memory
-                  </button>
-                  <button type="button" onClick={removeStoredKey} disabled={savingSettings || !settings.hasEncryptedApiKey}>
-                    Remove stored key
-                  </button>
-                  <button type="button" onClick={saveSecureSettings} disabled={savingSettings}>
-                    {savingSettings ? 'Saving…' : settings.hasEncryptedApiKey ? 'Update encrypted settings' : 'Save encrypted settings'}
+                  <button
+                    type="button"
+                    className="quiet"
+                    onClick={deleteSavedKey}
+                    disabled={savingSettings || !settings.hasEncryptedApiKey}
+                  >
+                    Delete saved key
                   </button>
                 </div>
-                <p className="muted">{settingsHint}</p>
                 {settingsNotice ? <p className="muted">{settingsNotice}</p> : null}
               </section>
             </div>
@@ -971,6 +956,61 @@ export default function App() {
                   Cancel
                 </button>
               </div>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {passphraseModal ? (
+        <div className="chat-modal-backdrop" onClick={passphraseModal.busy ? undefined : closePassphraseModal}>
+          <section className="passphrase-modal" onClick={(event) => event.stopPropagation()}>
+            <header className="chat-modal-header">
+              <div>
+                <p className="eyebrow">{passphraseModal.mode === 'encrypt' ? 'Encrypt your key' : 'Unlock your saved key'}</p>
+                <h2>{passphraseModal.mode === 'encrypt' ? 'Choose a passphrase' : 'Enter your passphrase'}</h2>
+              </div>
+              <button type="button" className="quiet" onClick={closePassphraseModal} aria-label="Close" disabled={passphraseModal.busy}>
+                ×
+              </button>
+            </header>
+            <div className="chat-modal-body">
+              <p className="muted">
+                {passphraseModal.mode === 'encrypt'
+                  ? 'Your key is encrypted in this browser using this passphrase. Anyone with access to this browser also needs the passphrase to load it. There is no recovery — write it down.'
+                  : 'Decrypts the key saved in this browser. It stays in memory until you refresh or close the tab.'}
+              </p>
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  submitPassphraseModal();
+                }}
+              >
+                <label className="field">
+                  Passphrase
+                  <input
+                    autoFocus
+                    type="password"
+                    value={passphraseModal.passphrase}
+                    onChange={(event) =>
+                      setPassphraseModal((current) => (current ? { ...current, passphrase: event.target.value } : current))
+                    }
+                    autoComplete="off"
+                    spellCheck={false}
+                    disabled={passphraseModal.busy}
+                  />
+                </label>
+                {error ? <p className="error">{error}</p> : null}
+                <div className="editor-actions">
+                  <button type="submit" disabled={passphraseModal.busy || !passphraseModal.passphrase.trim()}>
+                    {passphraseModal.busy
+                      ? 'Working…'
+                      : passphraseModal.mode === 'encrypt' ? 'Encrypt and save' : 'Unlock'}
+                  </button>
+                  <button type="button" className="quiet" onClick={closePassphraseModal} disabled={passphraseModal.busy}>
+                    Cancel
+                  </button>
+                </div>
+              </form>
             </div>
           </section>
         </div>
