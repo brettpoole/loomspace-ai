@@ -559,6 +559,33 @@ button.quiet {
   justify-content: flex-start;
 }
 
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  padding: 4px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: #cfd9f6;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.settings-pill.locked {
+  color: #ffd58b;
+  border-color: rgba(255, 213, 139, 0.22);
+}
+
+.settings-pill.unlocked {
+  color: #9bf4cd;
+  border-color: rgba(124, 247, 194, 0.22);
+}
+
+.settings-pill.none {
+  color: #94a3c8;
+}
+
 @media (max-width: 1200px) {
   .layout {
     grid-template-columns: 280px minmax(0, 1fr);

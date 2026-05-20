@@ -50,6 +50,7 @@ export default function App() {
   const metrics = useMemo(() => computeMetrics(state), [state]);
   const activeThread = state.threads.find((thread) => thread.id === state.selectedThreadId) ?? state.threads[0] ?? null;
   const activeNode = activeThread?.nodes.find((node) => node.id === state.selectedNodeId) ?? activeThread?.nodes.at(-1) ?? null;
+  const settingsLockState = settings.hasEncryptedApiKey ? (settings.apiKey.trim() ? 'unlocked' : 'locked') : 'none';
 
   const canvasWidth = Math.max(
     1280,
@@ -222,6 +223,7 @@ export default function App() {
       setSettingsNotice('API key unlocked in memory.');
       setError(null);
     } catch (err) {
+      setSettings((current) => ({ ...current, apiKey: '' }));
       setError(err instanceof Error ? err.message : 'Unable to unlock the API key.');
     }
   }
@@ -248,6 +250,11 @@ export default function App() {
   function forgetUnlockedKey() {
     setSettings((current) => ({ ...current, apiKey: '' }));
     setSettingsNotice('Cleared from memory. The encrypted cookie stays put until you overwrite it.');
+  }
+
+  function lockNow() {
+    setSettings((current) => ({ ...current, apiKey: '' }));
+    setSettingsNotice('Locked. The encrypted key stays in the cookie.');
   }
 
   function removeStoredKey() {
@@ -616,7 +623,10 @@ export default function App() {
               ) : null}
 
               <section className="inspector-card settings-card">
-                <h4>AI settings</h4>
+                <div className="meta-row">
+                  <h4>AI settings</h4>
+                  <span className={`pill settings-pill ${settingsLockState}`}>{settingsLockState === 'none' ? 'no stored key' : settingsLockState}</span>
+                </div>
                 <label className="field">
                   AI provider
                   <select
@@ -660,6 +670,9 @@ export default function App() {
                   <button type="button" onClick={unlockStoredKey} disabled={savingSettings || !settings.hasEncryptedApiKey}>
                     Unlock key
                   </button>
+                  <button type="button" onClick={lockNow} disabled={savingSettings || !settings.apiKey.trim()}>
+                    Lock now
+                  </button>
                   <button type="button" onClick={forgetUnlockedKey} disabled={savingSettings || !settings.apiKey.trim()}>
                     Forget from memory
                   </button>
@@ -667,7 +680,7 @@ export default function App() {
                     Remove stored key
                   </button>
                   <button type="button" onClick={saveSecureSettings} disabled={savingSettings}>
-                    {savingSettings ? 'Saving…' : 'Save encrypted settings'}
+                    {savingSettings ? 'Saving…' : settings.hasEncryptedApiKey ? 'Update encrypted settings' : 'Save encrypted settings'}
                   </button>
                 </div>
                 {settingsNotice ? <p className="muted">{settingsNotice}</p> : <p className="muted">The API key is only persisted as encrypted cookie data.</p>}
