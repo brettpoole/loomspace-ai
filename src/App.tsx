@@ -631,15 +631,6 @@ export default function App() {
               onPointerUp={endPan}
               onPointerLeave={endPan}
             >
-              {lanes.length === 0 ? (
-                <div className="empty-state">
-                  <p className="eyebrow">Canvas idle</p>
-                  <h2>Start a thread to begin the weave</h2>
-                  <p>The first thread centers itself. New threads line up to the right.</p>
-                  <button onClick={() => openThreadEditor('create')}>Create first thread</button>
-                </div>
-              ) : null}
-
               <svg className="edges-layer" viewBox={`0 0 ${canvasWidth} ${canvasHeight}`} preserveAspectRatio="none">
                 {lanes.map((lane) => {
                   const path = buildThreadPath(lane.centerX, lane.nodes.map((entry) => entry.node), lane.thread);
@@ -705,6 +696,14 @@ export default function App() {
                 );
               })}
             </div>
+            {lanes.length === 0 ? (
+              <div className="empty-state">
+                <p className="eyebrow">Canvas idle</p>
+                <h2>Start a thread to begin the weave</h2>
+                <p>The first thread centers itself. New threads line up to the right.</p>
+                <button onClick={() => openThreadEditor('create')}>Create first thread</button>
+              </div>
+            ) : null}
           </div>
         </section>
       </main>
