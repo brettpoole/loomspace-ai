@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   appendChatToThread,
+  clearSecretCookie,
   clearSettingsCookies,
   computeMetrics,
   createChatNode,
@@ -247,6 +248,12 @@ export default function App() {
   function forgetUnlockedKey() {
     setSettings((current) => ({ ...current, apiKey: '' }));
     setSettingsNotice('Cleared from memory. The encrypted cookie stays put until you overwrite it.');
+  }
+
+  function removeStoredKey() {
+    clearSecretCookie();
+    setSettings((current) => ({ ...current, apiKey: '', hasEncryptedApiKey: false }));
+    setSettingsNotice('Encrypted API key removed from cookies.');
   }
 
   function resetWorkspace() {
@@ -655,6 +662,9 @@ export default function App() {
                   </button>
                   <button type="button" onClick={forgetUnlockedKey} disabled={savingSettings || !settings.apiKey.trim()}>
                     Forget from memory
+                  </button>
+                  <button type="button" onClick={removeStoredKey} disabled={savingSettings || !settings.hasEncryptedApiKey}>
+                    Remove stored key
                   </button>
                   <button type="button" onClick={saveSecureSettings} disabled={savingSettings}>
                     {savingSettings ? 'Saving…' : 'Save encrypted settings'}
