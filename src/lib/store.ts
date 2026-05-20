@@ -195,6 +195,17 @@ export function clearProviderSecret(configId: string) {
   }
 }
 
+export function deleteProviderConfig(settings: AISettings, configId: string): AISettings {
+  clearProviderSecret(configId);
+  const remaining = settings.providerConfigs.filter((config) => config.id !== configId);
+  const configs = remaining.length > 0 ? remaining : defaultProviderConfigs();
+  const nextActiveId =
+    settings.activeProviderConfigId === configId
+      ? configs[0]?.id ?? 'openai'
+      : settings.activeProviderConfigId;
+  return { activeProviderConfigId: nextActiveId, providerConfigs: configs };
+}
+
 export function clearSettingsCookies() {
   deleteCookie(SETTINGS_COOKIE);
   deleteCookie(LEGACY_SETTINGS_COOKIE);
@@ -215,9 +226,8 @@ export function summarize(text: string, limit = 60) {
   return compact.length > limit ? `${compact.slice(0, limit - 1)}…` : compact;
 }
 
-export function createThread(title: string, description: string, index: number, defaults?: { providerConfigId?: string; model?: string }): ThreadLane {
-  const providerConfigId = defaults?.providerConfigId ?? 'openai';
-  const model = defaults?.model ?? providerInfo(resolveProviderKind(providerConfigId)).defaultModel;
+export function createThread(title: string, description: string, index: number, defaults?: { initialModel?: string }): ThreadLane {
+  const initialModel = defaults?.initialModel ?? providerInfo('openai').defaultModel;
   const threadId = `thread-${crypto.randomUUID().slice(0, 8)}`;
   const titleNode: ThreadTitleNode = {
     id: `title-${crypto.randomUUID().slice(0, 8)}`,
@@ -225,7 +235,7 @@ export function createThread(title: string, description: string, index: number, 
     title,
     description,
   };
-  const firstChatNode = createChatNode('AI chat ready', 'medium', [], model);
+  const firstChatNode = createChatNode('AI chat ready', 'medium', [], initialModel);
 
   return {
     id: threadId,
@@ -233,8 +243,6 @@ export function createThread(title: string, description: string, index: number, 
     status: 'draft',
     title,
     description,
-    providerConfigId,
-    model,
     context: [],
     nodes: [titleNode, firstChatNode],
     activeNodeId: firstChatNode.id,
@@ -263,32 +271,22 @@ export function createChatNode(
 
 export function updateThreadDetails(
   thread: ThreadLane,
-  next: { title: string; description: string; providerConfigId: string; model: string },
+  next: { title: string; description: string },
 ): ThreadLane {
   return {
     ...thread,
     title: next.title,
     description: next.description,
-    providerConfigId: next.providerConfigId,
-    model: next.model,
     nodes: thread.nodes.map((node) => (node.kind === 'title' ? { ...node, title: next.title, description: next.description } : node)),
   };
 }
 
 export function updateThreadTitle(thread: ThreadLane, title: string): ThreadLane {
-  return updateThreadDetails(thread, { title, description: thread.description, providerConfigId: thread.providerConfigId, model: thread.model });
+  return updateThreadDetails(thread, { title, description: thread.description });
 }
 
 export function updateThreadDescription(thread: ThreadLane, description: string): ThreadLane {
-  return updateThreadDetails(thread, { title: thread.title, description, providerConfigId: thread.providerConfigId, model: thread.model });
-}
-
-export function updateThreadModel(thread: ThreadLane, model: string): ThreadLane {
-  return updateThreadDetails(thread, { title: thread.title, description: thread.description, providerConfigId: thread.providerConfigId, model });
-}
-
-export function updateThreadProviderConfig(thread: ThreadLane, providerConfigId: string): ThreadLane {
-  return updateThreadDetails(thread, { title: thread.title, description: thread.description, providerConfigId, model: thread.model });
+  return updateThreadDetails(thread, { title: thread.title, description });
 }
 
 export function appendChatToThread(thread: ThreadLane, chat: ThreadChatNode, messages: ChatMessage[]): ThreadLane {
@@ -378,10 +376,6 @@ export async function fetchProviderModels(config: AIProviderConfig): Promise<str
   }
 
   return (data.data ?? []).map((entry) => entry.id ?? '').filter(Boolean).sort();
-}
-
-function resolveProviderKind(providerConfigId: string): AIProvider {
-  return readSettingsPayload()?.providerConfigs.find((config) => config.id === providerConfigId)?.kind ?? 'openai';
 }
 
 function resolveBaseUrl(baseUrl: string | undefined, kind: AIProvider) {
@@ -493,11 +487,15 @@ function migrateWorkspaceState(state: LoomspaceState): LoomspaceState {
   return {
     ...state,
     threads: state.threads.map((thread) => {
-      const legacyProvider = (thread as ThreadLane & { provider?: AIProvider }).provider ?? 'openai';
-      return {
-        ...thread,
-        providerConfigId: (thread as ThreadLane & { providerConfigId?: string }).providerConfigId ?? defaultProviderConfigId(legacyProvider),
+      const stripped = { ...thread } as ThreadLane & {
+        provider?: unknown;
+        providerConfigId?: unknown;
+        model?: unknown;
       };
+      delete stripped.provider;
+      delete stripped.providerConfigId;
+      delete stripped.model;
+      return stripped as ThreadLane;
     }),
   };
 }

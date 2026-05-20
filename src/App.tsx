@@ -8,6 +8,7 @@ import {
   createChatNode,
   createProviderConfig,
   createThread,
+  deleteProviderConfig,
   estimateCost,
   fetchProviderModels,
   getModelWindow,
@@ -22,7 +23,6 @@ import {
   threadWithInfo,
   unlockProviderSecret,
   updateThreadDetails,
-  updateThreadProviderConfig,
   updateThreadTitle,
 } from './lib/store';
 import type {
@@ -53,13 +53,11 @@ const EDGE_PADDING = 80;
 interface ThreadDraft {
   title: string;
   description: string;
-  model: string;
 }
 
 const DEFAULT_THREAD_DRAFT: ThreadDraft = {
   title: '',
   description: '',
-  model: 'gpt-4o-mini',
 };
 
 type ModelCache = Record<string, string[]>;
@@ -74,6 +72,7 @@ export default function App() {
   const [passphraseModal, setPassphraseModal] = useState<{ mode: 'encrypt' | 'unlock'; passphrase: string; busy: boolean; pendingKey?: string; targetConfigId?: string } | null>(null);
   const [savingSettings, setSavingSettings] = useState(false);
   const [chatModalOpen, setChatModalOpen] = useState(false);
+  const [aiSettingsModalOpen, setAiSettingsModalOpen] = useState(false);
   const [threadEditorOpen, setThreadEditorOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [threadEditorMode, setThreadEditorMode] = useState<'create' | 'edit'>('create');
@@ -95,16 +94,7 @@ export default function App() {
   const activeNodeIsChat = activeNode?.kind === 'chat';
   const activeProviderConfig =
     settings.providerConfigs.find((config) => config.id === settings.activeProviderConfigId) ?? settings.providerConfigs[0] ?? null;
-  const activeThreadProviderConfig =
-    activeThread ? settings.providerConfigs.find((config) => config.id === activeThread.providerConfigId) ?? activeProviderConfig : activeProviderConfig;
   const settingsLockState = activeProviderConfig ? (activeProviderConfig.hasEncryptedApiKey ? (activeProviderConfig.apiKey.trim() ? 'unlocked' : 'locked') : 'none') : 'none';
-  const activeThreadProviderLockState = activeThreadProviderConfig
-    ? activeThreadProviderConfig.hasEncryptedApiKey
-      ? activeThreadProviderConfig.apiKey.trim()
-        ? 'unlocked'
-        : 'locked'
-      : 'none'
-    : 'none';
 
   useEffect(() => {
     if (activeProviderConfig?.hasEncryptedApiKey && !activeProviderConfig.apiKey.trim() && !passphraseModal) {
@@ -115,10 +105,6 @@ export default function App() {
   const settingsModels = useMemo(
     () => modelsForConfig(modelCache, activeProviderConfig, activeProviderConfig?.model ?? ''),
     [modelCache, activeProviderConfig],
-  );
-  const threadEditorModels = useMemo(
-    () => modelsForConfig(modelCache, activeThreadProviderConfig, threadEditorDraft.model),
-    [modelCache, activeThreadProviderConfig, threadEditorDraft.model],
   );
 
   const canvasWidth = Math.max(
@@ -191,16 +177,8 @@ export default function App() {
     setThreadEditorTargetId(thread?.id ?? null);
     setThreadEditorDraft(
       thread
-        ? {
-            title: thread.title,
-            description: thread.description,
-            model: thread.model,
-          }
-        : {
-            title: '',
-            description: '',
-            model: activeProviderConfig?.model ?? 'gpt-4o-mini',
-          },
+        ? { title: thread.title, description: thread.description }
+        : { title: '', description: '' },
     );
     setThreadEditorOpen(true);
   }
@@ -212,14 +190,11 @@ export default function App() {
   function submitThreadEditor() {
     const title = threadEditorDraft.title.trim() || 'Untitled thread';
     const description = threadEditorDraft.description.trim() || 'A new lane for a project idea and its AI chat context.';
-    const model = threadEditorDraft.model.trim() || threadEditorModels[0] || activeThreadProviderConfig?.model || 'gpt-4o-mini';
-    const providerConfigId =
-      (threadEditorMode === 'create' ? activeProviderConfig?.id : threadEditorTargetId ? state.threads.find((thread) => thread.id === threadEditorTargetId)?.providerConfigId : null) ??
-      activeProviderConfig?.id ??
-      'openai';
 
     if (threadEditorMode === 'create') {
-      const thread = createThread(title, description, state.threads.length, { providerConfigId, model });
+      const thread = createThread(title, description, state.threads.length, {
+        initialModel: activeProviderConfig?.model,
+      });
       setState((current) => ({
         ...current,
         version: current.version + 1,
@@ -234,9 +209,7 @@ export default function App() {
         ...current,
         version: current.version + 1,
         threads: current.threads.map((thread) =>
-          thread.id === threadEditorTargetId
-            ? updateThreadDetails(thread, { title, description, providerConfigId: thread.providerConfigId, model })
-            : thread,
+          thread.id === threadEditorTargetId ? updateThreadDetails(thread, { title, description }) : thread,
         ),
       }));
     }
@@ -247,13 +220,13 @@ export default function App() {
 
   async function sendMessage() {
     if (!activeThread || !activeNodeIsChat || !composerDraft.trim() || sending) return;
-    const activeConfig = settings.providerConfigs.find((config) => config.id === activeThread.providerConfigId) ?? activeProviderConfig;
+    const activeConfig = activeProviderConfig;
     if (!activeConfig) {
-      setError('Pick a provider config for this thread first.');
+      setError('Pick an AI profile first.');
       return;
     }
     if (!activeConfig.apiKey.trim()) {
-      setError(activeConfig.hasEncryptedApiKey ? 'Unlock this provider config first, or save a new encrypted key.' : 'Add your API key in settings first.');
+      setError(activeConfig.hasEncryptedApiKey ? 'Unlock this AI profile, or save a new encrypted key.' : 'Add your API key to this profile first.');
       setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: activeConfig.id });
       return;
     }
@@ -272,7 +245,7 @@ export default function App() {
         role: 'assistant',
         text: assistantText,
       };
-      const newChatNode = createChatNode(`${userText} → ${assistantText}`, 'medium', [userMessage, assistantMessage], activeThread.model, usage);
+      const newChatNode = createChatNode(`${userText} → ${assistantText}`, 'medium', [userMessage, assistantMessage], activeConfig.model, usage);
 
       setState((current) => ({
         ...current,
@@ -423,23 +396,20 @@ export default function App() {
     }));
   }
 
-  function changeThreadProviderConfig(threadId: string, providerConfigId: string) {
-    const config = settings.providerConfigs.find((entry) => entry.id === providerConfigId);
-    const cached = modelCache[providerConfigId];
-    const nextModel = cached?.[0] ?? config?.model ?? providerInfo(config?.kind ?? 'openai').defaultModel;
-    setState((current) => ({
-      ...current,
-      threads: current.threads.map((thread) =>
-        thread.id === threadId
-          ? updateThreadDetails(thread, {
-              title: thread.title,
-              description: thread.description,
-              providerConfigId,
-              model: nextModel,
-            })
-          : thread,
-      ),
-    }));
+  function deleteProfile(configId: string) {
+    const target = settings.providerConfigs.find((config) => config.id === configId);
+    if (!target) return;
+    const confirmed = window.confirm(`Delete AI profile "${target.label}"? Its saved key will be removed from this browser.`);
+    if (!confirmed) return;
+    const next = deleteProviderConfig(settings, configId);
+    setSettings(next);
+    setModelCache((current) => {
+      const copy = { ...current };
+      delete copy[configId];
+      return copy;
+    });
+    setSettingsNotice(`Deleted AI profile "${target.label}".`);
+    setError(null);
   }
 
   async function refreshModels(providerConfigId: string) {
@@ -563,8 +533,8 @@ export default function App() {
   }
 
   const selectedThreadUsage = activeThread ? summarizeThreadUsage(activeThread) : null;
-  const remainingContext = activeThread && selectedThreadUsage
-    ? Math.max(getModelWindow(activeThread.model) - selectedThreadUsage.totalTokens, 0)
+  const remainingContext = activeThread && selectedThreadUsage && activeProviderConfig
+    ? Math.max(getModelWindow(activeProviderConfig.model) - selectedThreadUsage.totalTokens, 0)
     : 0;
 
   return (
@@ -618,10 +588,6 @@ export default function App() {
                 </button>
               </div>
               <p>{activeThread.description}</p>
-              <div className="thread-meta-row">
-                <span className="pill">{activeThread.model}</span>
-                <span className="pill muted-pill">{activeThreadProviderConfig?.label ?? 'Unknown provider'}</span>
-              </div>
               <button onClick={() => selectThread(activeThread.id, activeThread.activeNodeId)} style={{ marginTop: 12 }}>
                 Open chat
               </button>
@@ -636,6 +602,65 @@ export default function App() {
               </button>
             </section>
           )}
+
+          <section className="inspector-card profile-list-card">
+            <div className="meta-row">
+              <h2>AI profiles</h2>
+              <button
+                type="button"
+                className="quiet"
+                onClick={() => {
+                  setSidebarOpen(false);
+                  setAiSettingsModalOpen(true);
+                }}
+              >
+                Manage
+              </button>
+            </div>
+            <div className="profile-list">
+              {settings.providerConfigs.map((config) => {
+                const isActive = config.id === activeProviderConfig?.id;
+                const lock = config.hasEncryptedApiKey
+                  ? config.apiKey.trim()
+                    ? 'unlocked'
+                    : 'locked'
+                  : 'none';
+                return (
+                  <button
+                    key={config.id}
+                    type="button"
+                    className={`profile-chip ${isActive ? 'selected' : ''}`}
+                    onClick={() => changeSettingsProvider(config.id)}
+                  >
+                    <span className="profile-chip-copy">
+                      <strong>{config.label}</strong>
+                      <small>{providerInfo(config.kind).label} · {config.model}</small>
+                    </span>
+                    <span className={`pill profile-lock ${lock}`}>
+                      {lock === 'none' ? 'no key' : lock === 'unlocked' ? 'unlocked' : 'locked'}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="editor-actions left-aligned">
+              <button
+                type="button"
+                onClick={() => {
+                  const next = createProviderConfig('openai-compatible-custom', { label: 'New profile' });
+                  setSettings((current) => ({
+                    ...current,
+                    activeProviderConfigId: next.id,
+                    providerConfigs: [...current.providerConfigs, next],
+                  }));
+                  setSidebarOpen(false);
+                  setAiSettingsModalOpen(true);
+                }}
+              >
+                Add profile
+              </button>
+            </div>
+          </section>
 
           <div className="thread-list-spacer">
             <h2>Threads</h2>
@@ -655,7 +680,6 @@ export default function App() {
                       {thread.title}
                       <small>{thread.description}</small>
                     </span>
-                    <span className="chip-model">{thread.model}</span>
                   </button>
                 );
               })}
@@ -786,12 +810,12 @@ export default function App() {
                 </div>
                 <div className="thread-meta-row stack">
                   <label className="field compact">
-                    Provider config
+                    AI profile
                     <select
-                      value={activeThread.providerConfigId}
+                      value={activeProviderConfig?.id ?? ''}
                       onChange={(event) => {
                         const nextConfigId = event.target.value;
-                        changeThreadProviderConfig(activeThread.id, nextConfigId);
+                        changeSettingsProvider(nextConfigId);
                         const nextConfig = settings.providerConfigs.find((config) => config.id === nextConfigId);
                         if (nextConfig?.hasEncryptedApiKey && !nextConfig.apiKey.trim()) {
                           setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: nextConfigId });
@@ -805,8 +829,11 @@ export default function App() {
                       ))}
                     </select>
                   </label>
-                  <span className="pill">Model: {activeThread.model}</span>
+                  <span className="pill">Model: {activeProviderConfig?.model ?? '—'}</span>
                   <span className="pill">Context left: {activeThread ? remainingContext.toLocaleString() : '—'}</span>
+                  <button type="button" className="quiet" onClick={() => setAiSettingsModalOpen(true)}>
+                    Manage AI settings
+                  </button>
                 </div>
                 {selectedThreadUsage ? (
                   <div className="usage-grid">
@@ -852,10 +879,10 @@ export default function App() {
                     placeholder="Ask the thread something"
                     rows={5}
                   />
-                  {activeThreadProviderLockState === 'locked' ? <p className="muted">Unlock this provider config to send a message.</p> : null}
+                  {settingsLockState === 'locked' ? <p className="muted">Unlock the active AI profile to send a message.</p> : null}
                   {error ? <p className="error">{error}</p> : null}
-                  <button onClick={sendMessage} disabled={!composerDraft.trim() || sending || !activeThreadProviderConfig?.apiKey.trim()}>
-                    {sending ? 'Thinking…' : activeThreadProviderLockState === 'locked' ? 'Unlock to send' : 'Send'}
+                  <button onClick={sendMessage} disabled={!composerDraft.trim() || sending || !activeProviderConfig?.apiKey.trim()}>
+                    {sending ? 'Thinking…' : settingsLockState === 'locked' ? 'Unlock to send' : 'Send'}
                   </button>
                 </section>
               ) : null}
@@ -873,15 +900,33 @@ export default function App() {
                 </section>
               ) : null}
 
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {aiSettingsModalOpen ? (
+        <div className="chat-modal-backdrop" onClick={() => setAiSettingsModalOpen(false)}>
+          <section className="ai-settings-modal" onClick={(event) => event.stopPropagation()}>
+            <header className="chat-modal-header">
+              <div>
+                <p className="eyebrow">AI settings</p>
+                <h2>Manage AI profiles</h2>
+              </div>
+              <button type="button" className="quiet" onClick={() => setAiSettingsModalOpen(false)} aria-label="Close AI settings">
+                ×
+              </button>
+            </header>
+            <div className="chat-modal-body">
               <section className="inspector-card settings-card">
                 <div className="meta-row">
-                  <h4>AI provider configs</h4>
+                  <h4>Active profile</h4>
                   <span className={`pill settings-pill ${settingsLockState}`}>
                     {settingsLockState === 'none' ? 'no saved key' : settingsLockState === 'unlocked' ? 'unlocked for session' : 'saved, locked'}
                   </span>
                 </div>
                 <label className="field">
-                  Active config
+                  Profile
                   <select
                     value={activeProviderConfig?.id ?? ''}
                     onChange={(event) => changeSettingsProvider(event.target.value)}
@@ -897,7 +942,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => {
-                      const next = createProviderConfig('openai-compatible-custom', { label: 'Custom provider' });
+                      const next = createProviderConfig('openai-compatible-custom', { label: 'New profile' });
                       setSettings((current) => ({
                         ...current,
                         activeProviderConfigId: next.id,
@@ -905,7 +950,15 @@ export default function App() {
                       }));
                     }}
                   >
-                    New custom provider
+                    New profile
+                  </button>
+                  <button
+                    type="button"
+                    className="quiet"
+                    onClick={() => activeProviderConfig && deleteProfile(activeProviderConfig.id)}
+                    disabled={!activeProviderConfig}
+                  >
+                    Delete profile
                   </button>
                 </div>
                 {activeProviderConfig ? (
@@ -938,7 +991,7 @@ export default function App() {
                       <input
                         value={activeProviderConfig.label}
                         onChange={(event) => updateProviderConfig(activeProviderConfig.id, { label: event.target.value })}
-                        placeholder="Provider name"
+                        placeholder="Profile name"
                       />
                     </label>
                     {activeProviderConfig.kind === 'openai-compatible-custom' ? (
@@ -1052,20 +1105,7 @@ export default function App() {
                   rows={4}
                 />
               </label>
-              <label className="field">
-                Thread model
-                <select
-                  value={threadEditorDraft.model}
-                  onChange={(event) => setThreadEditorDraft((current) => ({ ...current, model: event.target.value }))}
-                >
-                  {threadEditorModels.map((model) => (
-                    <option key={model} value={model}>
-                      {model}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {threadEditorMode === 'create' ? <p className="muted">This thread will use the currently selected provider config.</p> : null}
+              <p className="muted">Threads are provider-agnostic now. The active AI profile (set in the sidebar) decides which model answers when you send.</p>
               <div className="editor-actions">
                 <button onClick={submitThreadEditor}>{threadEditorMode === 'create' ? 'Create thread' : 'Save changes'}</button>
                 <button className="quiet" onClick={closeThreadEditor}>
@@ -1127,6 +1167,36 @@ export default function App() {
                   </button>
                 </div>
               </form>
+              {passphraseModal.mode === 'unlock' && passphraseModal.targetConfigId ? (
+                <div className="passphrase-escape">
+                  <p className="muted">
+                    Forgot your passphrase? You can delete this profile to escape this prompt. The encrypted key will be wiped from this browser.
+                  </p>
+                  <button
+                    type="button"
+                    className="quiet"
+                    disabled={passphraseModal.busy}
+                    onClick={() => {
+                      const target = settings.providerConfigs.find((config) => config.id === passphraseModal.targetConfigId);
+                      if (!target) return;
+                      const confirmed = window.confirm(`Delete AI profile "${target.label}" and the saved key you can no longer unlock?`);
+                      if (!confirmed) return;
+                      const next = deleteProviderConfig(settings, target.id);
+                      setSettings(next);
+                      setModelCache((current) => {
+                        const copy = { ...current };
+                        delete copy[target.id];
+                        return copy;
+                      });
+                      setSettingsNotice(`Deleted AI profile "${target.label}".`);
+                      setError(null);
+                      setPassphraseModal(null);
+                    }}
+                  >
+                    Delete this profile and exit
+                  </button>
+                </div>
+              ) : null}
             </div>
           </section>
         </div>
@@ -1193,7 +1263,7 @@ async function requestOpenAiCompatible(config: AIProviderConfig, thread: ThreadL
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: thread.model,
+      model: config.model,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT(thread) },
         ...messages.map((message) => ({
@@ -1218,7 +1288,7 @@ async function requestOpenAiCompatible(config: AIProviderConfig, thread: ThreadL
   if (!assistantText) throw new Error(`${config.label} returned no assistant text`);
 
   const usage = data.usage
-    ? normalizeUsage(thread.model, data.usage.prompt_tokens ?? 0, data.usage.completion_tokens ?? 0, data.usage.total_tokens ?? 0)
+    ? normalizeUsage(config.model, data.usage.prompt_tokens ?? 0, data.usage.completion_tokens ?? 0, data.usage.total_tokens ?? 0)
     : undefined;
 
   return { assistantText, usage };
@@ -1235,7 +1305,7 @@ async function requestAnthropic(config: AIProviderConfig, thread: ThreadLane, me
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: thread.model,
+      model: config.model,
       max_tokens: 1024,
       system: SYSTEM_PROMPT(thread),
       messages: messages
@@ -1265,7 +1335,7 @@ async function requestAnthropic(config: AIProviderConfig, thread: ThreadLane, me
 
   const inputTokens = data.usage?.input_tokens ?? 0;
   const outputTokens = data.usage?.output_tokens ?? 0;
-  const usage = data.usage ? normalizeUsage(thread.model, inputTokens, outputTokens, inputTokens + outputTokens) : undefined;
+  const usage = data.usage ? normalizeUsage(config.model, inputTokens, outputTokens, inputTokens + outputTokens) : undefined;
 
   return { assistantText, usage };
 }
