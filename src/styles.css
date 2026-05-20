@@ -827,9 +827,10 @@ button.quiet {
 }
 
 .bubble.assistant .message-copy {
-  font-size: 0.92rem;
-  line-height: 1.65;
-  color: rgba(255, 255, 255, 0.88);
+  font-family: Georgia, 'Bitstream Charter', 'Sitka Text', Cambria, serif;
+  font-size: 0.94rem;
+  line-height: 1.7;
+  color: #ddd8cc;
 }
 
 .bubble.assistant .message-copy > :first-child {
