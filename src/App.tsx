@@ -159,6 +159,15 @@ export default function App() {
   function selectThread(threadId: string, nodeId?: string | null) {
     setChatModalOpen(true);
     setSidebarOpen(false);
+    const target = state.threads.find((thread) => thread.id === threadId);
+    const remembered = target?.lastUsedProfileId;
+    if (
+      remembered &&
+      remembered !== settings.activeProviderConfigId &&
+      settings.providerConfigs.some((config) => config.id === remembered)
+    ) {
+      setSettings((current) => ({ ...current, activeProviderConfigId: remembered }));
+    }
     setState((current) => ({
       ...current,
       selectedThreadId: threadId,
@@ -251,7 +260,9 @@ export default function App() {
         ...current,
         version: current.version + 1,
         threads: current.threads.map((thread) =>
-          thread.id === activeThread.id ? appendChatToThread(thread, newChatNode, [userMessage, assistantMessage]) : thread,
+          thread.id === activeThread.id
+            ? { ...appendChatToThread(thread, newChatNode, [userMessage, assistantMessage]), lastUsedProfileId: activeConfig.id }
+            : thread,
         ),
         selectedThreadId: activeThread.id,
         selectedNodeId: newChatNode.id,

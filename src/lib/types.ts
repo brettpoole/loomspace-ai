@@ -47,6 +47,7 @@ export interface ThreadLane {
   nodes: ThreadNode[];
   activeNodeId: string | null;
   infoOpen: boolean;
+  lastUsedProfileId?: string;
 }
 
 export interface AIProviderConfig {
