@@ -865,7 +865,7 @@ export default function App() {
                     type="password"
                     value={settings.apiKey}
                     onChange={(event) => setSettings((current) => ({ ...current, apiKey: event.target.value }))}
-                    placeholder={settings.hasEncryptedApiKey ? 'locked in cookie — unlock to load' : settings.provider === 'openai' ? 'sk-...' : 'sk-ant-...'}
+                    placeholder={settings.hasEncryptedApiKey ? 'locked in cookie — unlock to load' : apiKeyPlaceholder(settings.provider)}
                     autoComplete="off"
                     spellCheck={false}
                   />
@@ -983,7 +983,15 @@ function modelsForProvider(cache: ModelCache, provider: AIProvider, currentModel
 async function requestAiReply(settings: AISettings, thread: ThreadLane, messages: ChatMessage[]) {
   if (thread.provider === 'openai') return requestOpenAi(settings, thread, messages);
   if (thread.provider === 'anthropic') return requestAnthropic(settings, thread, messages);
+  if (thread.provider === 'openrouter') return requestOpenRouter(settings, thread, messages);
   throw new Error(`Unknown provider: ${thread.provider}`);
+}
+
+function apiKeyPlaceholder(provider: AIProvider) {
+  if (provider === 'openai') return 'sk-...';
+  if (provider === 'anthropic') return 'sk-ant-...';
+  if (provider === 'openrouter') return 'sk-or-...';
+  return '';
 }
 
 const SYSTEM_PROMPT = (thread: ThreadLane) =>
@@ -1076,6 +1084,47 @@ async function requestAnthropic(settings: AISettings, thread: ThreadLane, messag
   const inputTokens = data.usage?.input_tokens ?? 0;
   const outputTokens = data.usage?.output_tokens ?? 0;
   const usage = data.usage ? normalizeUsage(thread.model, inputTokens, outputTokens, inputTokens + outputTokens) : undefined;
+
+  return { assistantText, usage };
+}
+
+async function requestOpenRouter(settings: AISettings, thread: ThreadLane, messages: ChatMessage[]) {
+  const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${settings.apiKey}`,
+      'Content-Type': 'application/json',
+      'HTTP-Referer': window.location.origin,
+      'X-Title': 'Loomspace',
+    },
+    body: JSON.stringify({
+      model: thread.model,
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT(thread) },
+        ...messages.map((message) => ({
+          role: message.role === 'assistant' ? 'assistant' : message.role === 'system' ? 'system' : 'user',
+          content: message.text,
+        })),
+      ],
+      temperature: 0.4,
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || 'OpenRouter request failed');
+  }
+
+  const data = (await response.json()) as {
+    choices?: Array<{ message?: { content?: string } }>;
+    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+  };
+  const assistantText = data.choices?.[0]?.message?.content?.trim();
+  if (!assistantText) throw new Error('OpenRouter returned no assistant text');
+
+  const usage = data.usage
+    ? normalizeUsage(thread.model, data.usage.prompt_tokens ?? 0, data.usage.completion_tokens ?? 0, data.usage.total_tokens ?? 0)
+    : undefined;
 
   return { assistantText, usage };
 }
