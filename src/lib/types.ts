@@ -43,8 +43,6 @@ export interface ThreadLane {
   status: ThreadStatus;
   title: string;
   description: string;
-  providerConfigId: string;
-  model: string;
   context: ChatMessage[];
   nodes: ThreadNode[];
   activeNodeId: string | null;

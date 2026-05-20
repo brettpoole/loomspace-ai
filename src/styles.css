@@ -202,6 +202,83 @@ button.quiet {
   margin-top: 18px;
 }
 
+.profile-list-card {
+  margin-top: 14px;
+  display: grid;
+  gap: 10px;
+}
+
+.profile-list-card h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.profile-list {
+  display: grid;
+  gap: 6px;
+}
+
+.profile-chip {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.02);
+  color: inherit;
+  cursor: pointer;
+}
+
+.profile-chip.selected {
+  border-color: rgba(124, 247, 194, 0.4);
+  background: rgba(124, 247, 194, 0.05);
+}
+
+.profile-chip-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.profile-chip-copy strong {
+  font-size: 13px;
+}
+
+.profile-chip-copy small {
+  color: #93a2c4;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-lock.none { color: #93a2c4; }
+.profile-lock.locked { color: #ffd58b; }
+.profile-lock.unlocked { color: #9bf4cd; }
+
+.ai-settings-modal {
+  width: min(620px, 100%);
+  max-height: min(90vh, 880px);
+  overflow: hidden;
+  border-radius: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(8, 11, 20, 0.96);
+  box-shadow: 0 32px 80px rgba(0, 0, 0, 0.45);
+  display: grid;
+  grid-template-rows: auto 1fr;
+}
+
+.passphrase-escape {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.1);
+  display: grid;
+  gap: 8px;
+}
+
 .thread-list-spacer h2 {
   margin-bottom: 10px;
 }
@@ -862,7 +939,8 @@ button.quiet {
   }
 
   .chat-modal,
-  .thread-editor-modal {
+  .thread-editor-modal,
+  .ai-settings-modal {
     width: 100%;
     max-width: 100%;
     max-height: 100vh;
