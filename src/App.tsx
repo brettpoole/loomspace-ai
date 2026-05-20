@@ -51,6 +51,12 @@ export default function App() {
   const activeThread = state.threads.find((thread) => thread.id === state.selectedThreadId) ?? state.threads[0] ?? null;
   const activeNode = activeThread?.nodes.find((node) => node.id === state.selectedNodeId) ?? activeThread?.nodes.at(-1) ?? null;
   const settingsLockState = settings.hasEncryptedApiKey ? (settings.apiKey.trim() ? 'unlocked' : 'locked') : 'none';
+  const settingsHint =
+    settingsLockState === 'locked'
+      ? 'The stored key is encrypted. Unlock it with your passphrase before sending.'
+      : settingsLockState === 'unlocked'
+        ? 'The key is loaded in memory only. Lock it now when you want it out of the UI.'
+        : 'No encrypted key is stored yet. Enter a key + passphrase, then save.';
 
   const canvasWidth = Math.max(
     1280,
@@ -145,7 +151,7 @@ export default function App() {
   async function sendMessage() {
     if (!activeThread || !composerDraft.trim() || sending) return;
     if (!settings.apiKey.trim()) {
-      setError('Add your OpenAI API key in settings first.');
+      setError(settings.hasEncryptedApiKey ? 'Unlock the key first, or save a new encrypted key.' : 'Add your OpenAI API key in settings first.');
       return;
     }
 
@@ -229,11 +235,16 @@ export default function App() {
   }
 
   async function saveSecureSettings() {
+    const hasKey = Boolean(settings.apiKey.trim());
+    if (settings.hasEncryptedApiKey && hasKey) {
+      const overwrite = window.confirm('Overwrite the encrypted API key stored in cookies?');
+      if (!overwrite) return;
+    }
+
     setSavingSettings(true);
     setError(null);
     try {
       await saveSettings(settings, passphraseDraft);
-      const hasKey = Boolean(settings.apiKey.trim());
       setSettings((current) => ({
         ...current,
         apiKey: '',
@@ -242,6 +253,9 @@ export default function App() {
       setSettingsNotice(hasKey ? 'Encrypted API key saved to cookies and cleared from memory.' : 'Provider and model saved to cookies.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to save encrypted settings.');
+      if (hasKey) {
+        setSettingsNotice('Wrong passphrase or save failed — the encrypted key was not changed.');
+      }
     } finally {
       setSavingSettings(false);
     }
@@ -605,9 +619,10 @@ export default function App() {
                   placeholder="Ask the thread something"
                   rows={5}
                 />
+                {settingsLockState === 'locked' ? <p className="muted">Unlock the key to send a message.</p> : null}
                 {error ? <p className="error">{error}</p> : null}
-                <button onClick={sendMessage} disabled={!composerDraft.trim() || sending}>
-                  {sending ? 'Thinking…' : 'Send'}
+                <button onClick={sendMessage} disabled={!composerDraft.trim() || sending || !settings.apiKey.trim()}>
+                  {sending ? 'Thinking…' : settingsLockState === 'locked' ? 'Unlock to send' : 'Send'}
                 </button>
               </section>
 
@@ -683,7 +698,8 @@ export default function App() {
                     {savingSettings ? 'Saving…' : settings.hasEncryptedApiKey ? 'Update encrypted settings' : 'Save encrypted settings'}
                   </button>
                 </div>
-                {settingsNotice ? <p className="muted">{settingsNotice}</p> : <p className="muted">The API key is only persisted as encrypted cookie data.</p>}
+                <p className="muted">{settingsHint}</p>
+                {settingsNotice ? <p className="muted">{settingsNotice}</p> : null}
               </section>
             </div>
           </section>
