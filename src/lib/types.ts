@@ -10,6 +10,13 @@ export interface ChatMessage {
   text: string;
 }
 
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  estimatedCostUsd?: number;
+}
+
 export interface ThreadTitleNode {
   id: string;
   kind: 'title';
@@ -21,9 +28,11 @@ export interface ThreadChatNode {
   id: string;
   kind: 'chat';
   summary: string;
+  model: string;
   messages: ChatMessage[];
   confidence: Confidence;
   createdAt: string;
+  usage?: TokenUsage;
 }
 
 export type ThreadNode = ThreadTitleNode | ThreadChatNode;
@@ -34,6 +43,8 @@ export interface ThreadLane {
   status: ThreadStatus;
   title: string;
   description: string;
+  provider: AIProvider;
+  model: string;
   context: ChatMessage[];
   nodes: ThreadNode[];
   activeNodeId: string | null;
@@ -70,4 +81,11 @@ export interface FabricMetrics {
 
 export interface PersistedWorkspace {
   state: LoomspaceState;
+}
+
+export interface ThreadUsageSummary {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  estimatedCostUsd: number;
 }
