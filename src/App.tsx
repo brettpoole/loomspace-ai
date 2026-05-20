@@ -230,12 +230,13 @@ export default function App() {
     setError(null);
     try {
       await saveSettings(settings, passphraseDraft);
+      const hasKey = Boolean(settings.apiKey.trim());
       setSettings((current) => ({
         ...current,
-        apiKey: current.apiKey.trim(),
-        hasEncryptedApiKey: current.apiKey.trim() ? true : current.hasEncryptedApiKey,
+        apiKey: '',
+        hasEncryptedApiKey: hasKey ? true : current.hasEncryptedApiKey,
       }));
-      setSettingsNotice(settings.apiKey.trim() ? 'Encrypted API key saved to cookies.' : 'Provider and model saved to cookies.');
+      setSettingsNotice(hasKey ? 'Encrypted API key saved to cookies and cleared from memory.' : 'Provider and model saved to cookies.');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to save encrypted settings.');
     } finally {
