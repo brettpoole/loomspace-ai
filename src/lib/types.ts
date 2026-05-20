@@ -1,4 +1,4 @@
-export type AIProvider = 'openai' | 'anthropic' | 'openrouter';
+export type AIProvider = 'openai' | 'anthropic' | 'openrouter' | 'openai-compatible-custom';
 export type Confidence = 'low' | 'medium' | 'high';
 export type ThreadStatus = 'draft' | 'active' | 'stitch-ready' | 'closed';
 export type MessageRole = 'user' | 'assistant' | 'system';
@@ -43,12 +43,22 @@ export interface ThreadLane {
   status: ThreadStatus;
   title: string;
   description: string;
-  provider: AIProvider;
+  providerConfigId: string;
   model: string;
   context: ChatMessage[];
   nodes: ThreadNode[];
   activeNodeId: string | null;
   infoOpen: boolean;
+}
+
+export interface AIProviderConfig {
+  id: string;
+  kind: AIProvider;
+  label: string;
+  model: string;
+  apiKey: string;
+  hasEncryptedApiKey: boolean;
+  baseUrl?: string;
 }
 
 export interface LoomspaceState {
@@ -65,10 +75,8 @@ export interface LoomspaceState {
 }
 
 export interface AISettings {
-  provider: AIProvider;
-  model: string;
-  apiKey: string;
-  hasEncryptedApiKey: boolean;
+  activeProviderConfigId: string;
+  providerConfigs: AIProviderConfig[];
 }
 
 export interface FabricMetrics {
@@ -94,4 +102,5 @@ export interface ProviderInfo {
   id: AIProvider;
   label: string;
   defaultModel: string;
+  baseUrl?: string;
 }

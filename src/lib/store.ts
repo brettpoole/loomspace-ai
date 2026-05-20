@@ -1,6 +1,7 @@
 import { sampleState } from './sample';
 import type {
   AIProvider,
+  AIProviderConfig,
   AISettings,
   ChatMessage,
   FabricMetrics,
@@ -15,14 +16,19 @@ import type {
 } from './types';
 
 const WORKSPACE_KEY = 'loomspace.workspace.v7';
-const SETTINGS_COOKIE = 'loomspace.settings.v3';
-const SECRET_COOKIE = 'loomspace.settings.secret.v1';
+const SETTINGS_COOKIE = 'loomspace.settings.v4';
+const LEGACY_SETTINGS_COOKIE = 'loomspace.settings.v3';
+const LEGACY_SECRET_COOKIE = 'loomspace.settings.secret.v1';
+const SECRET_COOKIE_PREFIX = 'loomspace.settings.secret.';
 const PBKDF2_ITERATIONS = 310_000;
 
+let legacySecretConfigId: string | null = null;
+
 export const PROVIDERS: ProviderInfo[] = [
-  { id: 'openai', label: 'OpenAI', defaultModel: 'gpt-4o-mini' },
-  { id: 'anthropic', label: 'Anthropic', defaultModel: 'claude-3-5-sonnet-latest' },
-  { id: 'openrouter', label: 'OpenRouter (free)', defaultModel: 'meta-llama/llama-3.3-70b-instruct:free' },
+  { id: 'openai', label: 'OpenAI', defaultModel: 'gpt-4o-mini', baseUrl: 'https://api.openai.com/v1' },
+  { id: 'anthropic', label: 'Anthropic', defaultModel: 'claude-3-5-sonnet-latest', baseUrl: 'https://api.anthropic.com/v1' },
+  { id: 'openrouter', label: 'OpenRouter (free)', defaultModel: 'meta-llama/llama-3.3-70b-instruct:free', baseUrl: 'https://openrouter.ai/api/v1' },
+  { id: 'openai-compatible-custom', label: 'OpenAI Compatible (custom)', defaultModel: 'gpt-4o-mini' },
 ];
 
 export function isProvider(value: string): value is AIProvider {
@@ -31,6 +37,35 @@ export function isProvider(value: string): value is AIProvider {
 
 export function providerInfo(provider: AIProvider): ProviderInfo {
   return PROVIDERS.find((entry) => entry.id === provider) ?? PROVIDERS[0];
+}
+
+export function defaultProviderConfigs(): AIProviderConfig[] {
+  return PROVIDERS.filter((entry) => entry.id !== 'openai-compatible-custom').map((entry) => ({
+    id: entry.id,
+    kind: entry.id,
+    label: entry.label,
+    model: entry.defaultModel,
+    apiKey: '',
+    hasEncryptedApiKey: false,
+    baseUrl: entry.baseUrl,
+  }));
+}
+
+export function defaultProviderConfigId(kind: AIProvider): string {
+  return kind === 'openai-compatible-custom' ? 'openai-compatible-custom' : kind;
+}
+
+export function createProviderConfig(kind: AIProvider = 'openai-compatible-custom', overrides: Partial<AIProviderConfig> = {}): AIProviderConfig {
+  const info = providerInfo(kind);
+  return {
+    id: overrides.id ?? `provider-${crypto.randomUUID().slice(0, 8)}`,
+    kind,
+    label: overrides.label ?? info.label,
+    model: overrides.model ?? info.defaultModel,
+    apiKey: overrides.apiKey ?? '',
+    hasEncryptedApiKey: overrides.hasEncryptedApiKey ?? false,
+    baseUrl: overrides.baseUrl ?? info.baseUrl,
+  };
 }
 
 const MODEL_WINDOWS: Record<string, number> = {
@@ -51,9 +86,23 @@ const MODEL_PRICING: Record<string, { inputPerMillion: number; outputPerMillion:
   'claude-3-opus-latest': { inputPerMillion: 15, outputPerMillion: 75 },
 };
 
-interface PersistedSettingsPayload {
-  provider: AIProvider;
+interface PersistedProviderConfig {
+  id: string;
+  kind: AIProvider;
+  label: string;
   model: string;
+  hasEncryptedApiKey: boolean;
+  baseUrl?: string;
+}
+
+interface PersistedSettingsPayload {
+  activeProviderConfigId: string;
+  providerConfigs: PersistedProviderConfig[];
+}
+
+interface LegacySettingsPayload {
+  provider?: AIProvider;
+  model?: string;
 }
 
 interface EncryptedSecretPayload {
@@ -69,7 +118,7 @@ export function loadWorkspace(): LoomspaceState {
     const raw = localStorage.getItem(WORKSPACE_KEY);
     if (!raw) return structuredClone(sampleState);
     const parsed = JSON.parse(raw) as PersistedWorkspace;
-    return parsed.state ?? structuredClone(sampleState);
+    return migrateWorkspaceState(parsed.state ?? structuredClone(sampleState));
   } catch {
     return structuredClone(sampleState);
   }
@@ -81,46 +130,75 @@ export function saveWorkspace(state: LoomspaceState) {
 
 export function loadSettings(): AISettings {
   const persisted = readSettingsPayload();
-  const provider = persisted?.provider ?? 'openai';
+  const legacy = persisted ? null : readLegacySettingsPayload();
+  const baseConfigs = persisted?.providerConfigs ?? defaultProviderConfigs();
+  const activeProviderConfigId = persisted?.activeProviderConfigId ?? defaultProviderConfigId(legacy?.provider ?? 'openai');
+
+  legacySecretConfigId = !persisted && readCookie(LEGACY_SECRET_COOKIE) ? activeProviderConfigId : null;
+
+  const providerConfigs = baseConfigs.map((config) => {
+    const persistedConfig = persisted?.providerConfigs.find((entry) => entry.id === config.id);
+    const model = persistedConfig?.model ?? (legacy && config.id === activeProviderConfigId ? legacy.model : undefined) ?? config.model;
+    const hasSecret = Boolean(readConfigSecretPayload(config.id) || (legacySecretConfigId === config.id && readLegacySecretPayload()));
+
+    return {
+      ...config,
+      model: model.trim() || providerInfo(config.kind).defaultModel,
+      apiKey: '',
+      hasEncryptedApiKey: Boolean(persistedConfig?.hasEncryptedApiKey || hasSecret),
+    };
+  });
+
   return {
-    provider,
-    model: persisted?.model?.trim() || providerInfo(provider).defaultModel,
-    apiKey: '',
-    hasEncryptedApiKey: Boolean(readSecretPayload()),
+    activeProviderConfigId,
+    providerConfigs,
   };
 }
 
-export async function saveSettings(settings: AISettings, passphrase: string, options?: { clearSecret?: boolean }) {
-  writeSettingsPayload({ provider: settings.provider, model: settings.model });
+export function saveSettings(settings: AISettings) {
+  writeSettingsPayload({
+    activeProviderConfigId: settings.activeProviderConfigId,
+    providerConfigs: settings.providerConfigs.map((config) => ({
+      id: config.id,
+      kind: config.kind,
+      label: config.label,
+      model: config.model,
+      hasEncryptedApiKey: config.hasEncryptedApiKey,
+      baseUrl: config.baseUrl,
+    })),
+  });
+}
 
-  if (options?.clearSecret) {
-    deleteCookie(SECRET_COOKIE);
-    return;
-  }
-
-  if (settings.apiKey.trim()) {
-    if (!passphrase.trim()) {
-      throw new Error('Enter a passphrase before saving the API key.');
-    }
-    const payload = await encryptSecret(settings.apiKey.trim(), passphrase);
-    writeCookie(SECRET_COOKIE, JSON.stringify(payload));
+export async function saveProviderSecret(configId: string, apiKey: string, passphrase: string) {
+  if (!apiKey.trim()) throw new Error('No API key to save.');
+  if (!passphrase.trim()) throw new Error('Enter a passphrase before saving the API key.');
+  const payload = await encryptSecret(apiKey.trim(), passphrase);
+  writeCookie(secretCookieName(configId), JSON.stringify(payload));
+  if (legacySecretConfigId === configId) {
+    deleteCookie(LEGACY_SECRET_COOKIE);
+    legacySecretConfigId = null;
   }
 }
 
-export async function unlockApiKey(passphrase: string): Promise<string> {
-  const payload = readSecretPayload();
-  if (!payload) throw new Error('No encrypted API key is stored yet.');
+export async function unlockProviderSecret(configId: string, passphrase: string): Promise<string> {
+  const payload = readConfigSecretPayload(configId) ?? (legacySecretConfigId === configId ? readLegacySecretPayload() : null);
+  if (!payload) throw new Error('No encrypted API key is stored for this provider yet.');
   if (!passphrase.trim()) throw new Error('Enter your passphrase to unlock the API key.');
   return decryptSecret(payload, passphrase);
 }
 
-export function clearSecretCookie() {
-  deleteCookie(SECRET_COOKIE);
+export function clearProviderSecret(configId: string) {
+  deleteCookie(secretCookieName(configId));
+  if (legacySecretConfigId === configId) {
+    deleteCookie(LEGACY_SECRET_COOKIE);
+    legacySecretConfigId = null;
+  }
 }
 
 export function clearSettingsCookies() {
   deleteCookie(SETTINGS_COOKIE);
-  deleteCookie(SECRET_COOKIE);
+  deleteCookie(LEGACY_SETTINGS_COOKIE);
+  deleteCookie(LEGACY_SECRET_COOKIE);
 }
 
 export function computeMetrics(state: LoomspaceState): FabricMetrics {
@@ -137,9 +215,9 @@ export function summarize(text: string, limit = 60) {
   return compact.length > limit ? `${compact.slice(0, limit - 1)}…` : compact;
 }
 
-export function createThread(title: string, description: string, index: number, defaults?: { provider?: AIProvider; model?: string }): ThreadLane {
-  const provider = defaults?.provider ?? 'openai';
-  const model = defaults?.model ?? providerInfo(provider).defaultModel;
+export function createThread(title: string, description: string, index: number, defaults?: { providerConfigId?: string; model?: string }): ThreadLane {
+  const providerConfigId = defaults?.providerConfigId ?? 'openai';
+  const model = defaults?.model ?? providerInfo(resolveProviderKind(providerConfigId)).defaultModel;
   const threadId = `thread-${crypto.randomUUID().slice(0, 8)}`;
   const titleNode: ThreadTitleNode = {
     id: `title-${crypto.randomUUID().slice(0, 8)}`,
@@ -155,7 +233,7 @@ export function createThread(title: string, description: string, index: number, 
     status: 'draft',
     title,
     description,
-    provider,
+    providerConfigId,
     model,
     context: [],
     nodes: [titleNode, firstChatNode],
@@ -185,32 +263,32 @@ export function createChatNode(
 
 export function updateThreadDetails(
   thread: ThreadLane,
-  next: { title: string; description: string; provider: AIProvider; model: string },
+  next: { title: string; description: string; providerConfigId: string; model: string },
 ): ThreadLane {
   return {
     ...thread,
     title: next.title,
     description: next.description,
-    provider: next.provider,
+    providerConfigId: next.providerConfigId,
     model: next.model,
     nodes: thread.nodes.map((node) => (node.kind === 'title' ? { ...node, title: next.title, description: next.description } : node)),
   };
 }
 
 export function updateThreadTitle(thread: ThreadLane, title: string): ThreadLane {
-  return updateThreadDetails(thread, { title, description: thread.description, provider: thread.provider, model: thread.model });
+  return updateThreadDetails(thread, { title, description: thread.description, providerConfigId: thread.providerConfigId, model: thread.model });
 }
 
 export function updateThreadDescription(thread: ThreadLane, description: string): ThreadLane {
-  return updateThreadDetails(thread, { title: thread.title, description, provider: thread.provider, model: thread.model });
+  return updateThreadDetails(thread, { title: thread.title, description, providerConfigId: thread.providerConfigId, model: thread.model });
 }
 
 export function updateThreadModel(thread: ThreadLane, model: string): ThreadLane {
-  return updateThreadDetails(thread, { title: thread.title, description: thread.description, provider: thread.provider, model });
+  return updateThreadDetails(thread, { title: thread.title, description: thread.description, providerConfigId: thread.providerConfigId, model });
 }
 
-export function updateThreadProvider(thread: ThreadLane, provider: AIProvider): ThreadLane {
-  return updateThreadDetails(thread, { title: thread.title, description: thread.description, provider, model: thread.model });
+export function updateThreadProviderConfig(thread: ThreadLane, providerConfigId: string): ThreadLane {
+  return updateThreadDetails(thread, { title: thread.title, description: thread.description, providerConfigId, model: thread.model });
 }
 
 export function appendChatToThread(thread: ThreadLane, chat: ThreadChatNode, messages: ChatMessage[]): ThreadLane {
@@ -261,21 +339,12 @@ export function estimateCost(model: string, usage: Pick<TokenUsage, 'inputTokens
   return (usage.inputTokens / 1_000_000) * pricing.inputPerMillion + (usage.outputTokens / 1_000_000) * pricing.outputPerMillion;
 }
 
-export async function fetchProviderModels(provider: AIProvider, apiKey: string): Promise<string[]> {
-  if (!apiKey.trim()) throw new Error('Unlock or enter the API key before fetching models.');
+export async function fetchProviderModels(config: AIProviderConfig): Promise<string[]> {
+  const apiKey = config.apiKey.trim();
+  if (!apiKey) throw new Error('Unlock or enter the API key before fetching models.');
 
-  if (provider === 'openai') {
-    const response = await fetch('https://api.openai.com/v1/models', {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
-    if (!response.ok) throw new Error((await response.text()) || 'OpenAI /models request failed');
-    const data = (await response.json()) as { data?: Array<{ id?: string }> };
-    const ids = (data.data ?? []).map((entry) => entry.id ?? '').filter(Boolean);
-    return ids.filter((id) => /^(gpt|o\d|chatgpt)/i.test(id)).sort();
-  }
-
-  if (provider === 'anthropic') {
-    const response = await fetch('https://api.anthropic.com/v1/models', {
+  if (config.kind === 'anthropic') {
+    const response = await fetch(resolveBaseUrl(config.baseUrl, config.kind) + '/models', {
       headers: {
         'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
@@ -287,14 +356,13 @@ export async function fetchProviderModels(provider: AIProvider, apiKey: string):
     return (data.data ?? []).map((entry) => entry.id ?? '').filter(Boolean).sort();
   }
 
-  if (provider === 'openrouter') {
-    const response = await fetch('https://openrouter.ai/api/v1/models', {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
-    if (!response.ok) throw new Error((await response.text()) || 'OpenRouter /models request failed');
-    const data = (await response.json()) as {
-      data?: Array<{ id?: string; pricing?: { prompt?: string; completion?: string } }>;
-    };
+  const response = await fetch(resolveBaseUrl(config.baseUrl, config.kind) + '/models', {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  });
+  if (!response.ok) throw new Error((await response.text()) || `${providerInfo(config.kind).label} /models request failed`);
+  const data = (await response.json()) as { data?: Array<{ id?: string; pricing?: { prompt?: string; completion?: string } }> };
+
+  if (config.kind === 'openrouter') {
     return (data.data ?? [])
       .filter((entry) => {
         const id = entry.id ?? '';
@@ -309,18 +377,68 @@ export async function fetchProviderModels(provider: AIProvider, apiKey: string):
       .sort();
   }
 
-  throw new Error(`Unknown provider: ${provider}`);
+  return (data.data ?? []).map((entry) => entry.id ?? '').filter(Boolean).sort();
+}
+
+function resolveProviderKind(providerConfigId: string): AIProvider {
+  return readSettingsPayload()?.providerConfigs.find((config) => config.id === providerConfigId)?.kind ?? 'openai';
+}
+
+function resolveBaseUrl(baseUrl: string | undefined, kind: AIProvider) {
+  if (kind === 'anthropic') return baseUrl?.trim().replace(/\/+$/, '') || 'https://api.anthropic.com/v1';
+  if (kind === 'openrouter') return baseUrl?.trim().replace(/\/+$/, '') || 'https://openrouter.ai/api/v1';
+  if (kind === 'openai') return baseUrl?.trim().replace(/\/+$/, '') || 'https://api.openai.com/v1';
+  if (!baseUrl?.trim()) throw new Error('Enter a Base URL for the custom OpenAI-compatible provider.');
+  return baseUrl.trim().replace(/\/+$/, '');
+}
+
+function secretCookieName(configId: string) {
+  return `${SECRET_COOKIE_PREFIX}${configId}`;
 }
 
 function readSettingsPayload(): PersistedSettingsPayload | null {
+  const raw = readCookie(SETTINGS_COOKIE) ?? readCookie(LEGACY_SETTINGS_COOKIE);
+  if (!raw) return null;
   try {
-    const raw = readCookie(SETTINGS_COOKIE);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<PersistedSettingsPayload>;
+    const parsed = JSON.parse(raw) as Partial<PersistedSettingsPayload & LegacySettingsPayload>;
+
+    if (Array.isArray(parsed.providerConfigs)) {
+      return {
+        activeProviderConfigId: typeof parsed.activeProviderConfigId === 'string' ? parsed.activeProviderConfigId : 'openai',
+        providerConfigs: parsed.providerConfigs
+          .filter((entry): entry is PersistedProviderConfig => Boolean(entry && typeof entry.id === 'string' && isProvider(entry.kind) && typeof entry.label === 'string'))
+          .map((entry) => ({
+            id: entry.id,
+            kind: entry.kind,
+            label: entry.label,
+            model: typeof entry.model === 'string' ? entry.model : providerInfo(entry.kind).defaultModel,
+            hasEncryptedApiKey: Boolean(entry.hasEncryptedApiKey),
+            baseUrl: typeof entry.baseUrl === 'string' ? entry.baseUrl : providerInfo(entry.kind).baseUrl,
+          })),
+      };
+    }
+
     const provider: AIProvider = typeof parsed.provider === 'string' && isProvider(parsed.provider) ? parsed.provider : 'openai';
     return {
-      provider,
-      model: typeof parsed.model === 'string' ? parsed.model : providerInfo(provider).defaultModel,
+      activeProviderConfigId: defaultProviderConfigId(provider),
+      providerConfigs: defaultProviderConfigs().map((config) => ({
+        ...config,
+        model: typeof parsed.model === 'string' && config.id === defaultProviderConfigId(provider) ? parsed.model : config.model,
+      })),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function readLegacySettingsPayload(): LegacySettingsPayload | null {
+  try {
+    const raw = readCookie(LEGACY_SETTINGS_COOKIE);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<LegacySettingsPayload>;
+    return {
+      provider: typeof parsed.provider === 'string' && isProvider(parsed.provider) ? parsed.provider : 'openai',
+      model: typeof parsed.model === 'string' ? parsed.model : providerInfo('openai').defaultModel,
     };
   } catch {
     return null;
@@ -331,10 +449,10 @@ function writeSettingsPayload(payload: PersistedSettingsPayload) {
   writeCookie(SETTINGS_COOKIE, JSON.stringify(payload));
 }
 
-function readSecretPayload(): EncryptedSecretPayload | null {
+function readConfigSecretPayload(configId: string): EncryptedSecretPayload | null {
+  const raw = readCookie(secretCookieName(configId));
+  if (!raw) return null;
   try {
-    const raw = readCookie(SECRET_COOKIE);
-    if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<EncryptedSecretPayload>;
     if (parsed.version !== 1 || typeof parsed.ciphertext !== 'string' || typeof parsed.iv !== 'string' || typeof parsed.salt !== 'string') {
       return null;
@@ -349,6 +467,39 @@ function readSecretPayload(): EncryptedSecretPayload | null {
   } catch {
     return null;
   }
+}
+
+function readLegacySecretPayload(): EncryptedSecretPayload | null {
+  const raw = readCookie(LEGACY_SECRET_COOKIE);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<EncryptedSecretPayload>;
+    if (parsed.version !== 1 || typeof parsed.ciphertext !== 'string' || typeof parsed.iv !== 'string' || typeof parsed.salt !== 'string') {
+      return null;
+    }
+    return {
+      version: 1,
+      iterations: typeof parsed.iterations === 'number' ? parsed.iterations : PBKDF2_ITERATIONS,
+      salt: parsed.salt,
+      iv: parsed.iv,
+      ciphertext: parsed.ciphertext,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function migrateWorkspaceState(state: LoomspaceState): LoomspaceState {
+  return {
+    ...state,
+    threads: state.threads.map((thread) => {
+      const legacyProvider = (thread as ThreadLane & { provider?: AIProvider }).provider ?? 'openai';
+      return {
+        ...thread,
+        providerConfigId: (thread as ThreadLane & { providerConfigId?: string }).providerConfigId ?? defaultProviderConfigId(legacyProvider),
+      };
+    }),
+  };
 }
 
 async function encryptSecret(secret: string, passphrase: string): Promise<EncryptedSecretPayload> {
@@ -379,7 +530,7 @@ async function encryptSecret(secret: string, passphrase: string): Promise<Encryp
   };
 }
 
-async function decryptSecret(payload: EncryptedSecretPayload, passphrase: string) {
+async function decryptSecret(payload: EncryptedSecretPayload, passphrase: string): Promise<string> {
   const keyMaterial = await crypto.subtle.importKey('raw', new TextEncoder().encode(passphrase), 'PBKDF2', false, ['deriveKey']);
   const key = await crypto.subtle.deriveKey(
     {
@@ -399,22 +550,31 @@ async function decryptSecret(payload: EncryptedSecretPayload, passphrase: string
     key,
     fromBase64(payload.ciphertext),
   );
+
   return new TextDecoder().decode(plaintext);
 }
 
-function writeCookie(name: string, value: string) {
-  document.cookie = `${name}=${encodeURIComponent(value)}; Path=/; Max-Age=${60 * 60 * 24 * 365}; SameSite=Lax`;
+function readCookie(name: string): string | null {
+  const pattern = `${encodeURIComponent(name)}=`;
+  return document.cookie
+    .split('; ')
+    .find((entry) => entry.startsWith(pattern))
+    ?.slice(pattern.length)
+    ? decodeURIComponent(
+        document.cookie
+          .split('; ')
+          .find((entry) => entry.startsWith(pattern))!
+          .slice(pattern.length),
+      )
+    : null;
 }
 
-function readCookie(name: string) {
-  const prefix = `${name}=`;
-  const match = document.cookie.split('; ').find((entry) => entry.startsWith(prefix));
-  if (!match) return null;
-  return decodeURIComponent(match.slice(prefix.length));
+function writeCookie(name: string, value: string) {
+  document.cookie = `${encodeURIComponent(name)}=${encodeURIComponent(value)}; path=/; max-age=${60 * 60 * 24 * 365}`;
 }
 
 function deleteCookie(name: string) {
-  document.cookie = `${name}=; Path=/; Max-Age=0; SameSite=Lax`;
+  document.cookie = `${encodeURIComponent(name)}=; path=/; max-age=0`;
 }
 
 function toBase64(bytes: Uint8Array) {
@@ -426,8 +586,6 @@ function toBase64(bytes: Uint8Array) {
 function fromBase64(value: string) {
   const binary = atob(value);
   const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
   return bytes;
 }
