@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent, type WheelEvent } from 'react';
 import {
+  PROVIDERS,
   appendChatToThread,
   clearSecretCookie,
   clearSettingsCookies,
@@ -7,9 +8,11 @@ import {
   createChatNode,
   createThread,
   estimateCost,
+  fetchProviderModels,
   getModelWindow,
   loadSettings,
   loadWorkspace,
+  providerInfo,
   saveSettings,
   saveWorkspace,
   summarizeThreadUsage,
@@ -21,9 +24,9 @@ import {
 } from './lib/store';
 import type {
   AIProvider,
+  AISettings,
   ChatMessage,
   LoomspaceState,
-  OpenAISettings,
   ThreadChatNode,
   ThreadLane,
   ThreadNode,
@@ -46,20 +49,22 @@ const EDGE_PADDING = 80;
 interface ThreadDraft {
   title: string;
   description: string;
+  provider: AIProvider;
   model: string;
 }
 
 const DEFAULT_THREAD_DRAFT: ThreadDraft = {
   title: '',
   description: '',
+  provider: 'openai',
   model: 'gpt-4o-mini',
 };
 
-const MODEL_OPTIONS = ['gpt-4o-mini', 'gpt-4o', 'gpt-5'];
+type ModelCache = Partial<Record<AIProvider, string[]>>;
 
 export default function App() {
   const [state, setState] = useState<LoomspaceState>(() => loadWorkspace());
-  const [settings, setSettings] = useState<OpenAISettings>(() => loadSettings());
+  const [settings, setSettings] = useState<AISettings>(() => loadSettings());
   const [composerDraft, setComposerDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -72,6 +77,8 @@ export default function App() {
   const [threadEditorMode, setThreadEditorMode] = useState<'create' | 'edit'>('create');
   const [threadEditorDraft, setThreadEditorDraft] = useState<ThreadDraft>(DEFAULT_THREAD_DRAFT);
   const [threadEditorTargetId, setThreadEditorTargetId] = useState<string | null>(null);
+  const [modelCache, setModelCache] = useState<ModelCache>({});
+  const [modelsLoading, setModelsLoading] = useState(false);
   const viewportRef = useRef<HTMLDivElement>(null);
   const panGesture = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
 
@@ -90,6 +97,15 @@ export default function App() {
       : settingsLockState === 'unlocked'
         ? 'The key is loaded in memory only. Lock it now when you want it out of the UI.'
         : 'No encrypted key is stored yet. Enter a key + passphrase, then save.';
+
+  const settingsModels = useMemo(
+    () => modelsForProvider(modelCache, settings.provider, settings.model),
+    [modelCache, settings.provider, settings.model],
+  );
+  const threadEditorModels = useMemo(
+    () => modelsForProvider(modelCache, threadEditorDraft.provider, threadEditorDraft.model),
+    [modelCache, threadEditorDraft.provider, threadEditorDraft.model],
+  );
 
   const canvasWidth = Math.max(
     1280,
@@ -164,11 +180,13 @@ export default function App() {
         ? {
             title: thread.title,
             description: thread.description,
+            provider: thread.provider,
             model: thread.model,
           }
         : {
             title: '',
             description: '',
+            provider: settings.provider,
             model: settings.model,
           },
     );
@@ -182,13 +200,11 @@ export default function App() {
   function submitThreadEditor() {
     const title = threadEditorDraft.title.trim() || 'Untitled thread';
     const description = threadEditorDraft.description.trim() || 'A new lane for a project idea and its AI chat context.';
-    const model = threadEditorDraft.model.trim() || settings.model;
+    const provider = threadEditorDraft.provider;
+    const model = threadEditorDraft.model.trim() || providerInfo(provider).defaultModel;
 
     if (threadEditorMode === 'create') {
-      const thread = createThread(title, description, state.threads.length, {
-        provider: settings.provider,
-        model,
-      });
+      const thread = createThread(title, description, state.threads.length, { provider, model });
       setState((current) => ({
         ...current,
         version: current.version + 1,
@@ -204,12 +220,7 @@ export default function App() {
         version: current.version + 1,
         threads: current.threads.map((thread) =>
           thread.id === threadEditorTargetId
-            ? updateThreadDetails(thread, {
-                title,
-                description,
-                provider: thread.provider,
-                model,
-              })
+            ? updateThreadDetails(thread, { title, description, provider, model })
             : thread,
         ),
       }));
@@ -222,11 +233,11 @@ export default function App() {
   async function sendMessage() {
     if (!activeThread || !activeNodeIsChat || !composerDraft.trim() || sending) return;
     if (!settings.apiKey.trim()) {
-      setError(settings.hasEncryptedApiKey ? 'Unlock the key first, or save a new encrypted key.' : 'Add your OpenAI API key in settings first.');
+      setError(settings.hasEncryptedApiKey ? 'Unlock the key first, or save a new encrypted key.' : 'Add your API key in settings first.');
       return;
     }
-    if (settings.provider !== 'openai' || activeThread.provider !== 'openai') {
-      setError('Only OpenAI is wired up right now.');
+    if (settings.provider !== activeThread.provider) {
+      setError(`This thread uses ${activeThread.provider}, but the current key is for ${settings.provider}. Switch providers and load the matching key.`);
       return;
     }
 
@@ -361,8 +372,43 @@ export default function App() {
     setPassphraseDraft('');
     setSettingsNotice(null);
     setError(null);
+    setModelCache({});
     setChatModalOpen(false);
     setThreadEditorOpen(false);
+  }
+
+  function changeSettingsProvider(provider: AIProvider) {
+    const cached = modelCache[provider];
+    const nextModel = cached?.[0] ?? providerInfo(provider).defaultModel;
+    setSettings((current) => ({ ...current, provider, model: nextModel }));
+  }
+
+  function changeEditorProvider(provider: AIProvider) {
+    const cached = modelCache[provider];
+    const nextModel = cached?.[0] ?? providerInfo(provider).defaultModel;
+    setThreadEditorDraft((current) => ({ ...current, provider, model: nextModel }));
+  }
+
+  async function refreshModels(provider: AIProvider) {
+    if (!settings.apiKey.trim()) {
+      setError(settings.hasEncryptedApiKey ? 'Unlock the key first so we can list models.' : 'Add and unlock your API key to list models.');
+      return;
+    }
+    if (settings.provider !== provider) {
+      setError(`Switch the global provider to ${provider} (and load its key) before listing its models.`);
+      return;
+    }
+    setModelsLoading(true);
+    setError(null);
+    try {
+      const ids = await fetchProviderModels(provider, settings.apiKey);
+      setModelCache((current) => ({ ...current, [provider]: ids }));
+      setSettingsNotice(`Loaded ${ids.length} models for ${provider}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Failed to list models for ${provider}`);
+    } finally {
+      setModelsLoading(false);
+    }
   }
 
   function beginPan(event: PointerEvent<HTMLDivElement>) {
@@ -766,19 +812,42 @@ export default function App() {
                   AI Provider
                   <select
                     value={settings.provider}
-                    onChange={(event) => setSettings((current) => ({ ...current, provider: event.target.value as AIProvider }))}
+                    onChange={(event) => changeSettingsProvider(event.target.value as AIProvider)}
                   >
-                    <option value="openai">OpenAI</option>
+                    {PROVIDERS.map((entry) => (
+                      <option key={entry.id} value={entry.id}>
+                        {entry.label}
+                      </option>
+                    ))}
                   </select>
                 </label>
                 <label className="field">
                   Model
-                  <input
+                  <select
                     value={settings.model}
                     onChange={(event) => setSettings((current) => ({ ...current, model: event.target.value }))}
-                    placeholder="gpt-4o-mini"
-                  />
+                  >
+                    {settingsModels.map((model) => (
+                      <option key={model} value={model}>
+                        {model}
+                      </option>
+                    ))}
+                  </select>
                 </label>
+                <div className="editor-actions left-aligned">
+                  <button
+                    type="button"
+                    onClick={() => refreshModels(settings.provider)}
+                    disabled={modelsLoading || !settings.apiKey.trim()}
+                  >
+                    {modelsLoading ? 'Loading models…' : modelCache[settings.provider] ? 'Refresh models' : 'List models'}
+                  </button>
+                </div>
+                <p className="muted">
+                  {modelCache[settings.provider]
+                    ? `Showing ${modelCache[settings.provider]!.length} models from ${settings.provider}.`
+                    : `Unlock your ${settings.provider} key, then list models to populate this dropdown.`}
+                </p>
                 <label className="field">
                   Passphrase
                   <input
@@ -791,12 +860,12 @@ export default function App() {
                   />
                 </label>
                 <label className="field">
-                  OpenAI API key
+                  {providerInfo(settings.provider).label} API key
                   <input
                     type="password"
                     value={settings.apiKey}
                     onChange={(event) => setSettings((current) => ({ ...current, apiKey: event.target.value }))}
-                    placeholder={settings.hasEncryptedApiKey ? 'locked in cookie — unlock to load' : 'sk-...'}
+                    placeholder={settings.hasEncryptedApiKey ? 'locked in cookie — unlock to load' : settings.provider === 'openai' ? 'sk-...' : 'sk-ant-...'}
                     autoComplete="off"
                     spellCheck={false}
                   />
@@ -857,18 +926,36 @@ export default function App() {
                 />
               </label>
               <label className="field">
+                AI Provider
+                <select
+                  value={threadEditorDraft.provider}
+                  onChange={(event) => changeEditorProvider(event.target.value as AIProvider)}
+                >
+                  {PROVIDERS.map((entry) => (
+                    <option key={entry.id} value={entry.id}>
+                      {entry.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field">
                 Thread model
                 <select
                   value={threadEditorDraft.model}
                   onChange={(event) => setThreadEditorDraft((current) => ({ ...current, model: event.target.value }))}
                 >
-                  {MODEL_OPTIONS.map((model) => (
+                  {threadEditorModels.map((model) => (
                     <option key={model} value={model}>
                       {model}
                     </option>
                   ))}
                 </select>
               </label>
+              {!modelCache[threadEditorDraft.provider] ? (
+                <p className="muted">
+                  Tip: open AI settings and click “List models” to populate the {threadEditorDraft.provider} model dropdown from the live API.
+                </p>
+              ) : null}
               <div className="editor-actions">
                 <button onClick={submitThreadEditor}>{threadEditorMode === 'create' ? 'Create thread' : 'Save changes'}</button>
                 <button className="quiet" onClick={closeThreadEditor}>
@@ -883,7 +970,33 @@ export default function App() {
   );
 }
 
-async function requestAiReply(settings: OpenAISettings, thread: ThreadLane, messages: ChatMessage[]) {
+function modelsForProvider(cache: ModelCache, provider: AIProvider, currentModel: string): string[] {
+  const cached = cache[provider];
+  const fallback = providerInfo(provider).defaultModel;
+  const base = cached && cached.length > 0 ? cached : [fallback];
+  if (currentModel && !base.includes(currentModel)) {
+    return [currentModel, ...base];
+  }
+  return base;
+}
+
+async function requestAiReply(settings: AISettings, thread: ThreadLane, messages: ChatMessage[]) {
+  if (thread.provider === 'openai') return requestOpenAi(settings, thread, messages);
+  if (thread.provider === 'anthropic') return requestAnthropic(settings, thread, messages);
+  throw new Error(`Unknown provider: ${thread.provider}`);
+}
+
+const SYSTEM_PROMPT = (thread: ThreadLane) =>
+  [
+    `Thread title: ${thread.title}`,
+    `Thread description: ${thread.description}`,
+    'Keep replies concise and useful.',
+    'Prefer short paragraphs or bullet lists.',
+    'Use blank lines between ideas.',
+    'Do not mention internal tools or policies.',
+  ].join(' ');
+
+async function requestOpenAi(settings: AISettings, thread: ThreadLane, messages: ChatMessage[]) {
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -893,17 +1006,7 @@ async function requestAiReply(settings: OpenAISettings, thread: ThreadLane, mess
     body: JSON.stringify({
       model: thread.model,
       messages: [
-        {
-          role: 'system',
-          content: [
-            `Thread title: ${thread.title}`,
-            `Thread description: ${thread.description}`,
-            'Keep replies concise and useful.',
-            'Prefer short paragraphs or bullet lists.',
-            'Use blank lines between ideas.',
-            'Do not mention internal tools or policies.',
-          ].join(' '),
-        },
+        { role: 'system', content: SYSTEM_PROMPT(thread) },
         ...messages.map((message) => ({
           role: message.role === 'assistant' ? 'assistant' : message.role === 'system' ? 'system' : 'user',
           content: message.text,
@@ -928,6 +1031,51 @@ async function requestAiReply(settings: OpenAISettings, thread: ThreadLane, mess
   const usage = data.usage
     ? normalizeUsage(thread.model, data.usage.prompt_tokens ?? 0, data.usage.completion_tokens ?? 0, data.usage.total_tokens ?? 0)
     : undefined;
+
+  return { assistantText, usage };
+}
+
+async function requestAnthropic(settings: AISettings, thread: ThreadLane, messages: ChatMessage[]) {
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': settings.apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: thread.model,
+      max_tokens: 1024,
+      system: SYSTEM_PROMPT(thread),
+      messages: messages
+        .filter((message) => message.role !== 'system')
+        .map((message) => ({
+          role: message.role === 'assistant' ? 'assistant' : 'user',
+          content: message.text,
+        })),
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || 'Anthropic request failed');
+  }
+
+  const data = (await response.json()) as {
+    content?: Array<{ type?: string; text?: string }>;
+    usage?: { input_tokens?: number; output_tokens?: number };
+  };
+  const assistantText = (data.content ?? [])
+    .filter((block) => block.type === 'text')
+    .map((block) => block.text ?? '')
+    .join('\n')
+    .trim();
+  if (!assistantText) throw new Error('Anthropic returned no assistant text');
+
+  const inputTokens = data.usage?.input_tokens ?? 0;
+  const outputTokens = data.usage?.output_tokens ?? 0;
+  const usage = data.usage ? normalizeUsage(thread.model, inputTokens, outputTokens, inputTokens + outputTokens) : undefined;
 
   return { assistantText, usage };
 }

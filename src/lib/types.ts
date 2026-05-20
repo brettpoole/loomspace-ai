@@ -1,4 +1,4 @@
-export type AIProvider = 'openai';
+export type AIProvider = 'openai' | 'anthropic';
 export type Confidence = 'low' | 'medium' | 'high';
 export type ThreadStatus = 'draft' | 'active' | 'stitch-ready' | 'closed';
 export type MessageRole = 'user' | 'assistant' | 'system';
@@ -64,7 +64,7 @@ export interface LoomspaceState {
   version: number;
 }
 
-export interface OpenAISettings {
+export interface AISettings {
   provider: AIProvider;
   model: string;
   apiKey: string;
@@ -88,4 +88,10 @@ export interface ThreadUsageSummary {
   outputTokens: number;
   totalTokens: number;
   estimatedCostUsd: number;
+}
+
+export interface ProviderInfo {
+  id: AIProvider;
+  label: string;
+  defaultModel: string;
 }

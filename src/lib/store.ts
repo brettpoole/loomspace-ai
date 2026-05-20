@@ -1,11 +1,12 @@
 import { sampleState } from './sample';
 import type {
   AIProvider,
+  AISettings,
   ChatMessage,
   FabricMetrics,
   LoomspaceState,
-  OpenAISettings,
   PersistedWorkspace,
+  ProviderInfo,
   ThreadChatNode,
   ThreadLane,
   ThreadTitleNode,
@@ -18,20 +19,39 @@ const SETTINGS_COOKIE = 'loomspace.settings.v3';
 const SECRET_COOKIE = 'loomspace.settings.secret.v1';
 const PBKDF2_ITERATIONS = 310_000;
 
+export const PROVIDERS: ProviderInfo[] = [
+  { id: 'openai', label: 'OpenAI', defaultModel: 'gpt-4o-mini' },
+  { id: 'anthropic', label: 'Anthropic', defaultModel: 'claude-3-5-sonnet-latest' },
+];
+
+export function isProvider(value: string): value is AIProvider {
+  return PROVIDERS.some((entry) => entry.id === value);
+}
+
+export function providerInfo(provider: AIProvider): ProviderInfo {
+  return PROVIDERS.find((entry) => entry.id === provider) ?? PROVIDERS[0];
+}
+
 const MODEL_WINDOWS: Record<string, number> = {
   'gpt-4o-mini': 128_000,
   'gpt-4o': 128_000,
   'gpt-5': 256_000,
+  'claude-3-5-sonnet-latest': 200_000,
+  'claude-3-5-haiku-latest': 200_000,
+  'claude-3-opus-latest': 200_000,
 };
 
 const MODEL_PRICING: Record<string, { inputPerMillion: number; outputPerMillion: number }> = {
   'gpt-4o-mini': { inputPerMillion: 0.15, outputPerMillion: 0.6 },
   'gpt-4o': { inputPerMillion: 5, outputPerMillion: 15 },
   'gpt-5': { inputPerMillion: 1.25, outputPerMillion: 10 },
+  'claude-3-5-sonnet-latest': { inputPerMillion: 3, outputPerMillion: 15 },
+  'claude-3-5-haiku-latest': { inputPerMillion: 0.8, outputPerMillion: 4 },
+  'claude-3-opus-latest': { inputPerMillion: 15, outputPerMillion: 75 },
 };
 
 interface PersistedSettingsPayload {
-  provider: OpenAISettings['provider'];
+  provider: AIProvider;
   model: string;
 }
 
@@ -58,17 +78,18 @@ export function saveWorkspace(state: LoomspaceState) {
   localStorage.setItem(WORKSPACE_KEY, JSON.stringify({ state } satisfies PersistedWorkspace));
 }
 
-export function loadSettings(): OpenAISettings {
+export function loadSettings(): AISettings {
   const persisted = readSettingsPayload();
+  const provider = persisted?.provider ?? 'openai';
   return {
-    provider: persisted?.provider ?? 'openai',
-    model: persisted?.model?.trim() || 'gpt-4o-mini',
+    provider,
+    model: persisted?.model?.trim() || providerInfo(provider).defaultModel,
     apiKey: '',
     hasEncryptedApiKey: Boolean(readSecretPayload()),
   };
 }
 
-export async function saveSettings(settings: OpenAISettings, passphrase: string, options?: { clearSecret?: boolean }) {
+export async function saveSettings(settings: AISettings, passphrase: string, options?: { clearSecret?: boolean }) {
   writeSettingsPayload({ provider: settings.provider, model: settings.model });
 
   if (options?.clearSecret) {
@@ -116,6 +137,8 @@ export function summarize(text: string, limit = 60) {
 }
 
 export function createThread(title: string, description: string, index: number, defaults?: { provider?: AIProvider; model?: string }): ThreadLane {
+  const provider = defaults?.provider ?? 'openai';
+  const model = defaults?.model ?? providerInfo(provider).defaultModel;
   const threadId = `thread-${crypto.randomUUID().slice(0, 8)}`;
   const titleNode: ThreadTitleNode = {
     id: `title-${crypto.randomUUID().slice(0, 8)}`,
@@ -123,7 +146,7 @@ export function createThread(title: string, description: string, index: number, 
     title,
     description,
   };
-  const firstChatNode = createChatNode('AI chat ready', 'medium', [], defaults?.model ?? 'gpt-4o-mini');
+  const firstChatNode = createChatNode('AI chat ready', 'medium', [], model);
 
   return {
     id: threadId,
@@ -131,8 +154,8 @@ export function createThread(title: string, description: string, index: number, 
     status: 'draft',
     title,
     description,
-    provider: defaults?.provider ?? 'openai',
-    model: defaults?.model ?? 'gpt-4o-mini',
+    provider,
+    model,
     context: [],
     nodes: [titleNode, firstChatNode],
     activeNodeId: firstChatNode.id,
@@ -237,14 +260,44 @@ export function estimateCost(model: string, usage: Pick<TokenUsage, 'inputTokens
   return (usage.inputTokens / 1_000_000) * pricing.inputPerMillion + (usage.outputTokens / 1_000_000) * pricing.outputPerMillion;
 }
 
+export async function fetchProviderModels(provider: AIProvider, apiKey: string): Promise<string[]> {
+  if (!apiKey.trim()) throw new Error('Unlock or enter the API key before fetching models.');
+
+  if (provider === 'openai') {
+    const response = await fetch('https://api.openai.com/v1/models', {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    if (!response.ok) throw new Error((await response.text()) || 'OpenAI /models request failed');
+    const data = (await response.json()) as { data?: Array<{ id?: string }> };
+    const ids = (data.data ?? []).map((entry) => entry.id ?? '').filter(Boolean);
+    return ids.filter((id) => /^(gpt|o\d|chatgpt)/i.test(id)).sort();
+  }
+
+  if (provider === 'anthropic') {
+    const response = await fetch('https://api.anthropic.com/v1/models', {
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+    });
+    if (!response.ok) throw new Error((await response.text()) || 'Anthropic /models request failed');
+    const data = (await response.json()) as { data?: Array<{ id?: string }> };
+    return (data.data ?? []).map((entry) => entry.id ?? '').filter(Boolean).sort();
+  }
+
+  throw new Error(`Unknown provider: ${provider}`);
+}
+
 function readSettingsPayload(): PersistedSettingsPayload | null {
   try {
     const raw = readCookie(SETTINGS_COOKIE);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<PersistedSettingsPayload>;
+    const provider: AIProvider = typeof parsed.provider === 'string' && isProvider(parsed.provider) ? parsed.provider : 'openai';
     return {
-      provider: parsed.provider === 'openai' ? parsed.provider : 'openai',
-      model: typeof parsed.model === 'string' ? parsed.model : 'gpt-4o-mini',
+      provider,
+      model: typeof parsed.model === 'string' ? parsed.model : providerInfo(provider).defaultModel,
     };
   } catch {
     return null;
