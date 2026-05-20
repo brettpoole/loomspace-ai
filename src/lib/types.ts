@@ -1,4 +1,4 @@
-export type AIProvider = 'openai' | 'anthropic';
+export type AIProvider = 'openai' | 'anthropic' | 'openrouter';
 export type Confidence = 'low' | 'medium' | 'high';
 export type ThreadStatus = 'draft' | 'active' | 'stitch-ready' | 'closed';
 export type MessageRole = 'user' | 'assistant' | 'system';

@@ -22,6 +22,7 @@ const PBKDF2_ITERATIONS = 310_000;
 export const PROVIDERS: ProviderInfo[] = [
   { id: 'openai', label: 'OpenAI', defaultModel: 'gpt-4o-mini' },
   { id: 'anthropic', label: 'Anthropic', defaultModel: 'claude-3-5-sonnet-latest' },
+  { id: 'openrouter', label: 'OpenRouter (free)', defaultModel: 'meta-llama/llama-3.3-70b-instruct:free' },
 ];
 
 export function isProvider(value: string): value is AIProvider {
@@ -284,6 +285,28 @@ export async function fetchProviderModels(provider: AIProvider, apiKey: string):
     if (!response.ok) throw new Error((await response.text()) || 'Anthropic /models request failed');
     const data = (await response.json()) as { data?: Array<{ id?: string }> };
     return (data.data ?? []).map((entry) => entry.id ?? '').filter(Boolean).sort();
+  }
+
+  if (provider === 'openrouter') {
+    const response = await fetch('https://openrouter.ai/api/v1/models', {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    if (!response.ok) throw new Error((await response.text()) || 'OpenRouter /models request failed');
+    const data = (await response.json()) as {
+      data?: Array<{ id?: string; pricing?: { prompt?: string; completion?: string } }>;
+    };
+    return (data.data ?? [])
+      .filter((entry) => {
+        const id = entry.id ?? '';
+        if (!id) return false;
+        if (id.endsWith(':free')) return true;
+        const prompt = parseFloat(entry.pricing?.prompt ?? '');
+        const completion = parseFloat(entry.pricing?.completion ?? '');
+        return Number.isFinite(prompt) && Number.isFinite(completion) && prompt === 0 && completion === 0;
+      })
+      .map((entry) => entry.id ?? '')
+      .filter(Boolean)
+      .sort();
   }
 
   throw new Error(`Unknown provider: ${provider}`);
