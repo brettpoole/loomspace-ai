@@ -1,18 +1,31 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type PointerEvent, type WheelEvent } from 'react';
 import {
   appendChatToThread,
   computeMetrics,
   createChatNode,
   createThread,
+  estimateCost,
+  getModelWindow,
   loadSettings,
   loadWorkspace,
   saveSettings,
   saveWorkspace,
+  summarizeThreadUsage,
   threadWithActiveNode,
   threadWithInfo,
+  updateThreadDetails,
   updateThreadTitle,
 } from './lib/store';
-import type { ChatMessage, LoomspaceState, OpenAISettings, ThreadChatNode, ThreadLane, ThreadNode } from './lib/types';
+import type {
+  AIProvider,
+  ChatMessage,
+  LoomspaceState,
+  OpenAISettings,
+  ThreadChatNode,
+  ThreadLane,
+  ThreadNode,
+  TokenUsage,
+} from './lib/types';
 
 const LANE_WIDTH = 320;
 const LANE_GAP = 56;
@@ -27,15 +40,31 @@ const MIN_ZOOM = 0.7;
 const MAX_ZOOM = 1.6;
 const EDGE_PADDING = 80;
 
+interface ThreadDraft {
+  title: string;
+  description: string;
+  model: string;
+}
+
+const DEFAULT_THREAD_DRAFT: ThreadDraft = {
+  title: '',
+  description: '',
+  model: 'gpt-4o-mini',
+};
+
+const MODEL_OPTIONS = ['gpt-4o-mini', 'gpt-4o', 'gpt-5'];
+
 export default function App() {
   const [state, setState] = useState<LoomspaceState>(() => loadWorkspace());
   const [settings, setSettings] = useState<OpenAISettings>(() => loadSettings());
-  const [threadTitleDraft, setThreadTitleDraft] = useState('');
-  const [threadDescriptionDraft, setThreadDescriptionDraft] = useState('');
   const [composerDraft, setComposerDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [chatModalOpen, setChatModalOpen] = useState(false);
+  const [threadEditorOpen, setThreadEditorOpen] = useState(false);
+  const [threadEditorMode, setThreadEditorMode] = useState<'create' | 'edit'>('create');
+  const [threadEditorDraft, setThreadEditorDraft] = useState<ThreadDraft>(DEFAULT_THREAD_DRAFT);
+  const [threadEditorTargetId, setThreadEditorTargetId] = useState<string | null>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const panGesture = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
 
@@ -43,8 +72,11 @@ export default function App() {
   useEffect(() => saveSettings(settings), [settings]);
 
   const metrics = useMemo(() => computeMetrics(state), [state]);
-  const activeThread = state.threads.find((thread) => thread.id === state.selectedThreadId) ?? state.threads[0] ?? null;
-  const activeNode = activeThread?.nodes.find((node) => node.id === state.selectedNodeId) ?? activeThread?.nodes.at(-1) ?? null;
+  const activeThread = state.threads.find((thread) => thread.id === state.selectedThreadId) ?? null;
+  const activeNode =
+    activeThread?.nodes.find((node) => node.id === state.selectedNodeId) ??
+    (activeThread ? activeThread.nodes.find((node) => node.id === activeThread.activeNodeId) ?? null : null);
+  const activeNodeIsChat = activeNode?.kind === 'chat';
 
   const canvasWidth = Math.max(
     1280,
@@ -89,12 +121,7 @@ export default function App() {
     const panX = next?.panX ?? state.panX;
     const panY = next?.panY ?? state.panY;
     const nextBounds = boundedPan(panX, panY, zoom, width, height, canvasWidth, canvasHeight);
-    if (
-      nextBounds.panX === state.panX &&
-      nextBounds.panY === state.panY &&
-      zoom === state.zoom &&
-      !next
-    ) {
+    if (nextBounds.panX === state.panX && nextBounds.panY === state.panY && zoom === state.zoom && !next) {
       return;
     }
     setState((current) => ({ ...current, ...nextBounds, zoom }));
@@ -114,32 +141,77 @@ export default function App() {
     }));
   }
 
-  function createNewThread() {
-    const title = threadTitleDraft.trim() || `Thread ${state.threads.length + 1}`;
-    const description = threadDescriptionDraft.trim() || 'A new lane for a project idea and its AI chat context.';
-    const thread = createThread(title, description, state.threads.length);
-    const firstChat = thread.nodes.find((node): node is ThreadChatNode => node.kind === 'chat') ?? null;
+  function openThreadEditor(mode: 'create' | 'edit', thread?: ThreadLane) {
+    setThreadEditorMode(mode);
+    setThreadEditorTargetId(thread?.id ?? null);
+    setThreadEditorDraft(
+      thread
+        ? {
+            title: thread.title,
+            description: thread.description,
+            model: thread.model,
+          }
+        : {
+            title: '',
+            description: '',
+            model: settings.model,
+          },
+    );
+    setThreadEditorOpen(true);
+  }
 
-    setState((current) => ({
-      ...current,
-      version: current.version + 1,
-      threads: [...current.threads, thread],
-      selectedThreadId: thread.id,
-      selectedNodeId: firstChat?.id ?? null,
-      panX: current.threads.length === 0 ? current.panX : current.panX - 40,
-    }));
-    setChatModalOpen(true);
+  function closeThreadEditor() {
+    setThreadEditorOpen(false);
+  }
 
-    setThreadTitleDraft('');
-    setThreadDescriptionDraft('');
-    setComposerDraft('');
+  function submitThreadEditor() {
+    const title = threadEditorDraft.title.trim() || 'Untitled thread';
+    const description = threadEditorDraft.description.trim() || 'A new lane for a project idea and its AI chat context.';
+    const model = threadEditorDraft.model.trim() || settings.model;
+
+    if (threadEditorMode === 'create') {
+      const thread = createThread(title, description, state.threads.length, {
+        provider: settings.provider,
+        model,
+      });
+      setState((current) => ({
+        ...current,
+        version: current.version + 1,
+        threads: [...current.threads, thread],
+        selectedThreadId: thread.id,
+        selectedNodeId: thread.activeNodeId,
+        panX: current.threads.length === 0 ? current.panX : current.panX - 40,
+      }));
+      setChatModalOpen(true);
+    } else if (threadEditorTargetId) {
+      setState((current) => ({
+        ...current,
+        version: current.version + 1,
+        threads: current.threads.map((thread) =>
+          thread.id === threadEditorTargetId
+            ? updateThreadDetails(thread, {
+                title,
+                description,
+                provider: thread.provider,
+                model,
+              })
+            : thread,
+        ),
+      }));
+    }
+
+    closeThreadEditor();
     setError(null);
   }
 
   async function sendMessage() {
-    if (!activeThread || !composerDraft.trim() || sending) return;
+    if (!activeThread || !activeNodeIsChat || !composerDraft.trim() || sending) return;
     if (!settings.apiKey.trim()) {
       setError('Add your OpenAI API key in settings first.');
+      return;
+    }
+    if (settings.provider !== 'openai' || activeThread.provider !== 'openai') {
+      setError('Only OpenAI is wired up right now.');
       return;
     }
 
@@ -151,13 +223,13 @@ export default function App() {
     setComposerDraft('');
 
     try {
-      const assistantText = await requestAiReply(settings, activeThread, [...activeThread.context, userMessage]);
+      const { assistantText, usage } = await requestAiReply(settings, activeThread, [...activeThread.context, userMessage]);
       const assistantMessage: ChatMessage = {
         id: `msg-${crypto.randomUUID().slice(0, 8)}`,
         role: 'assistant',
         text: assistantText,
       };
-      const newChatNode = createChatNode(`${userText} → ${assistantText}`, 'medium', [userMessage, assistantMessage]);
+      const newChatNode = createChatNode(`${userText} → ${assistantText}`, 'medium', [userMessage, assistantMessage], activeThread.model, usage);
 
       setState((current) => ({
         ...current,
@@ -206,18 +278,17 @@ export default function App() {
   }
 
   function resetWorkspace() {
-    localStorage.removeItem('loomspace.workspace.v6');
-    localStorage.removeItem('loomspace.settings.v2');
+    localStorage.removeItem('loomspace.workspace.v7');
+    localStorage.removeItem('loomspace.settings.v3');
     setState(loadWorkspace());
     setSettings(loadSettings());
-    setThreadTitleDraft('');
-    setThreadDescriptionDraft('');
     setComposerDraft('');
     setError(null);
     setChatModalOpen(false);
+    setThreadEditorOpen(false);
   }
 
-  function beginPan(event: React.PointerEvent<HTMLDivElement>) {
+  function beginPan(event: PointerEvent<HTMLDivElement>) {
     if (event.target !== event.currentTarget) return;
     panGesture.current = {
       startX: event.clientX,
@@ -228,7 +299,7 @@ export default function App() {
     event.currentTarget.setPointerCapture(event.pointerId);
   }
 
-  function movePan(event: React.PointerEvent<HTMLDivElement>) {
+  function movePan(event: PointerEvent<HTMLDivElement>) {
     if (!panGesture.current) return;
     const deltaX = event.clientX - panGesture.current.startX;
     const deltaY = event.clientY - panGesture.current.startY;
@@ -303,7 +374,7 @@ export default function App() {
     setState((current) => ({ ...current, zoom: 1, ...centered }));
   }
 
-  function onWheel(event: React.WheelEvent<HTMLDivElement>) {
+  function onWheel(event: WheelEvent<HTMLDivElement>) {
     event.preventDefault();
     if (event.ctrlKey || event.metaKey) {
       zoomAt(event.clientX, event.clientY, state.zoom - event.deltaY * 0.0015);
@@ -316,6 +387,11 @@ export default function App() {
     setState((current) => ({ ...current, ...next }));
   }
 
+  const selectedThreadUsage = activeThread ? summarizeThreadUsage(activeThread) : null;
+  const remainingContext = activeThread && selectedThreadUsage
+    ? Math.max(getModelWindow(activeThread.model) - selectedThreadUsage.totalTokens, 0)
+    : 0;
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -324,7 +400,7 @@ export default function App() {
           <h1>{state.title}</h1>
         </div>
         <div className="topbar-actions">
-          <button onClick={createNewThread}>New thread</button>
+          <button onClick={() => openThreadEditor('create')}>New thread</button>
           <button onClick={() => zoomFromButton(-1)}>−</button>
           <button onClick={resetView}>Reset view</button>
           <button onClick={() => zoomFromButton(1)}>+</button>
@@ -361,40 +437,60 @@ export default function App() {
             <strong>{metrics.density.toFixed(2)}</strong>
           </section>
 
-          <h2>Create thread</h2>
-          <label className="field">
-            Thread title
-            <input value={threadTitleDraft} onChange={(event) => setThreadTitleDraft(event.target.value)} placeholder="e.g. deployment plan" />
-          </label>
-          <label className="field">
-            Thread description
-            <textarea
-              value={threadDescriptionDraft}
-              onChange={(event) => setThreadDescriptionDraft(event.target.value)}
-              placeholder="Why this thread exists"
-              rows={4}
-            />
-          </label>
-          <button onClick={createNewThread}>Create thread</button>
-
-          <h2>Threads</h2>
-          <div className="thread-list">
-            {state.threads.length === 0 ? <p className="muted">No threads yet.</p> : null}
-            {state.threads.map((thread) => (
-              <button
-                key={thread.id}
-                className={`thread-chip ${thread.id === activeThread?.id ? 'selected' : ''}`}
-                style={{ borderColor: thread.color }}
-                onClick={() => selectThread(thread.id, thread.activeNodeId)}
-              >
-                <span className="dot" style={{ background: thread.color }} />
-                <span>
-                  {thread.title}
-                  <small>{thread.description}</small>
-                </span>
-                <small>{thread.nodes.length} nodes</small>
+          {activeThread ? (
+            <section className="inspector-card editor-summary">
+              <div className="meta-row">
+                <div>
+                  <p className="eyebrow">Selected thread</p>
+                  <h2>{activeThread.title}</h2>
+                </div>
+                <button className="quiet" onClick={() => openThreadEditor('edit', activeThread)}>
+                  Edit thread
+                </button>
+              </div>
+              <p>{activeThread.description}</p>
+              <div className="thread-meta-row">
+                <span className="pill">{activeThread.model}</span>
+                <span className="pill muted-pill">{activeThread.provider}</span>
+              </div>
+              <button onClick={() => selectThread(activeThread.id, activeThread.activeNodeId)} style={{ marginTop: 12 }}>
+                Open chat
               </button>
-            ))}
+            </section>
+          ) : (
+            <section className="inspector-card editor-summary">
+              <p className="eyebrow">Thread setup</p>
+              <h2>Start a new thread</h2>
+              <p>Pop the title and description in first, then jump into the chat.</p>
+              <button onClick={() => openThreadEditor('create')} style={{ marginTop: 12 }}>
+                Create thread
+              </button>
+            </section>
+          )}
+
+          <div className="thread-list-spacer">
+            <h2>Threads</h2>
+            <div className="thread-list">
+              {state.threads.length === 0 ? <p className="muted">No threads yet.</p> : null}
+              {state.threads.map((thread) => {
+                const isActive = thread.id === activeThread?.id;
+                return (
+                  <button
+                    key={thread.id}
+                    className={`thread-chip ${isActive ? 'selected' : ''}`}
+                    style={{ borderColor: thread.color }}
+                    onClick={() => selectThread(thread.id, thread.activeNodeId)}
+                  >
+                    <span className="dot" style={{ background: thread.color }} />
+                    <span className="thread-chip-copy">
+                      {thread.title}
+                      <small>{thread.description}</small>
+                    </span>
+                    <span className="chip-model">{thread.model}</span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </aside>
 
@@ -405,11 +501,7 @@ export default function App() {
             <span>{metrics.saturation * 100 < 50 ? 'light weave' : 'dense weave'}</span>
           </div>
 
-          <div
-            ref={viewportRef}
-            className={`canvas-viewport ${state.densityOverlay ? 'overlay' : ''}`}
-            onWheel={onWheel}
-          >
+          <div ref={viewportRef} className={`canvas-viewport ${state.densityOverlay ? 'overlay' : ''}`} onWheel={onWheel}>
             <div
               className="canvas-stage"
               style={{
@@ -427,7 +519,7 @@ export default function App() {
                   <p className="eyebrow">Canvas idle</p>
                   <h2>Start a thread to begin the weave</h2>
                   <p>The first thread centers itself. New threads line up to the right.</p>
-                  <button onClick={createNewThread}>Create first thread</button>
+                  <button onClick={() => openThreadEditor('create')}>Create first thread</button>
                 </div>
               ) : null}
 
@@ -463,11 +555,7 @@ export default function App() {
                           <div key={node.id} className={`title-node-wrap ${thread.infoOpen ? 'open' : ''}`} style={{ top }}>
                             <article className="title-node">
                               <div className="title-node-head">
-                                <input
-                                  value={titleNode.title}
-                                  onChange={(event) => updateTitle(thread.id, event.target.value)}
-                                  onFocus={() => selectThread(thread.id, node.id)}
-                                />
+                                <input value={titleNode.title} onChange={(event) => updateTitle(thread.id, event.target.value)} onFocus={() => selectThread(thread.id, node.id)} />
                                 <button type="button" className="info-button" onClick={() => toggleInfo(thread.id)} aria-label="Thread info">
                                   ⓘ
                                 </button>
@@ -483,7 +571,7 @@ export default function App() {
                       return (
                         <button
                           key={node.id}
-                          className={`chat-node ${isSelected ? 'selected' : ''}`}
+                          className={`chat-node ${isSelected ? 'selected' : ''} ${isSelected ? 'pulse' : ''} ${sending && isSelected ? 'sending' : ''}`}
                           style={{ top, left: 0 }}
                           onClick={() => selectNode(thread.id, node.id)}
                         >
@@ -492,7 +580,7 @@ export default function App() {
                             <span className={`confidence ${chatNode.confidence}`}>{chatNode.confidence}</span>
                           </div>
                           <strong>{chatNode.summary}</strong>
-                          <small>{chatNode.messages.length ? `${chatNode.messages.length} messages` : 'ready'}</small>
+                          <small>{chatNode.model}</small>
                         </button>
                       );
                     })}
@@ -502,7 +590,6 @@ export default function App() {
             </div>
           </div>
         </section>
-
       </main>
 
       {chatModalOpen && activeThread ? (
@@ -520,8 +607,40 @@ export default function App() {
 
             <div className="chat-modal-body">
               <article className="inspector-card">
-                <h3>{activeThread.description}</h3>
-                <p>{activeThread.nodes.length} nodes in this lane.</p>
+                <div className="meta-row">
+                  <div>
+                    <h3>{activeThread.description}</h3>
+                    <p>{activeThread.nodes.length} nodes in this lane.</p>
+                  </div>
+                  <button className="quiet" onClick={() => openThreadEditor('edit', activeThread)}>
+                    Edit thread
+                  </button>
+                </div>
+                <div className="thread-meta-row stack">
+                  <span className="pill">Provider: {activeThread.provider}</span>
+                  <span className="pill">Model: {activeThread.model}</span>
+                  <span className="pill">Context left: {activeThread ? remainingContext.toLocaleString() : '—'}</span>
+                </div>
+                {selectedThreadUsage ? (
+                  <div className="usage-grid">
+                    <div>
+                      <span>Input</span>
+                      <strong>{selectedThreadUsage.inputTokens.toLocaleString()}</strong>
+                    </div>
+                    <div>
+                      <span>Output</span>
+                      <strong>{selectedThreadUsage.outputTokens.toLocaleString()}</strong>
+                    </div>
+                    <div>
+                      <span>Total</span>
+                      <strong>{selectedThreadUsage.totalTokens.toLocaleString()}</strong>
+                    </div>
+                    <div>
+                      <span>Cost est.</span>
+                      <strong>${selectedThreadUsage.estimatedCostUsd.toFixed(4)}</strong>
+                    </div>
+                  </div>
+                ) : null}
               </article>
 
               <section className="chat-panel">
@@ -537,33 +656,50 @@ export default function App() {
                 )}
               </section>
 
-              <section className="inspector-card">
+              <section className="inspector-card send-card">
                 <h4>Send to AI</h4>
-                <textarea
-                  value={composerDraft}
-                  onChange={(event) => setComposerDraft(event.target.value)}
-                  placeholder="Ask the thread something"
-                  rows={5}
-                />
-                {error ? <p className="error">{error}</p> : null}
-                <button onClick={sendMessage} disabled={!composerDraft.trim() || sending}>
-                  {sending ? 'Thinking…' : 'Send'}
-                </button>
+                {activeNodeIsChat ? (
+                  <>
+                    <textarea
+                      value={composerDraft}
+                      onChange={(event) => setComposerDraft(event.target.value)}
+                      placeholder="Ask the thread something"
+                      rows={5}
+                    />
+                    {error ? <p className="error">{error}</p> : null}
+                    <button onClick={sendMessage} disabled={!composerDraft.trim() || sending}>
+                      {sending ? 'Thinking…' : 'Send'}
+                    </button>
+                  </>
+                ) : (
+                  <p className="muted">Select an active chat node to unlock the composer.</p>
+                )}
               </section>
 
               {activeNode?.kind === 'chat' ? (
-                <section className="inspector-card">
+                <section className={`inspector-card node-card ${sending && activeNode.id === activeThread.activeNodeId ? 'sending' : ''}`}>
                   <h4>Selected node</h4>
                   <p>{activeNode.summary}</p>
                   <ul>
                     <li>{activeNode.messages.length} messages</li>
                     <li>{activeNode.createdAt.slice(0, 10)}</li>
+                    <li>{activeNode.model}</li>
+                    {activeNode.usage ? <li>{activeNode.usage.totalTokens.toLocaleString()} tokens</li> : null}
                   </ul>
                 </section>
               ) : null}
 
               <section className="inspector-card settings-card">
                 <h4>AI settings</h4>
+                <label className="field">
+                  AI Provider
+                  <select
+                    value={settings.provider}
+                    onChange={(event) => setSettings((current) => ({ ...current, provider: event.target.value as AIProvider }))}
+                  >
+                    <option value="openai">OpenAI</option>
+                  </select>
+                </label>
                 <label className="field">
                   OpenAI API key
                   <input
@@ -575,16 +711,62 @@ export default function App() {
                     spellCheck={false}
                   />
                 </label>
-                <label className="field">
-                  Model
-                  <input
-                    value={settings.model}
-                    onChange={(event) => setSettings((current) => ({ ...current, model: event.target.value }))}
-                    placeholder="gpt-4o-mini"
-                  />
-                </label>
                 <p className="muted">Stored locally in this browser only.</p>
               </section>
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {threadEditorOpen ? (
+        <div className="chat-modal-backdrop" onClick={closeThreadEditor}>
+          <section className="thread-editor-modal" onClick={(event) => event.stopPropagation()}>
+            <header className="chat-modal-header">
+              <div>
+                <p className="eyebrow">{threadEditorMode === 'create' ? 'Create thread' : 'Edit thread'}</p>
+                <h2>{threadEditorMode === 'create' ? 'Start with the title and description' : 'Update the thread details'}</h2>
+              </div>
+              <button type="button" className="quiet" onClick={closeThreadEditor} aria-label="Close thread editor">
+                ×
+              </button>
+            </header>
+            <div className="chat-modal-body">
+              <label className="field">
+                Thread title
+                <input
+                  value={threadEditorDraft.title}
+                  onChange={(event) => setThreadEditorDraft((current) => ({ ...current, title: event.target.value }))}
+                  placeholder="e.g. deployment plan"
+                />
+              </label>
+              <label className="field">
+                Thread description
+                <textarea
+                  value={threadEditorDraft.description}
+                  onChange={(event) => setThreadEditorDraft((current) => ({ ...current, description: event.target.value }))}
+                  placeholder="Why this thread exists"
+                  rows={4}
+                />
+              </label>
+              <label className="field">
+                Thread model
+                <select
+                  value={threadEditorDraft.model}
+                  onChange={(event) => setThreadEditorDraft((current) => ({ ...current, model: event.target.value }))}
+                >
+                  {MODEL_OPTIONS.map((model) => (
+                    <option key={model} value={model}>
+                      {model}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="editor-actions">
+                <button onClick={submitThreadEditor}>{threadEditorMode === 'create' ? 'Create thread' : 'Save changes'}</button>
+                <button className="quiet" onClick={closeThreadEditor}>
+                  Cancel
+                </button>
+              </div>
             </div>
           </section>
         </div>
@@ -601,7 +783,7 @@ async function requestAiReply(settings: OpenAISettings, thread: ThreadLane, mess
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: settings.model,
+      model: thread.model,
       messages: [
         {
           role: 'system',
@@ -628,10 +810,28 @@ async function requestAiReply(settings: OpenAISettings, thread: ThreadLane, mess
     throw new Error(text || 'OpenAI request failed');
   }
 
-  const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
+  const data = (await response.json()) as {
+    choices?: Array<{ message?: { content?: string } }>;
+    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+  };
   const assistantText = data.choices?.[0]?.message?.content?.trim();
   if (!assistantText) throw new Error('OpenAI returned no assistant text');
-  return assistantText;
+
+  const usage = data.usage
+    ? normalizeUsage(thread.model, data.usage.prompt_tokens ?? 0, data.usage.completion_tokens ?? 0, data.usage.total_tokens ?? 0)
+    : undefined;
+
+  return { assistantText, usage };
+}
+
+function normalizeUsage(model: string, inputTokens: number, outputTokens: number, totalTokens: number): TokenUsage {
+  const total = totalTokens || inputTokens + outputTokens;
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens: total,
+    estimatedCostUsd: estimateCost(model, { inputTokens, outputTokens }),
+  };
 }
 
 function nodeHeight(thread: ThreadLane, node: ThreadNode) {

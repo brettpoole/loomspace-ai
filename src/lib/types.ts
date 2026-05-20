@@ -2,11 +2,19 @@ export type Confidence = 'low' | 'medium' | 'high';
 export type ThreadStatus = 'draft' | 'active' | 'stitch-ready' | 'closed';
 export type MessageRole = 'user' | 'assistant' | 'system';
 export type ThreadNodeKind = 'title' | 'chat';
+export type AIProvider = 'openai';
 
 export interface ChatMessage {
   id: string;
   role: MessageRole;
   text: string;
+}
+
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  estimatedCostUsd?: number;
 }
 
 export interface ThreadTitleNode {
@@ -20,9 +28,11 @@ export interface ThreadChatNode {
   id: string;
   kind: 'chat';
   summary: string;
+  model: string;
   messages: ChatMessage[];
   confidence: Confidence;
   createdAt: string;
+  usage?: TokenUsage;
 }
 
 export type ThreadNode = ThreadTitleNode | ThreadChatNode;
@@ -33,6 +43,8 @@ export interface ThreadLane {
   status: ThreadStatus;
   title: string;
   description: string;
+  provider: AIProvider;
+  model: string;
   context: ChatMessage[];
   nodes: ThreadNode[];
   activeNodeId: string | null;
@@ -53,6 +65,7 @@ export interface LoomspaceState {
 }
 
 export interface OpenAISettings {
+  provider: AIProvider;
   apiKey: string;
   model: string;
 }
@@ -67,4 +80,11 @@ export interface FabricMetrics {
 
 export interface PersistedWorkspace {
   state: LoomspaceState;
+}
+
+export interface ThreadUsageSummary {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  estimatedCostUsd: number;
 }
