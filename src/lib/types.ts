@@ -1,8 +1,8 @@
+export type AIProvider = 'openai';
 export type Confidence = 'low' | 'medium' | 'high';
 export type ThreadStatus = 'draft' | 'active' | 'stitch-ready' | 'closed';
 export type MessageRole = 'user' | 'assistant' | 'system';
 export type ThreadNodeKind = 'title' | 'chat';
-export type AIProvider = 'openai';
 
 export interface ChatMessage {
   id: string;
@@ -66,8 +66,9 @@ export interface LoomspaceState {
 
 export interface OpenAISettings {
   provider: AIProvider;
-  apiKey: string;
   model: string;
+  apiKey: string;
+  hasEncryptedApiKey: boolean;
 }
 
 export interface FabricMetrics {

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent, type WheelEvent } from 'react';
 import {
   appendChatToThread,
+  clearSecretCookie,
+  clearSettingsCookies,
   computeMetrics,
   createChatNode,
   createThread,
@@ -13,6 +15,7 @@ import {
   summarizeThreadUsage,
   threadWithActiveNode,
   threadWithInfo,
+  unlockApiKey,
   updateThreadDetails,
   updateThreadTitle,
 } from './lib/store';
@@ -60,6 +63,9 @@ export default function App() {
   const [composerDraft, setComposerDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
+  const [passphraseDraft, setPassphraseDraft] = useState('');
+  const [savingSettings, setSavingSettings] = useState(false);
   const [chatModalOpen, setChatModalOpen] = useState(false);
   const [threadEditorOpen, setThreadEditorOpen] = useState(false);
   const [threadEditorMode, setThreadEditorMode] = useState<'create' | 'edit'>('create');
@@ -69,7 +75,6 @@ export default function App() {
   const panGesture = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
 
   useEffect(() => saveWorkspace(state), [state]);
-  useEffect(() => saveSettings(settings), [settings]);
 
   const metrics = useMemo(() => computeMetrics(state), [state]);
   const activeThread = state.threads.find((thread) => thread.id === state.selectedThreadId) ?? null;
@@ -77,6 +82,13 @@ export default function App() {
     activeThread?.nodes.find((node) => node.id === state.selectedNodeId) ??
     (activeThread ? activeThread.nodes.find((node) => node.id === activeThread.activeNodeId) ?? null : null);
   const activeNodeIsChat = activeNode?.kind === 'chat';
+  const settingsLockState = settings.hasEncryptedApiKey ? (settings.apiKey.trim() ? 'unlocked' : 'locked') : 'none';
+  const settingsHint =
+    settingsLockState === 'locked'
+      ? 'The stored key is encrypted. Unlock it with your passphrase before sending.'
+      : settingsLockState === 'unlocked'
+        ? 'The key is loaded in memory only. Lock it now when you want it out of the UI.'
+        : 'No encrypted key is stored yet. Enter a key + passphrase, then save.';
 
   const canvasWidth = Math.max(
     1280,
@@ -207,7 +219,7 @@ export default function App() {
   async function sendMessage() {
     if (!activeThread || !activeNodeIsChat || !composerDraft.trim() || sending) return;
     if (!settings.apiKey.trim()) {
-      setError('Add your OpenAI API key in settings first.');
+      setError(settings.hasEncryptedApiKey ? 'Unlock the key first, or save a new encrypted key.' : 'Add your OpenAI API key in settings first.');
       return;
     }
     if (settings.provider !== 'openai' || activeThread.provider !== 'openai') {
@@ -277,12 +289,74 @@ export default function App() {
     }));
   }
 
+  async function unlockStoredKey() {
+    if (!settings.hasEncryptedApiKey) {
+      setSettingsNotice('No encrypted key is stored yet.');
+      return;
+    }
+
+    try {
+      const apiKey = await unlockApiKey(passphraseDraft);
+      setSettings((current) => ({ ...current, apiKey, hasEncryptedApiKey: true }));
+      setSettingsNotice('API key unlocked in memory.');
+      setError(null);
+    } catch (err) {
+      setSettings((current) => ({ ...current, apiKey: '' }));
+      setError(err instanceof Error ? err.message : 'Unable to unlock the API key.');
+    }
+  }
+
+  async function saveSecureSettings() {
+    const hasKey = Boolean(settings.apiKey.trim());
+    if (settings.hasEncryptedApiKey && hasKey) {
+      const overwrite = window.confirm('Overwrite the encrypted API key stored in cookies?');
+      if (!overwrite) return;
+    }
+
+    setSavingSettings(true);
+    setError(null);
+    try {
+      await saveSettings(settings, passphraseDraft);
+      setSettings((current) => ({
+        ...current,
+        apiKey: '',
+        hasEncryptedApiKey: hasKey ? true : current.hasEncryptedApiKey,
+      }));
+      setSettingsNotice(hasKey ? 'Encrypted API key saved to cookies and cleared from memory.' : 'Provider and model saved to cookies.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to save encrypted settings.');
+      if (hasKey) {
+        setSettingsNotice('Wrong passphrase or save failed — the encrypted key was not changed.');
+      }
+    } finally {
+      setSavingSettings(false);
+    }
+  }
+
+  function forgetUnlockedKey() {
+    setSettings((current) => ({ ...current, apiKey: '' }));
+    setSettingsNotice('Cleared from memory. The encrypted cookie stays put until you overwrite it.');
+  }
+
+  function lockNow() {
+    setSettings((current) => ({ ...current, apiKey: '' }));
+    setSettingsNotice('Locked. The encrypted key stays in the cookie.');
+  }
+
+  function removeStoredKey() {
+    clearSecretCookie();
+    setSettings((current) => ({ ...current, apiKey: '', hasEncryptedApiKey: false }));
+    setSettingsNotice('Encrypted API key removed from cookies.');
+  }
+
   function resetWorkspace() {
     localStorage.removeItem('loomspace.workspace.v7');
-    localStorage.removeItem('loomspace.settings.v3');
+    clearSettingsCookies();
     setState(loadWorkspace());
     setSettings(loadSettings());
     setComposerDraft('');
+    setPassphraseDraft('');
+    setSettingsNotice(null);
     setError(null);
     setChatModalOpen(false);
     setThreadEditorOpen(false);
@@ -666,9 +740,10 @@ export default function App() {
                       placeholder="Ask the thread something"
                       rows={5}
                     />
+                    {settingsLockState === 'locked' ? <p className="muted">Unlock the key to send a message.</p> : null}
                     {error ? <p className="error">{error}</p> : null}
-                    <button onClick={sendMessage} disabled={!composerDraft.trim() || sending}>
-                      {sending ? 'Thinking…' : 'Send'}
+                    <button onClick={sendMessage} disabled={!composerDraft.trim() || sending || !settings.apiKey.trim()}>
+                      {sending ? 'Thinking…' : settingsLockState === 'locked' ? 'Unlock to send' : 'Send'}
                     </button>
                   </>
                 ) : (
@@ -690,7 +765,10 @@ export default function App() {
               ) : null}
 
               <section className="inspector-card settings-card">
-                <h4>AI settings</h4>
+                <div className="meta-row">
+                  <h4>AI settings</h4>
+                  <span className={`pill settings-pill ${settingsLockState}`}>{settingsLockState === 'none' ? 'no stored key' : settingsLockState}</span>
+                </div>
                 <label className="field">
                   AI Provider
                   <select
@@ -701,17 +779,54 @@ export default function App() {
                   </select>
                 </label>
                 <label className="field">
+                  Model
+                  <input
+                    value={settings.model}
+                    onChange={(event) => setSettings((current) => ({ ...current, model: event.target.value }))}
+                    placeholder="gpt-4o-mini"
+                  />
+                </label>
+                <label className="field">
+                  Passphrase
+                  <input
+                    type="password"
+                    value={passphraseDraft}
+                    onChange={(event) => setPassphraseDraft(event.target.value)}
+                    placeholder="unlock / encrypt the API key"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </label>
+                <label className="field">
                   OpenAI API key
                   <input
                     type="password"
                     value={settings.apiKey}
                     onChange={(event) => setSettings((current) => ({ ...current, apiKey: event.target.value }))}
-                    placeholder="sk-..."
+                    placeholder={settings.hasEncryptedApiKey ? 'locked in cookie — unlock to load' : 'sk-...'}
                     autoComplete="off"
                     spellCheck={false}
                   />
                 </label>
-                <p className="muted">Stored locally in this browser only.</p>
+                <div className="editor-actions left-aligned">
+                  <button type="button" onClick={unlockStoredKey} disabled={savingSettings || !settings.hasEncryptedApiKey}>
+                    Unlock key
+                  </button>
+                  <button type="button" onClick={lockNow} disabled={savingSettings || !settings.apiKey.trim()}>
+                    Lock now
+                  </button>
+                  <button type="button" onClick={forgetUnlockedKey} disabled={savingSettings || !settings.apiKey.trim()}>
+                    Forget from memory
+                  </button>
+                  <button type="button" onClick={removeStoredKey} disabled={savingSettings || !settings.hasEncryptedApiKey}>
+                    Remove stored key
+                  </button>
+                  <button type="button" onClick={saveSecureSettings} disabled={savingSettings}>
+                    {savingSettings ? 'Saving…' : settings.hasEncryptedApiKey ? 'Update encrypted settings' : 'Save encrypted settings'}
+                  </button>
+                </div>
+                <p className="muted">{settingsHint}</p>
+                {settingsNotice ? <p className="muted">{settingsNotice}</p> : null}
               </section>
             </div>
           </section>
