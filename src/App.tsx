@@ -2,10 +2,11 @@ import { useEffect, useMemo, useRef, useState, type PointerEvent, type WheelEven
 import {
   PROVIDERS,
   appendChatToThread,
-  clearSecretCookie,
+  clearProviderSecret,
   clearSettingsCookies,
   computeMetrics,
   createChatNode,
+  createProviderConfig,
   createThread,
   estimateCost,
   fetchProviderModels,
@@ -13,17 +14,20 @@ import {
   loadSettings,
   loadWorkspace,
   providerInfo,
+  saveProviderSecret,
   saveSettings,
   saveWorkspace,
   summarizeThreadUsage,
   threadWithActiveNode,
   threadWithInfo,
-  unlockApiKey,
+  unlockProviderSecret,
   updateThreadDetails,
+  updateThreadProviderConfig,
   updateThreadTitle,
 } from './lib/store';
 import type {
   AIProvider,
+  AIProviderConfig,
   AISettings,
   ChatMessage,
   LoomspaceState,
@@ -49,18 +53,16 @@ const EDGE_PADDING = 80;
 interface ThreadDraft {
   title: string;
   description: string;
-  provider: AIProvider;
   model: string;
 }
 
 const DEFAULT_THREAD_DRAFT: ThreadDraft = {
   title: '',
   description: '',
-  provider: 'openai',
   model: 'gpt-4o-mini',
 };
 
-type ModelCache = Partial<Record<AIProvider, string[]>>;
+type ModelCache = Record<string, string[]>;
 
 export default function App() {
   const [state, setState] = useState<LoomspaceState>(() => loadWorkspace());
@@ -69,7 +71,7 @@ export default function App() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
-  const [passphraseModal, setPassphraseModal] = useState<{ mode: 'encrypt' | 'unlock'; passphrase: string; busy: boolean; pendingKey?: string } | null>(null);
+  const [passphraseModal, setPassphraseModal] = useState<{ mode: 'encrypt' | 'unlock'; passphrase: string; busy: boolean; pendingKey?: string; targetConfigId?: string } | null>(null);
   const [savingSettings, setSavingSettings] = useState(false);
   const [chatModalOpen, setChatModalOpen] = useState(false);
   const [threadEditorOpen, setThreadEditorOpen] = useState(false);
@@ -83,6 +85,7 @@ export default function App() {
   const panGesture = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
 
   useEffect(() => saveWorkspace(state), [state]);
+  useEffect(() => saveSettings(settings), [settings]);
 
   const metrics = useMemo(() => computeMetrics(state), [state]);
   const activeThread = state.threads.find((thread) => thread.id === state.selectedThreadId) ?? null;
@@ -90,21 +93,32 @@ export default function App() {
     activeThread?.nodes.find((node) => node.id === state.selectedNodeId) ??
     (activeThread ? activeThread.nodes.find((node) => node.id === activeThread.activeNodeId) ?? null : null);
   const activeNodeIsChat = activeNode?.kind === 'chat';
-  const settingsLockState = settings.hasEncryptedApiKey ? (settings.apiKey.trim() ? 'unlocked' : 'locked') : 'none';
+  const activeProviderConfig =
+    settings.providerConfigs.find((config) => config.id === settings.activeProviderConfigId) ?? settings.providerConfigs[0] ?? null;
+  const activeThreadProviderConfig =
+    activeThread ? settings.providerConfigs.find((config) => config.id === activeThread.providerConfigId) ?? activeProviderConfig : activeProviderConfig;
+  const settingsLockState = activeProviderConfig ? (activeProviderConfig.hasEncryptedApiKey ? (activeProviderConfig.apiKey.trim() ? 'unlocked' : 'locked') : 'none') : 'none';
+  const activeThreadProviderLockState = activeThreadProviderConfig
+    ? activeThreadProviderConfig.hasEncryptedApiKey
+      ? activeThreadProviderConfig.apiKey.trim()
+        ? 'unlocked'
+        : 'locked'
+      : 'none'
+    : 'none';
 
   useEffect(() => {
-    if (settings.hasEncryptedApiKey && !settings.apiKey.trim() && !passphraseModal) {
-      setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false });
+    if (activeProviderConfig?.hasEncryptedApiKey && !activeProviderConfig.apiKey.trim() && !passphraseModal) {
+      setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: activeProviderConfig.id });
     }
-  }, [settings.hasEncryptedApiKey, settings.apiKey, passphraseModal]);
+  }, [activeProviderConfig, passphraseModal]);
 
   const settingsModels = useMemo(
-    () => modelsForProvider(modelCache, settings.provider, settings.model),
-    [modelCache, settings.provider, settings.model],
+    () => modelsForConfig(modelCache, activeProviderConfig, activeProviderConfig?.model ?? ''),
+    [modelCache, activeProviderConfig],
   );
   const threadEditorModels = useMemo(
-    () => modelsForProvider(modelCache, threadEditorDraft.provider, threadEditorDraft.model),
-    [modelCache, threadEditorDraft.provider, threadEditorDraft.model],
+    () => modelsForConfig(modelCache, activeThreadProviderConfig, threadEditorDraft.model),
+    [modelCache, activeThreadProviderConfig, threadEditorDraft.model],
   );
 
   const canvasWidth = Math.max(
@@ -180,14 +194,12 @@ export default function App() {
         ? {
             title: thread.title,
             description: thread.description,
-            provider: thread.provider,
             model: thread.model,
           }
         : {
             title: '',
             description: '',
-            provider: settings.provider,
-            model: settings.model,
+            model: activeProviderConfig?.model ?? 'gpt-4o-mini',
           },
     );
     setThreadEditorOpen(true);
@@ -200,11 +212,14 @@ export default function App() {
   function submitThreadEditor() {
     const title = threadEditorDraft.title.trim() || 'Untitled thread';
     const description = threadEditorDraft.description.trim() || 'A new lane for a project idea and its AI chat context.';
-    const provider = threadEditorDraft.provider;
-    const model = threadEditorDraft.model.trim() || providerInfo(provider).defaultModel;
+    const model = threadEditorDraft.model.trim() || threadEditorModels[0] || activeThreadProviderConfig?.model || 'gpt-4o-mini';
+    const providerConfigId =
+      (threadEditorMode === 'create' ? activeProviderConfig?.id : threadEditorTargetId ? state.threads.find((thread) => thread.id === threadEditorTargetId)?.providerConfigId : null) ??
+      activeProviderConfig?.id ??
+      'openai';
 
     if (threadEditorMode === 'create') {
-      const thread = createThread(title, description, state.threads.length, { provider, model });
+      const thread = createThread(title, description, state.threads.length, { providerConfigId, model });
       setState((current) => ({
         ...current,
         version: current.version + 1,
@@ -220,7 +235,7 @@ export default function App() {
         version: current.version + 1,
         threads: current.threads.map((thread) =>
           thread.id === threadEditorTargetId
-            ? updateThreadDetails(thread, { title, description, provider, model })
+            ? updateThreadDetails(thread, { title, description, providerConfigId: thread.providerConfigId, model })
             : thread,
         ),
       }));
@@ -232,12 +247,14 @@ export default function App() {
 
   async function sendMessage() {
     if (!activeThread || !activeNodeIsChat || !composerDraft.trim() || sending) return;
-    if (!settings.apiKey.trim()) {
-      setError(settings.hasEncryptedApiKey ? 'Unlock the key first, or save a new encrypted key.' : 'Add your API key in settings first.');
+    const activeConfig = settings.providerConfigs.find((config) => config.id === activeThread.providerConfigId) ?? activeProviderConfig;
+    if (!activeConfig) {
+      setError('Pick a provider config for this thread first.');
       return;
     }
-    if (settings.provider !== activeThread.provider) {
-      setError(`This thread uses ${activeThread.provider}, but the current key is for ${settings.provider}. Switch providers and load the matching key.`);
+    if (!activeConfig.apiKey.trim()) {
+      setError(activeConfig.hasEncryptedApiKey ? 'Unlock this provider config first, or save a new encrypted key.' : 'Add your API key in settings first.');
+      setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: activeConfig.id });
       return;
     }
 
@@ -249,7 +266,7 @@ export default function App() {
     setComposerDraft('');
 
     try {
-      const { assistantText, usage } = await requestAiReply(settings, activeThread, [...activeThread.context, userMessage]);
+      const { assistantText, usage } = await requestAiReply(activeConfig, activeThread, [...activeThread.context, userMessage]);
       const assistantMessage: ChatMessage = {
         id: `msg-${crypto.randomUUID().slice(0, 8)}`,
         role: 'assistant',
@@ -303,27 +320,33 @@ export default function App() {
     }));
   }
 
+  function updateProviderConfig(configId: string, patch: Partial<AIProviderConfig>) {
+    setSettings((current) => ({
+      ...current,
+      providerConfigs: current.providerConfigs.map((config) => (config.id === configId ? { ...config, ...patch } : config)),
+    }));
+  }
+
   function requestSaveKey() {
-    const candidate = settings.apiKey.trim();
+    const candidate = activeProviderConfig?.apiKey.trim() ?? '';
     if (!candidate) {
-      if (settings.hasEncryptedApiKey) {
-        setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false });
+      if (activeProviderConfig?.hasEncryptedApiKey) {
+        setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: activeProviderConfig.id });
       } else {
         setError('Enter your API key first.');
       }
       return;
     }
     setError(null);
-    setPassphraseModal({ mode: 'encrypt', passphrase: '', busy: false, pendingKey: candidate });
+    setPassphraseModal({ mode: 'encrypt', passphrase: '', busy: false, pendingKey: candidate, targetConfigId: activeProviderConfig.id });
   }
 
   function deleteSavedKey() {
-    const confirmed = settings.hasEncryptedApiKey
-      ? window.confirm('Delete the saved encrypted key from this browser?')
-      : true;
+    if (!activeProviderConfig) return;
+    const confirmed = activeProviderConfig.hasEncryptedApiKey ? window.confirm('Delete the saved encrypted key from this browser?') : true;
     if (!confirmed) return;
-    clearSecretCookie();
-    setSettings((current) => ({ ...current, apiKey: '', hasEncryptedApiKey: false }));
+    clearProviderSecret(activeProviderConfig.id);
+    updateProviderConfig(activeProviderConfig.id, { apiKey: '', hasEncryptedApiKey: false });
     setSettingsNotice('Saved key deleted from this browser.');
     setError(null);
   }
@@ -335,19 +358,23 @@ export default function App() {
       setError('Enter a passphrase.');
       return;
     }
+    const configId = passphraseModal.targetConfigId ?? activeProviderConfig?.id;
+    if (!configId) return;
     setPassphraseModal({ ...passphraseModal, busy: true });
     setError(null);
     setSavingSettings(true);
     try {
       if (passphraseModal.mode === 'unlock') {
-        const apiKey = await unlockApiKey(passphrase);
-        setSettings((current) => ({ ...current, apiKey, hasEncryptedApiKey: true }));
+        const apiKey = await unlockProviderSecret(configId, passphrase);
+        updateProviderConfig(configId, { apiKey, hasEncryptedApiKey: true });
+        setSettings((current) => ({ ...current, activeProviderConfigId: configId }));
         setSettingsNotice('Key unlocked — loaded in memory for this session.');
       } else {
-        const keyToSave = passphraseModal.pendingKey?.trim() ?? settings.apiKey.trim();
+        const keyToSave = passphraseModal.pendingKey?.trim() ?? settings.providerConfigs.find((config) => config.id === configId)?.apiKey.trim() ?? '';
         if (!keyToSave) throw new Error('No key to save.');
-        await saveSettings({ ...settings, apiKey: keyToSave }, passphrase);
-        setSettings((current) => ({ ...current, apiKey: keyToSave, hasEncryptedApiKey: true }));
+        await saveProviderSecret(configId, keyToSave, passphrase);
+        updateProviderConfig(configId, { apiKey: keyToSave, hasEncryptedApiKey: true });
+        setSettings((current) => ({ ...current, activeProviderConfigId: configId }));
         setSettingsNotice('Key encrypted and saved. Loaded in memory for this session.');
       }
       setPassphraseModal(null);
@@ -366,6 +393,11 @@ export default function App() {
   function resetWorkspace() {
     localStorage.removeItem('loomspace.workspace.v7');
     clearSettingsCookies();
+    settings.providerConfigs.forEach((config) => clearProviderSecret(config.id));
+    clearProviderSecret('openai');
+    clearProviderSecret('anthropic');
+    clearProviderSecret('openrouter');
+    clearProviderSecret('openai-compatible-custom');
     setState(loadWorkspace());
     setSettings(loadSettings());
     setComposerDraft('');
@@ -377,35 +409,55 @@ export default function App() {
     setThreadEditorOpen(false);
   }
 
-  function changeSettingsProvider(provider: AIProvider) {
-    const cached = modelCache[provider];
-    const nextModel = cached?.[0] ?? providerInfo(provider).defaultModel;
-    setSettings((current) => ({ ...current, provider, model: nextModel }));
+  function changeSettingsProvider(providerConfigId: string) {
+    const config = settings.providerConfigs.find((entry) => entry.id === providerConfigId);
+    if (!config) return;
+    const cached = modelCache[providerConfigId];
+    const nextModel = cached?.[0] ?? config.model ?? providerInfo(config.kind).defaultModel;
+    setSettings((current) => ({
+      ...current,
+      activeProviderConfigId: providerConfigId,
+      providerConfigs: current.providerConfigs.map((entry) =>
+        entry.id === providerConfigId ? { ...entry, model: nextModel } : entry,
+      ),
+    }));
   }
 
-  function changeEditorProvider(provider: AIProvider) {
-    const cached = modelCache[provider];
-    const nextModel = cached?.[0] ?? providerInfo(provider).defaultModel;
-    setThreadEditorDraft((current) => ({ ...current, provider, model: nextModel }));
+  function changeThreadProviderConfig(threadId: string, providerConfigId: string) {
+    const config = settings.providerConfigs.find((entry) => entry.id === providerConfigId);
+    const cached = modelCache[providerConfigId];
+    const nextModel = cached?.[0] ?? config?.model ?? providerInfo(config?.kind ?? 'openai').defaultModel;
+    setState((current) => ({
+      ...current,
+      threads: current.threads.map((thread) =>
+        thread.id === threadId
+          ? updateThreadDetails(thread, {
+              title: thread.title,
+              description: thread.description,
+              providerConfigId,
+              model: nextModel,
+            })
+          : thread,
+      ),
+    }));
   }
 
-  async function refreshModels(provider: AIProvider) {
-    if (!settings.apiKey.trim()) {
-      setError(settings.hasEncryptedApiKey ? 'Unlock the key first so we can list models.' : 'Add and unlock your API key to list models.');
-      return;
-    }
-    if (settings.provider !== provider) {
-      setError(`Switch the global provider to ${provider} (and load its key) before listing its models.`);
+  async function refreshModels(providerConfigId: string) {
+    const config = settings.providerConfigs.find((entry) => entry.id === providerConfigId);
+    if (!config) return;
+    if (!config.apiKey.trim()) {
+      setError(config.hasEncryptedApiKey ? 'Unlock this provider config first so we can list models.' : 'Add and unlock your API key to list models.');
+      setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: config.id });
       return;
     }
     setModelsLoading(true);
     setError(null);
     try {
-      const ids = await fetchProviderModels(provider, settings.apiKey);
-      setModelCache((current) => ({ ...current, [provider]: ids }));
-      setSettingsNotice(`Loaded ${ids.length} models for ${provider}.`);
+      const ids = await fetchProviderModels(config);
+      setModelCache((current) => ({ ...current, [providerConfigId]: ids }));
+      setSettingsNotice(`Loaded ${ids.length} models for ${config.label}.`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : `Failed to list models for ${provider}`);
+      setError(err instanceof Error ? err.message : `Failed to list models for ${config.label}`);
     } finally {
       setModelsLoading(false);
     }
@@ -568,7 +620,7 @@ export default function App() {
               <p>{activeThread.description}</p>
               <div className="thread-meta-row">
                 <span className="pill">{activeThread.model}</span>
-                <span className="pill muted-pill">{activeThread.provider}</span>
+                <span className="pill muted-pill">{activeThreadProviderConfig?.label ?? 'Unknown provider'}</span>
               </div>
               <button onClick={() => selectThread(activeThread.id, activeThread.activeNodeId)} style={{ marginTop: 12 }}>
                 Open chat
@@ -733,7 +785,26 @@ export default function App() {
                   </button>
                 </div>
                 <div className="thread-meta-row stack">
-                  <span className="pill">Provider: {activeThread.provider}</span>
+                  <label className="field compact">
+                    Provider config
+                    <select
+                      value={activeThread.providerConfigId}
+                      onChange={(event) => {
+                        const nextConfigId = event.target.value;
+                        changeThreadProviderConfig(activeThread.id, nextConfigId);
+                        const nextConfig = settings.providerConfigs.find((config) => config.id === nextConfigId);
+                        if (nextConfig?.hasEncryptedApiKey && !nextConfig.apiKey.trim()) {
+                          setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: nextConfigId });
+                        }
+                      }}
+                    >
+                      {settings.providerConfigs.map((config) => (
+                        <option key={config.id} value={config.id}>
+                          {config.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                   <span className="pill">Model: {activeThread.model}</span>
                   <span className="pill">Context left: {activeThread ? remainingContext.toLocaleString() : '—'}</span>
                 </div>
@@ -781,10 +852,10 @@ export default function App() {
                     placeholder="Ask the thread something"
                     rows={5}
                   />
-                  {settingsLockState === 'locked' ? <p className="muted">Unlock the key to send a message.</p> : null}
+                  {activeThreadProviderLockState === 'locked' ? <p className="muted">Unlock this provider config to send a message.</p> : null}
                   {error ? <p className="error">{error}</p> : null}
-                  <button onClick={sendMessage} disabled={!composerDraft.trim() || sending || !settings.apiKey.trim()}>
-                    {sending ? 'Thinking…' : settingsLockState === 'locked' ? 'Unlock to send' : 'Send'}
+                  <button onClick={sendMessage} disabled={!composerDraft.trim() || sending || !activeThreadProviderConfig?.apiKey.trim()}>
+                    {sending ? 'Thinking…' : activeThreadProviderLockState === 'locked' ? 'Unlock to send' : 'Send'}
                   </button>
                 </section>
               ) : null}
@@ -804,33 +875,20 @@ export default function App() {
 
               <section className="inspector-card settings-card">
                 <div className="meta-row">
-                  <h4>AI settings</h4>
+                  <h4>AI provider configs</h4>
                   <span className={`pill settings-pill ${settingsLockState}`}>
                     {settingsLockState === 'none' ? 'no saved key' : settingsLockState === 'unlocked' ? 'unlocked for session' : 'saved, locked'}
                   </span>
                 </div>
                 <label className="field">
-                  AI Provider
+                  Active config
                   <select
-                    value={settings.provider}
-                    onChange={(event) => changeSettingsProvider(event.target.value as AIProvider)}
+                    value={activeProviderConfig?.id ?? ''}
+                    onChange={(event) => changeSettingsProvider(event.target.value)}
                   >
-                    {PROVIDERS.map((entry) => (
-                      <option key={entry.id} value={entry.id}>
-                        {entry.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="field">
-                  Model
-                  <select
-                    value={settings.model}
-                    onChange={(event) => setSettings((current) => ({ ...current, model: event.target.value }))}
-                  >
-                    {settingsModels.map((model) => (
-                      <option key={model} value={model}>
-                        {model}
+                    {settings.providerConfigs.map((config) => (
+                      <option key={config.id} value={config.id}>
+                        {config.label}
                       </option>
                     ))}
                   </select>
@@ -838,50 +896,125 @@ export default function App() {
                 <div className="editor-actions left-aligned">
                   <button
                     type="button"
-                    onClick={() => refreshModels(settings.provider)}
-                    disabled={modelsLoading || !settings.apiKey.trim()}
+                    onClick={() => {
+                      const next = createProviderConfig('openai-compatible-custom', { label: 'Custom provider' });
+                      setSettings((current) => ({
+                        ...current,
+                        activeProviderConfigId: next.id,
+                        providerConfigs: [...current.providerConfigs, next],
+                      }));
+                    }}
                   >
-                    {modelsLoading ? 'Loading models…' : modelCache[settings.provider] ? 'Refresh models' : 'List models'}
+                    New custom provider
                   </button>
                 </div>
-                <label className="field">
-                  {providerInfo(settings.provider).label} API key
-                  <input
-                    type="password"
-                    value={settings.apiKey}
-                    onChange={(event) => setSettings((current) => ({ ...current, apiKey: event.target.value }))}
-                    placeholder={settings.hasEncryptedApiKey && !settings.apiKey ? 'saved key — tap Unlock to load' : apiKeyPlaceholder(settings.provider)}
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                  {providerKeyLink(settings.provider) ? (
-                    <a
-                      className="key-signup-link"
-                      href={providerKeyLink(settings.provider)!.href}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      {providerKeyLink(settings.provider)!.label} →
-                    </a>
-                  ) : null}
-                </label>
-                <div className="editor-actions left-aligned">
-                  <button type="button" onClick={requestSaveKey} disabled={savingSettings}>
-                    {savingSettings
-                      ? 'Working…'
-                      : settings.apiKey.trim()
-                        ? settings.hasEncryptedApiKey ? 'Update saved key' : 'Save key'
-                        : settings.hasEncryptedApiKey ? 'Unlock saved key' : 'Save key'}
-                  </button>
-                  <button
-                    type="button"
-                    className="quiet"
-                    onClick={deleteSavedKey}
-                    disabled={savingSettings || !settings.hasEncryptedApiKey}
-                  >
-                    Delete saved key
-                  </button>
-                </div>
+                {activeProviderConfig ? (
+                  <>
+                    <label className="field">
+                      Provider type
+                      <select
+                        value={activeProviderConfig.kind}
+                        onChange={(event) => {
+                          const kind = event.target.value as AIProvider;
+                          const info = providerInfo(kind);
+                          updateProviderConfig(activeProviderConfig.id, {
+                            kind,
+                            label: activeProviderConfig.label || info.label,
+                            model: info.defaultModel,
+                            baseUrl: info.baseUrl,
+                          });
+                          setSettings((current) => ({ ...current, activeProviderConfigId: activeProviderConfig.id }));
+                        }}
+                      >
+                        {PROVIDERS.map((entry) => (
+                          <option key={entry.id} value={entry.id}>
+                            {entry.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="field">
+                      Label
+                      <input
+                        value={activeProviderConfig.label}
+                        onChange={(event) => updateProviderConfig(activeProviderConfig.id, { label: event.target.value })}
+                        placeholder="Provider name"
+                      />
+                    </label>
+                    {activeProviderConfig.kind === 'openai-compatible-custom' ? (
+                      <label className="field">
+                        Base URL
+                        <input
+                          value={activeProviderConfig.baseUrl ?? ''}
+                          onChange={(event) => updateProviderConfig(activeProviderConfig.id, { baseUrl: event.target.value })}
+                          placeholder="https://api.example.com/v1"
+                          autoComplete="off"
+                          spellCheck={false}
+                        />
+                      </label>
+                    ) : null}
+                    <label className="field">
+                      Model
+                      <select
+                        value={activeProviderConfig.model}
+                        onChange={(event) => updateProviderConfig(activeProviderConfig.id, { model: event.target.value })}
+                      >
+                        {settingsModels.map((model) => (
+                          <option key={model} value={model}>
+                            {model}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <div className="editor-actions left-aligned">
+                      <button
+                        type="button"
+                        onClick={() => refreshModels(activeProviderConfig.id)}
+                        disabled={modelsLoading || !activeProviderConfig.apiKey.trim()}
+                      >
+                        {modelsLoading ? 'Loading models…' : modelCache[activeProviderConfig.id] ? 'Refresh models' : 'List models'}
+                      </button>
+                    </div>
+                    <label className="field">
+                      {providerInfo(activeProviderConfig.kind).label} API key
+                      <input
+                        type="password"
+                        value={activeProviderConfig.apiKey}
+                        onChange={(event) => updateProviderConfig(activeProviderConfig.id, { apiKey: event.target.value })}
+                        placeholder={activeProviderConfig.hasEncryptedApiKey && !activeProviderConfig.apiKey ? 'saved key — tap Unlock to load' : apiKeyPlaceholder(activeProviderConfig.kind)}
+                        autoComplete="off"
+                        spellCheck={false}
+                      />
+                      {providerKeyLink(activeProviderConfig.kind) ? (
+                        <a
+                          className="key-signup-link"
+                          href={providerKeyLink(activeProviderConfig.kind)!.href}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          {providerKeyLink(activeProviderConfig.kind)!.label} →
+                        </a>
+                      ) : null}
+                    </label>
+                    <div className="editor-actions left-aligned">
+                      <button type="button" onClick={requestSaveKey} disabled={savingSettings}>
+                        {savingSettings
+                          ? 'Working…'
+                          : activeProviderConfig.apiKey.trim()
+                            ? activeProviderConfig.hasEncryptedApiKey ? 'Update saved key' : 'Save key'
+                            : activeProviderConfig.hasEncryptedApiKey ? 'Unlock saved key' : 'Save key'}
+                      </button>
+                      <button
+                        type="button"
+                        className="quiet"
+                        onClick={deleteSavedKey}
+                        disabled={savingSettings || !activeProviderConfig.hasEncryptedApiKey}
+                      >
+                        Delete saved key
+                      </button>
+                    </div>
+                  </>
+                ) : null}
                 {settingsNotice ? <p className="muted">{settingsNotice}</p> : null}
               </section>
             </div>
@@ -920,19 +1053,6 @@ export default function App() {
                 />
               </label>
               <label className="field">
-                AI Provider
-                <select
-                  value={threadEditorDraft.provider}
-                  onChange={(event) => changeEditorProvider(event.target.value as AIProvider)}
-                >
-                  {PROVIDERS.map((entry) => (
-                    <option key={entry.id} value={entry.id}>
-                      {entry.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="field">
                 Thread model
                 <select
                   value={threadEditorDraft.model}
@@ -945,11 +1065,7 @@ export default function App() {
                   ))}
                 </select>
               </label>
-              {!modelCache[threadEditorDraft.provider] ? (
-                <p className="muted">
-                  Tip: open AI settings and click “List models” to populate the {threadEditorDraft.provider} model dropdown from the live API.
-                </p>
-              ) : null}
+              {threadEditorMode === 'create' ? <p className="muted">This thread will use the currently selected provider config.</p> : null}
               <div className="editor-actions">
                 <button onClick={submitThreadEditor}>{threadEditorMode === 'create' ? 'Create thread' : 'Save changes'}</button>
                 <button className="quiet" onClick={closeThreadEditor}>
@@ -1019,9 +1135,10 @@ export default function App() {
   );
 }
 
-function modelsForProvider(cache: ModelCache, provider: AIProvider, currentModel: string): string[] {
-  const cached = cache[provider];
-  const fallback = providerInfo(provider).defaultModel;
+function modelsForConfig(cache: ModelCache, config: AIProviderConfig | null | undefined, currentModel: string): string[] {
+  if (!config) return currentModel ? [currentModel] : [];
+  const cached = cache[config.id];
+  const fallback = providerInfo(config.kind).defaultModel;
   const base = cached && cached.length > 0 ? cached : [fallback];
   if (currentModel && !base.includes(currentModel)) {
     return [currentModel, ...base];
@@ -1029,17 +1146,16 @@ function modelsForProvider(cache: ModelCache, provider: AIProvider, currentModel
   return base;
 }
 
-async function requestAiReply(settings: AISettings, thread: ThreadLane, messages: ChatMessage[]) {
-  if (thread.provider === 'openai') return requestOpenAi(settings, thread, messages);
-  if (thread.provider === 'anthropic') return requestAnthropic(settings, thread, messages);
-  if (thread.provider === 'openrouter') return requestOpenRouter(settings, thread, messages);
-  throw new Error(`Unknown provider: ${thread.provider}`);
+async function requestAiReply(config: AIProviderConfig, thread: ThreadLane, messages: ChatMessage[]) {
+  if (config.kind === 'anthropic') return requestAnthropic(config, thread, messages);
+  return requestOpenAiCompatible(config, thread, messages);
 }
 
 function apiKeyPlaceholder(provider: AIProvider) {
   if (provider === 'openai') return 'sk-...';
   if (provider === 'anthropic') return 'sk-ant-...';
   if (provider === 'openrouter') return 'sk-or-...';
+  if (provider === 'openai-compatible-custom') return 'sk-...';
   return '';
 }
 
@@ -1060,11 +1176,20 @@ const SYSTEM_PROMPT = (thread: ThreadLane) =>
     'Do not mention internal tools or policies.',
   ].join(' ');
 
-async function requestOpenAi(settings: AISettings, thread: ThreadLane, messages: ChatMessage[]) {
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+function resolveBaseUrl(baseUrl: string | undefined, kind: AIProvider) {
+  if (kind === 'anthropic') return baseUrl?.trim().replace(/\/+$/, '') || 'https://api.anthropic.com/v1';
+  if (kind === 'openrouter') return baseUrl?.trim().replace(/\/+$/, '') || 'https://openrouter.ai/api/v1';
+  if (kind === 'openai') return baseUrl?.trim().replace(/\/+$/, '') || 'https://api.openai.com/v1';
+  if (!baseUrl?.trim()) throw new Error('Enter a Base URL for the custom OpenAI-compatible provider.');
+  return baseUrl.trim().replace(/\/+$/, '');
+}
+
+async function requestOpenAiCompatible(config: AIProviderConfig, thread: ThreadLane, messages: ChatMessage[]) {
+  const baseUrl = resolveBaseUrl(config.baseUrl, config.kind);
+  const response = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${settings.apiKey}`,
+      Authorization: `Bearer ${config.apiKey}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
@@ -1082,7 +1207,7 @@ async function requestOpenAi(settings: AISettings, thread: ThreadLane, messages:
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || 'OpenAI request failed');
+    throw new Error(text || `${config.label} request failed`);
   }
 
   const data = (await response.json()) as {
@@ -1090,7 +1215,7 @@ async function requestOpenAi(settings: AISettings, thread: ThreadLane, messages:
     usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
   };
   const assistantText = data.choices?.[0]?.message?.content?.trim();
-  if (!assistantText) throw new Error('OpenAI returned no assistant text');
+  if (!assistantText) throw new Error(`${config.label} returned no assistant text`);
 
   const usage = data.usage
     ? normalizeUsage(thread.model, data.usage.prompt_tokens ?? 0, data.usage.completion_tokens ?? 0, data.usage.total_tokens ?? 0)
@@ -1099,11 +1224,12 @@ async function requestOpenAi(settings: AISettings, thread: ThreadLane, messages:
   return { assistantText, usage };
 }
 
-async function requestAnthropic(settings: AISettings, thread: ThreadLane, messages: ChatMessage[]) {
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
+async function requestAnthropic(config: AIProviderConfig, thread: ThreadLane, messages: ChatMessage[]) {
+  const baseUrl = resolveBaseUrl(config.baseUrl, config.kind);
+  const response = await fetch(`${baseUrl}/messages`, {
     method: 'POST',
     headers: {
-      'x-api-key': settings.apiKey,
+      'x-api-key': config.apiKey,
       'anthropic-version': '2023-06-01',
       'anthropic-dangerous-direct-browser-access': 'true',
       'Content-Type': 'application/json',
@@ -1140,45 +1266,6 @@ async function requestAnthropic(settings: AISettings, thread: ThreadLane, messag
   const inputTokens = data.usage?.input_tokens ?? 0;
   const outputTokens = data.usage?.output_tokens ?? 0;
   const usage = data.usage ? normalizeUsage(thread.model, inputTokens, outputTokens, inputTokens + outputTokens) : undefined;
-
-  return { assistantText, usage };
-}
-
-async function requestOpenRouter(settings: AISettings, thread: ThreadLane, messages: ChatMessage[]) {
-  const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${settings.apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: thread.model,
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT(thread) },
-        ...messages.map((message) => ({
-          role: message.role === 'assistant' ? 'assistant' : message.role === 'system' ? 'system' : 'user',
-          content: message.text,
-        })),
-      ],
-      temperature: 0.4,
-    }),
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || 'OpenRouter request failed');
-  }
-
-  const data = (await response.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
-    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
-  };
-  const assistantText = data.choices?.[0]?.message?.content?.trim();
-  if (!assistantText) throw new Error('OpenRouter returned no assistant text');
-
-  const usage = data.usage
-    ? normalizeUsage(thread.model, data.usage.prompt_tokens ?? 0, data.usage.completion_tokens ?? 0, data.usage.total_tokens ?? 0)
-    : undefined;
 
   return { assistantText, usage };
 }
