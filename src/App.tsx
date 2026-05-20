@@ -87,6 +87,20 @@ export default function App() {
   useEffect(() => saveWorkspace(state), [state]);
   useEffect(() => saveSettings(settings), [settings]);
 
+  useEffect(() => {
+    const meta = document.querySelector<HTMLMetaElement>('meta[http-equiv="Content-Security-Policy"]');
+    if (!meta) return;
+    const base = meta.dataset.baseContent ?? meta.getAttribute('content') ?? '';
+    if (!meta.dataset.baseContent) meta.dataset.baseContent = base;
+    const extraOrigins = settings.providerConfigs
+      .filter((c) => c.kind === 'openai-compatible-custom' && c.baseUrl)
+      .flatMap((c) => { try { return [new URL(c.baseUrl!).origin]; } catch { return []; } });
+    const deduped = [...new Set(extraOrigins)];
+    meta.setAttribute('content', deduped.length
+      ? base.replace(/(connect-src\s+[^;]+)/, `$1 ${deduped.join(' ')}`)
+      : base);
+  }, [settings]);
+
   const metrics = useMemo(() => computeMetrics(state), [state]);
   const activeThread = state.threads.find((thread) => thread.id === state.selectedThreadId) ?? null;
   const activeNode =
@@ -864,7 +878,7 @@ export default function App() {
                 ) : (
                   activeThread.context.map((message) => (
                     <div key={message.id} className={`bubble ${message.role}`}>
-                      <strong>{message.role}</strong>
+                      <strong>{message.role === 'assistant' ? 'ai' : message.role}</strong>
                       <FormattedMessage text={message.text} />
                     </div>
                   ))

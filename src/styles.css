@@ -822,7 +822,22 @@ button.quiet {
 }
 
 .bubble.assistant {
-  background: rgba(126, 168, 255, 0.06);
+  background: rgba(240, 235, 220, 0.05);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.bubble.assistant .message-copy {
+  font-size: 0.92rem;
+  line-height: 1.65;
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.bubble.assistant .message-copy > :first-child {
+  margin-top: 0;
+}
+
+.bubble.assistant .message-copy > :last-child {
+  margin-bottom: 0;
 }
 
 .usage-grid {
