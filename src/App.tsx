@@ -35,6 +35,7 @@ export default function App() {
   const [composerDraft, setComposerDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [chatModalOpen, setChatModalOpen] = useState(false);
   const viewportRef = useRef<HTMLDivElement>(null);
   const panGesture = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
 
@@ -100,6 +101,7 @@ export default function App() {
   }
 
   function selectThread(threadId: string, nodeId?: string | null) {
+    setChatModalOpen(true);
     setState((current) => ({
       ...current,
       selectedThreadId: threadId,
@@ -126,6 +128,7 @@ export default function App() {
       selectedNodeId: firstChat?.id ?? null,
       panX: current.threads.length === 0 ? current.panX : current.panX - 40,
     }));
+    setChatModalOpen(true);
 
     setThreadTitleDraft('');
     setThreadDescriptionDraft('');
@@ -191,6 +194,7 @@ export default function App() {
   }
 
   function selectNode(threadId: string, nodeId: string) {
+    setChatModalOpen(true);
     setState((current) => ({
       ...current,
       selectedThreadId: threadId,
@@ -210,6 +214,7 @@ export default function App() {
     setThreadDescriptionDraft('');
     setComposerDraft('');
     setError(null);
+    setChatModalOpen(false);
   }
 
   function beginPan(event: React.PointerEvent<HTMLDivElement>) {
@@ -275,6 +280,10 @@ export default function App() {
     zoomAt(rect.left + rect.width / 2, rect.top + rect.height / 2, state.zoom + direction * 0.1);
   }
 
+  function setZoom(nextZoom: number) {
+    clampViewport({ zoom: nextZoom });
+  }
+
   function resetView() {
     const viewport = viewportRef.current;
     if (!viewport) {
@@ -319,6 +328,14 @@ export default function App() {
           <button onClick={() => zoomFromButton(-1)}>−</button>
           <button onClick={resetView}>Reset view</button>
           <button onClick={() => zoomFromButton(1)}>+</button>
+          <input
+            className="zoom-slider"
+            type="range"
+            min={Math.round(MIN_ZOOM * 100)}
+            max={Math.round(MAX_ZOOM * 100)}
+            value={Math.round(state.zoom * 100)}
+            onChange={(event) => setZoom(Number(event.target.value) / 100)}
+          />
           <button onClick={resetWorkspace} className="quiet">
             Reset fabric
           </button>
@@ -486,12 +503,23 @@ export default function App() {
           </div>
         </section>
 
-        <aside className="panel right">
-          <h2>Active chat</h2>
-          {activeThread ? (
-            <>
+      </main>
+
+      {chatModalOpen && activeThread ? (
+        <div className="chat-modal-backdrop" onClick={() => setChatModalOpen(false)}>
+          <section className="chat-modal" onClick={(event) => event.stopPropagation()}>
+            <header className="chat-modal-header">
+              <div>
+                <p className="eyebrow">Active thread</p>
+                <h2>{activeThread.title}</h2>
+              </div>
+              <button type="button" className="quiet" onClick={() => setChatModalOpen(false)} aria-label="Close chat panel">
+                ×
+              </button>
+            </header>
+
+            <div className="chat-modal-body">
               <article className="inspector-card">
-                <p className="eyebrow">{activeThread.title}</p>
                 <h3>{activeThread.description}</h3>
                 <p>{activeThread.nodes.length} nodes in this lane.</p>
               </article>
@@ -503,7 +531,7 @@ export default function App() {
                   activeThread.context.map((message) => (
                     <div key={message.id} className={`bubble ${message.role}`}>
                       <strong>{message.role}</strong>
-                      <p>{message.text}</p>
+                      <FormattedMessage text={message.text} />
                     </div>
                   ))
                 )}
@@ -533,36 +561,34 @@ export default function App() {
                   </ul>
                 </section>
               ) : null}
-            </>
-          ) : (
-            <p className="muted">Create a thread and it will open here with its chat context.</p>
-          )}
 
-          <section className="inspector-card settings-card">
-            <h4>AI settings</h4>
-            <label className="field">
-              OpenAI API key
-              <input
-                type="password"
-                value={settings.apiKey}
-                onChange={(event) => setSettings((current) => ({ ...current, apiKey: event.target.value }))}
-                placeholder="sk-..."
-                autoComplete="off"
-                spellCheck={false}
-              />
-            </label>
-            <label className="field">
-              Model
-              <input
-                value={settings.model}
-                onChange={(event) => setSettings((current) => ({ ...current, model: event.target.value }))}
-                placeholder="gpt-4o-mini"
-              />
-            </label>
-            <p className="muted">Stored locally in this browser only.</p>
+              <section className="inspector-card settings-card">
+                <h4>AI settings</h4>
+                <label className="field">
+                  OpenAI API key
+                  <input
+                    type="password"
+                    value={settings.apiKey}
+                    onChange={(event) => setSettings((current) => ({ ...current, apiKey: event.target.value }))}
+                    placeholder="sk-..."
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </label>
+                <label className="field">
+                  Model
+                  <input
+                    value={settings.model}
+                    onChange={(event) => setSettings((current) => ({ ...current, model: event.target.value }))}
+                    placeholder="gpt-4o-mini"
+                  />
+                </label>
+                <p className="muted">Stored locally in this browser only.</p>
+              </section>
+            </div>
           </section>
-        </aside>
-      </main>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -583,6 +609,8 @@ async function requestAiReply(settings: OpenAISettings, thread: ThreadLane, mess
             `Thread title: ${thread.title}`,
             `Thread description: ${thread.description}`,
             'Keep replies concise and useful.',
+            'Prefer short paragraphs or bullet lists.',
+            'Use blank lines between ideas.',
             'Do not mention internal tools or policies.',
           ].join(' '),
         },
@@ -667,4 +695,71 @@ function boundedPan(
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
+}
+
+function FormattedMessage({ text }: { text: string }) {
+  const blocks = formatBlocks(text);
+  return (
+    <div className="message-copy">
+      {blocks.map((block, index) => {
+        if (block.type === 'list') {
+          return (
+            <ul key={index}>
+              {block.items.map((item, itemIndex) => (
+                <li key={itemIndex}>{item}</li>
+              ))}
+            </ul>
+          );
+        }
+
+        return <p key={index}>{block.text}</p>;
+      })}
+    </div>
+  );
+}
+
+function formatBlocks(text: string) {
+  const lines = text.replace(/\r/g, '').split('\n');
+  const blocks: Array<{ type: 'paragraph'; text: string } | { type: 'list'; items: string[] }> = [];
+  let paragraph: string[] = [];
+  let list: string[] = [];
+
+  const flushParagraph = () => {
+    const value = paragraph.join(' ').trim();
+    if (value) blocks.push({ type: 'paragraph', text: value });
+    paragraph = [];
+  };
+
+  const flushList = () => {
+    if (list.length) blocks.push({ type: 'list', items: list });
+    list = [];
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      flushParagraph();
+      flushList();
+      continue;
+    }
+
+    const bullet = trimmed.match(/^[-*•]\s+(.*)$/) || trimmed.match(/^\d+[.)]\s+(.*)$/);
+    if (bullet) {
+      flushParagraph();
+      list.push(bullet[1]);
+      continue;
+    }
+
+    if (list.length) flushList();
+    paragraph.push(trimmed);
+  }
+
+  flushParagraph();
+  flushList();
+
+  if (!blocks.length) {
+    blocks.push({ type: 'paragraph', text });
+  }
+
+  return blocks;
 }

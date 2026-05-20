@@ -113,7 +113,7 @@ button.quiet {
 .layout {
   min-height: 0;
   display: grid;
-  grid-template-columns: 300px minmax(0, 1fr) 360px;
+  grid-template-columns: 300px minmax(0, 1fr);
 }
 
 .panel {
@@ -215,6 +215,14 @@ button.quiet {
   color: #9cadcf;
   background: rgba(8, 10, 18, 0.5);
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.zoom-slider {
+  width: 140px;
+  margin-left: auto;
+  accent-color: #7cf7c2;
 }
 
 .canvas-viewport {
@@ -249,6 +257,61 @@ button.quiet {
   min-height: 100%;
   transform-origin: 0 0;
   will-change: transform;
+}
+
+.chat-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: rgba(2, 4, 10, 0.68);
+  backdrop-filter: blur(10px);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 20px;
+}
+
+.chat-modal {
+  width: min(640px, 100%);
+  max-height: min(90vh, 980px);
+  overflow: hidden;
+  border-radius: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(8, 11, 20, 0.96);
+  box-shadow: 0 32px 80px rgba(0, 0, 0, 0.45);
+  display: grid;
+  grid-template-rows: auto 1fr;
+}
+
+.chat-modal-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 18px 18px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.chat-modal-body {
+  overflow: auto;
+  padding: 18px;
+  display: grid;
+  gap: 12px;
+}
+
+.message-copy p + p,
+.message-copy ul + p,
+.message-copy p + ul,
+.message-copy ul + ul {
+  margin-top: 8px;
+}
+
+.message-copy ul {
+  padding-left: 18px;
+}
+
+.message-copy li + li {
+  margin-top: 4px;
 }
 
 .edges-layer {
