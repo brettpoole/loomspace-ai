@@ -1,5 +1,6 @@
 import { sampleState } from './sample';
 import type {
+  AIProvider,
   ChatMessage,
   FabricMetrics,
   LoomspaceState,
@@ -8,10 +9,24 @@ import type {
   ThreadChatNode,
   ThreadLane,
   ThreadTitleNode,
+  ThreadUsageSummary,
+  TokenUsage,
 } from './types';
 
-const WORKSPACE_KEY = 'loomspace.workspace.v5';
-const SETTINGS_KEY = 'loomspace.settings.v1';
+const WORKSPACE_KEY = 'loomspace.workspace.v7';
+const SETTINGS_KEY = 'loomspace.settings.v3';
+
+const MODEL_WINDOWS: Record<string, number> = {
+  'gpt-4o-mini': 128_000,
+  'gpt-4o': 128_000,
+  'gpt-5': 256_000,
+};
+
+const MODEL_PRICING: Record<string, { inputPerMillion: number; outputPerMillion: number }> = {
+  'gpt-4o-mini': { inputPerMillion: 0.15, outputPerMillion: 0.6 },
+  'gpt-4o': { inputPerMillion: 5, outputPerMillion: 15 },
+  'gpt-5': { inputPerMillion: 1.25, outputPerMillion: 10 },
+};
 
 export function loadWorkspace(): LoomspaceState {
   try {
@@ -31,14 +46,15 @@ export function saveWorkspace(state: LoomspaceState) {
 export function loadSettings(): OpenAISettings {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
-    if (!raw) return { apiKey: '', model: 'gpt-4o-mini' };
-    const parsed = JSON.parse(raw) as OpenAISettings;
+    if (!raw) return { provider: 'openai', apiKey: '', model: 'gpt-4o-mini' };
+    const parsed = JSON.parse(raw) as Partial<OpenAISettings>;
     return {
+      provider: parsed.provider === 'openai' ? parsed.provider : 'openai',
       apiKey: typeof parsed.apiKey === 'string' ? parsed.apiKey : '',
       model: typeof parsed.model === 'string' && parsed.model.trim() ? parsed.model : 'gpt-4o-mini',
     };
   } catch {
-    return { apiKey: '', model: 'gpt-4o-mini' };
+    return { provider: 'openai', apiKey: '', model: 'gpt-4o-mini' };
   }
 }
 
@@ -60,7 +76,7 @@ export function summarize(text: string, limit = 60) {
   return compact.length > limit ? `${compact.slice(0, limit - 1)}…` : compact;
 }
 
-export function createThread(title: string, description: string, index: number): ThreadLane {
+export function createThread(title: string, description: string, index: number, defaults?: { provider?: AIProvider; model?: string }): ThreadLane {
   const threadId = `thread-${crypto.randomUUID().slice(0, 8)}`;
   const titleNode: ThreadTitleNode = {
     id: `title-${crypto.randomUUID().slice(0, 8)}`,
@@ -68,7 +84,7 @@ export function createThread(title: string, description: string, index: number):
     title,
     description,
   };
-  const firstChatNode = createChatNode('AI chat ready', 'medium');
+  const firstChatNode = createChatNode('AI chat ready', 'medium', [], defaults?.model ?? 'gpt-4o-mini');
 
   return {
     id: threadId,
@@ -76,6 +92,8 @@ export function createThread(title: string, description: string, index: number):
     status: 'draft',
     title,
     description,
+    provider: defaults?.provider ?? 'openai',
+    model: defaults?.model ?? 'gpt-4o-mini',
     context: [],
     nodes: [titleNode, firstChatNode],
     activeNodeId: firstChatNode.id,
@@ -83,23 +101,53 @@ export function createThread(title: string, description: string, index: number):
   };
 }
 
-export function createChatNode(summarySource: string, confidence: 'low' | 'medium' | 'high', messages: ChatMessage[] = []): ThreadChatNode {
+export function createChatNode(
+  summarySource: string,
+  confidence: 'low' | 'medium' | 'high',
+  messages: ChatMessage[] = [],
+  model = 'gpt-4o-mini',
+  usage?: TokenUsage,
+): ThreadChatNode {
   return {
     id: `chat-${crypto.randomUUID().slice(0, 8)}`,
     kind: 'chat',
     summary: summarize(summarySource, 52),
     messages,
+    model,
     confidence,
     createdAt: new Date().toISOString(),
+    usage,
+  };
+}
+
+export function updateThreadDetails(
+  thread: ThreadLane,
+  next: { title: string; description: string; provider: AIProvider; model: string },
+): ThreadLane {
+  return {
+    ...thread,
+    title: next.title,
+    description: next.description,
+    provider: next.provider,
+    model: next.model,
+    nodes: thread.nodes.map((node) => (node.kind === 'title' ? { ...node, title: next.title, description: next.description } : node)),
   };
 }
 
 export function updateThreadTitle(thread: ThreadLane, title: string): ThreadLane {
-  return {
-    ...thread,
-    title,
-    nodes: thread.nodes.map((node) => (node.kind === 'title' ? { ...node, title } : node)),
-  };
+  return updateThreadDetails(thread, { title, description: thread.description, provider: thread.provider, model: thread.model });
+}
+
+export function updateThreadDescription(thread: ThreadLane, description: string): ThreadLane {
+  return updateThreadDetails(thread, { title: thread.title, description, provider: thread.provider, model: thread.model });
+}
+
+export function updateThreadModel(thread: ThreadLane, model: string): ThreadLane {
+  return updateThreadDetails(thread, { title: thread.title, description: thread.description, provider: thread.provider, model });
+}
+
+export function updateThreadProvider(thread: ThreadLane, provider: AIProvider): ThreadLane {
+  return updateThreadDetails(thread, { title: thread.title, description: thread.description, provider, model: thread.model });
 }
 
 export function appendChatToThread(thread: ThreadLane, chat: ThreadChatNode, messages: ChatMessage[]): ThreadLane {
@@ -123,4 +171,29 @@ export function threadWithActiveNode(thread: ThreadLane, nodeId: string | null):
 export function pickColor(index: number) {
   const palette = ['#7cf7c2', '#7ea8ff', '#d48bff', '#ffd166', '#ff8f70'];
   return palette[index % palette.length];
+}
+
+export function summarizeThreadUsage(thread: ThreadLane): ThreadUsageSummary {
+  const usage = thread.nodes.reduce(
+    (acc, node) => {
+      if (node.kind !== 'chat' || !node.usage) return acc;
+      acc.inputTokens += node.usage.inputTokens;
+      acc.outputTokens += node.usage.outputTokens;
+      acc.totalTokens += node.usage.totalTokens;
+      acc.estimatedCostUsd += node.usage.estimatedCostUsd ?? estimateCost(node.model, node.usage);
+      return acc;
+    },
+    { inputTokens: 0, outputTokens: 0, totalTokens: 0, estimatedCostUsd: 0 },
+  );
+
+  return usage;
+}
+
+export function getModelWindow(model: string) {
+  return MODEL_WINDOWS[model] ?? 128_000;
+}
+
+export function estimateCost(model: string, usage: Pick<TokenUsage, 'inputTokens' | 'outputTokens'>) {
+  const pricing = MODEL_PRICING[model] ?? MODEL_PRICING['gpt-4o-mini'];
+  return (usage.inputTokens / 1_000_000) * pricing.inputPerMillion + (usage.outputTokens / 1_000_000) * pricing.outputPerMillion;
 }
