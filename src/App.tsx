@@ -68,6 +68,7 @@ export default function App() {
   const [savingSettings, setSavingSettings] = useState(false);
   const [chatModalOpen, setChatModalOpen] = useState(false);
   const [threadEditorOpen, setThreadEditorOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [threadEditorMode, setThreadEditorMode] = useState<'create' | 'edit'>('create');
   const [threadEditorDraft, setThreadEditorDraft] = useState<ThreadDraft>(DEFAULT_THREAD_DRAFT);
   const [threadEditorTargetId, setThreadEditorTargetId] = useState<string | null>(null);
@@ -141,6 +142,7 @@ export default function App() {
 
   function selectThread(threadId: string, nodeId?: string | null) {
     setChatModalOpen(true);
+    setSidebarOpen(false);
     setState((current) => ({
       ...current,
       selectedThreadId: threadId,
@@ -154,6 +156,7 @@ export default function App() {
   }
 
   function openThreadEditor(mode: 'create' | 'edit', thread?: ThreadLane) {
+    setSidebarOpen(false);
     setThreadEditorMode(mode);
     setThreadEditorTargetId(thread?.id ?? null);
     setThreadEditorDraft(
@@ -469,15 +472,25 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <div>
-          <p className="eyebrow">Loomspace</p>
-          <h1>{state.title}</h1>
+        <div className="topbar-title">
+          <button
+            type="button"
+            className="menu-toggle"
+            onClick={() => setSidebarOpen((open) => !open)}
+            aria-label="Toggle threads panel"
+          >
+            ☰
+          </button>
+          <div>
+            <p className="eyebrow">Loomspace</p>
+            <h1>{state.title}</h1>
+          </div>
         </div>
         <div className="topbar-actions">
           <button onClick={() => openThreadEditor('create')}>New thread</button>
-          <button onClick={() => zoomFromButton(-1)}>−</button>
-          <button onClick={resetView}>Reset view</button>
-          <button onClick={() => zoomFromButton(1)}>+</button>
+          <button onClick={() => zoomFromButton(-1)} aria-label="Zoom out">−</button>
+          <button onClick={resetView} className="topbar-reset-view">Reset view</button>
+          <button onClick={() => zoomFromButton(1)} aria-label="Zoom in">+</button>
           <input
             className="zoom-slider"
             type="range"
@@ -486,14 +499,15 @@ export default function App() {
             value={Math.round(state.zoom * 100)}
             onChange={(event) => setZoom(Number(event.target.value) / 100)}
           />
-          <button onClick={resetWorkspace} className="quiet">
+          <button onClick={resetWorkspace} className="quiet topbar-reset-fabric">
             Reset fabric
           </button>
         </div>
       </header>
 
       <main className="layout">
-        <aside className="panel left">
+        {sidebarOpen ? <div className="sidebar-scrim" onClick={() => setSidebarOpen(false)} /> : null}
+        <aside className={`panel left ${sidebarOpen ? 'open' : ''}`}>
           {activeThread ? (
             <section className="inspector-card editor-summary">
               <div className="meta-row">
