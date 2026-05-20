@@ -868,6 +868,16 @@ export default function App() {
                     autoComplete="off"
                     spellCheck={false}
                   />
+                  {providerKeyLink(settings.provider) ? (
+                    <a
+                      className="key-signup-link"
+                      href={providerKeyLink(settings.provider)!.href}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      {providerKeyLink(settings.provider)!.label} →
+                    </a>
+                  ) : null}
                 </label>
                 <div className="editor-actions left-aligned">
                   <button type="button" onClick={unlockStoredKey} disabled={savingSettings || !settings.hasEncryptedApiKey}>
@@ -991,6 +1001,13 @@ function apiKeyPlaceholder(provider: AIProvider) {
   if (provider === 'anthropic') return 'sk-ant-...';
   if (provider === 'openrouter') return 'sk-or-...';
   return '';
+}
+
+function providerKeyLink(provider: AIProvider): { label: string; href: string } | null {
+  if (provider === 'openrouter') return { label: 'Get a free OpenRouter key', href: 'https://openrouter.ai/keys' };
+  if (provider === 'openai') return { label: 'Get an OpenAI key', href: 'https://platform.openai.com/api-keys' };
+  if (provider === 'anthropic') return { label: 'Get an Anthropic key', href: 'https://console.anthropic.com/settings/keys' };
+  return null;
 }
 
 const SYSTEM_PROMPT = (thread: ThreadLane) =>
