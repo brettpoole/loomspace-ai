@@ -1150,8 +1150,6 @@ async function requestOpenRouter(settings: AISettings, thread: ThreadLane, messa
     headers: {
       Authorization: `Bearer ${settings.apiKey}`,
       'Content-Type': 'application/json',
-      'HTTP-Referer': window.location.origin,
-      'X-Title': 'Loomspace',
     },
     body: JSON.stringify({
       model: thread.model,
