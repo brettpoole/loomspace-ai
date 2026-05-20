@@ -808,7 +808,7 @@ button.quiet {
   background: rgba(255, 255, 255, 0.03);
 }
 
-.bubble strong {
+.bubble > strong {
   display: block;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -831,6 +831,10 @@ button.quiet {
   font-size: 0.94rem;
   line-height: 1.7;
   color: #ddd8cc;
+}
+
+.bubble.assistant .message-copy * {
+  color: inherit;
 }
 
 .bubble.assistant .message-copy > :first-child {
