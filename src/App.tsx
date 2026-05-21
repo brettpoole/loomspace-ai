@@ -396,6 +396,7 @@ export default function App() {
     setSending(true);
     setError(null);
     setComposerDraft('');
+    if (closeAfter) setMiniChatOpen(false);
     setState((current) => ({
       ...current,
       version: current.version + 1,
@@ -447,7 +448,7 @@ export default function App() {
         selectedThreadId: activeThread.id,
         selectedNodeId: pendingChatNode.id,
       }));
-      if (closeAfter) setMiniChatOpen(false);
+      // mini chat already closed if closeAfter was set
     } catch (err) {
       setState((current) => ({
         ...current,
@@ -1200,18 +1201,6 @@ export default function App() {
                               <strong style={{ color: ctxNode.sourceThreadColor }}>{ctxNode.sourceThreadTitle}</strong>
                               <small>{ctxNode.messages.length} messages · {ctxNode.createdAt.slice(0, 10)}</small>
                               <div className="node-footer">
-                                {isContextSource && ctxPart ? (
-                                  <div className="context-select-inline" onClick={(e) => e.stopPropagation()}>
-                                    <button type="button" className={`context-select-half user ${ctxPart.parts.user ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(node.id, 'user'); }}>
-                                      <span>User prompt</span>
-                                      <span className="context-select-check">{ctxPart.parts.user ? '✓' : '○'}</span>
-                                    </button>
-                                    <button type="button" className={`context-select-half assistant ${ctxPart.parts.assistant ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(node.id, 'assistant'); }}>
-                                      <span>Asst response</span>
-                                      <span className="context-select-check">{ctxPart.parts.assistant ? '✓' : '○'}</span>
-                                    </button>
-                                  </div>
-                                ) : null}
                                 {ctxNode.messages.length > 0 ? (
                                   <button type="button" className="node-expand-toggle" onClick={(e) => { e.stopPropagation(); setNodePreviewModal({ title: ctxNode.sourceThreadTitle, messages: ctxNode.messages }); }}>
                                     Read more
@@ -1219,6 +1208,18 @@ export default function App() {
                                 ) : null}
                               </div>
                             </div>
+                            {isContextSource && ctxPart ? (
+                              <div className="context-select-overlay" onClick={(e) => e.stopPropagation()}>
+                                <button type="button" className={`context-select-half user ${ctxPart.parts.user ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(node.id, 'user'); }}>
+                                  <span>User prompt</span>
+                                  <span className="context-select-check">{ctxPart.parts.user ? '✓' : '○'}</span>
+                                </button>
+                                <button type="button" className={`context-select-half assistant ${ctxPart.parts.assistant ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(node.id, 'assistant'); }}>
+                                  <span>Asst response</span>
+                                  <span className="context-select-check">{ctxPart.parts.assistant ? '✓' : '○'}</span>
+                                </button>
+                              </div>
+                            ) : null}
                             {showDots && (
                               <>
                                 <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: -36 }} />
@@ -1287,18 +1288,6 @@ export default function App() {
                             <strong>{chatNode.summary}</strong>
                             <small>{chatNode.model}</small>
                             <div className="node-footer">
-                              {isContextSource && ctxPart ? (
-                                <div className="context-select-inline" onClick={(e) => e.stopPropagation()}>
-                                  <button type="button" className={`context-select-half user ${ctxPart.parts.user ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(node.id, 'user'); }}>
-                                    <span>User prompt</span>
-                                    <span className="context-select-check">{ctxPart.parts.user ? '✓' : '○'}</span>
-                                  </button>
-                                  <button type="button" className={`context-select-half assistant ${ctxPart.parts.assistant ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(node.id, 'assistant'); }}>
-                                    <span>Asst response</span>
-                                    <span className="context-select-check">{ctxPart.parts.assistant ? '✓' : '○'}</span>
-                                  </button>
-                                </div>
-                              ) : null}
                               {chatNode.messages.length > 0 ? (
                                 <button type="button" className="node-expand-toggle" onClick={(e) => { e.stopPropagation(); setNodePreviewModal({ title: chatNode.summary, messages: chatNode.messages }); }}>
                                   Read more
@@ -1306,6 +1295,18 @@ export default function App() {
                               ) : null}
                             </div>
                           </div>
+                          {isContextSource && ctxPart ? (
+                            <div className="context-select-overlay" onClick={(e) => e.stopPropagation()}>
+                              <button type="button" className={`context-select-half user ${ctxPart.parts.user ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(node.id, 'user'); }}>
+                                <span>User prompt</span>
+                                <span className="context-select-check">{ctxPart.parts.user ? '✓' : '○'}</span>
+                              </button>
+                              <button type="button" className={`context-select-half assistant ${ctxPart.parts.assistant ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(node.id, 'assistant'); }}>
+                                <span>Asst response</span>
+                                <span className="context-select-check">{ctxPart.parts.assistant ? '✓' : '○'}</span>
+                              </button>
+                            </div>
+                          ) : null}
                           {showDots && (
                             <>
                               <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: -36 }} />
@@ -1332,7 +1333,7 @@ export default function App() {
               })}
             </div>
           {miniChatOpen && activeThread ? (
-            <div className="mini-chat">
+            <div className="mini-chat" onWheel={(e) => e.stopPropagation()}>
               <div className="mini-chat-header">
                 <span className="mini-chat-title">{activeThread.title}</span>
                 <button type="button" className="quiet mini-chat-close" onClick={() => setMiniChatOpen(false)} aria-label="Close chat">×</button>
@@ -1364,9 +1365,9 @@ export default function App() {
                   rows={3}
                   onKeyDown={(e) => {
                     if (e.key !== 'Enter') return;
-                    if (e.shiftKey) return;
+                    if (!e.ctrlKey && !e.metaKey) return;
                     e.preventDefault();
-                    sendMessage(e.ctrlKey || e.metaKey);
+                    sendMessage(true);
                   }}
                 />
                 {error ? <p className="error">{error}</p> : null}
