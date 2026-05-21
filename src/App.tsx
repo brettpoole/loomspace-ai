@@ -82,7 +82,7 @@ export default function App() {
   const [contextLinkMode, setContextLinkMode] = useState<{
     sourceThreadId: string;
     dotNodeId: string;
-    selectedNodeIds: string[];
+    selectedNodes: Array<{ nodeId: string; parts: { user: boolean; assistant: boolean } }>;
     side: 'left' | 'right';
   } | null>(null);
   const [aiSettingsModalOpen, setAiSettingsModalOpen] = useState(false);
@@ -367,26 +367,41 @@ export default function App() {
   }
 
   function deselectNode() {
-    setState((current) => ({ ...current, selectedNodeId: null }));
+    setState((current) => ({ ...current, selectedThreadId: null, selectedNodeId: null }));
+    setContextLinkMode(null);
     setMiniChatOpen(false);
   }
 
   function enterContextLinkMode(thread: ThreadLane, nodeId: string, side: 'left' | 'right') {
-    const chatNodes = thread.nodes.filter((n): n is ThreadChatNode => n.kind === 'chat');
-    const idx = chatNodes.findIndex((n) => n.id === nodeId);
+    const selectableNodes = thread.nodes.filter((n) => n.kind === 'chat' || n.kind === 'context');
+    const idx = selectableNodes.findIndex((n) => n.id === nodeId);
     if (idx < 0) return;
-    const selectedNodeIds = chatNodes.slice(0, idx + 1).map((n) => n.id);
-    setContextLinkMode({ sourceThreadId: thread.id, dotNodeId: nodeId, selectedNodeIds, side });
+    const selectedNodes = selectableNodes.slice(0, idx + 1).map((n) => ({
+      nodeId: n.id,
+      parts: { user: true, assistant: true },
+    }));
+    setContextLinkMode({ sourceThreadId: thread.id, dotNodeId: nodeId, selectedNodes, side });
   }
 
   function toggleContextNode(nodeId: string) {
     if (!contextLinkMode) return;
-    const isSelected = contextLinkMode.selectedNodeIds.includes(nodeId);
-    if (isSelected && contextLinkMode.selectedNodeIds.length === 1) return;
-    const selectedNodeIds = isSelected
-      ? contextLinkMode.selectedNodeIds.filter((id) => id !== nodeId)
-      : [...contextLinkMode.selectedNodeIds, nodeId];
-    setContextLinkMode({ ...contextLinkMode, selectedNodeIds });
+    const isSelected = contextLinkMode.selectedNodes.some((s) => s.nodeId === nodeId);
+    if (isSelected && contextLinkMode.selectedNodes.length === 1) return;
+    const selectedNodes = isSelected
+      ? contextLinkMode.selectedNodes.filter((s) => s.nodeId !== nodeId)
+      : [...contextLinkMode.selectedNodes, { nodeId, parts: { user: true, assistant: true } }];
+    setContextLinkMode({ ...contextLinkMode, selectedNodes });
+  }
+
+  function toggleContextPart(nodeId: string, part: 'user' | 'assistant') {
+    if (!contextLinkMode) return;
+    const selectedNodes = contextLinkMode.selectedNodes.flatMap((s) => {
+      if (s.nodeId !== nodeId) return [s];
+      const newParts = { ...s.parts, [part]: !s.parts[part] };
+      if (!newParts.user && !newParts.assistant) return [];
+      return [{ ...s, parts: newParts }];
+    });
+    setContextLinkMode({ ...contextLinkMode, selectedNodes });
   }
 
   function injectContextTo(destThreadId: string) {
@@ -394,25 +409,29 @@ export default function App() {
     const sourceThread = state.threads.find((t) => t.id === contextLinkMode.sourceThreadId);
     if (!sourceThread) return;
 
-    const sourceChatNodes = sourceThread.nodes.filter(
-      (n): n is ThreadChatNode => n.kind === 'chat' && contextLinkMode.selectedNodeIds.includes(n.id),
-    );
-
-    const injectedMessages: ChatMessage[] = sourceChatNodes.flatMap((n) =>
-      n.messages.map((msg) => ({
-        ...msg,
-        id: `injected-${crypto.randomUUID().slice(0, 8)}`,
-        injectedFromThreadId: sourceThread.id,
-        injectedFromColor: sourceThread.color,
-      })),
-    );
+    const injectedMessages: ChatMessage[] = [];
+    for (const node of sourceThread.nodes) {
+      if (node.kind !== 'chat' && node.kind !== 'context') continue;
+      const selection = contextLinkMode.selectedNodes.find((s) => s.nodeId === node.id);
+      if (!selection) continue;
+      for (const msg of node.messages) {
+        if (msg.role === 'user' && !selection.parts.user) continue;
+        if (msg.role === 'assistant' && !selection.parts.assistant) continue;
+        injectedMessages.push({
+          ...msg,
+          id: `injected-${crypto.randomUUID().slice(0, 8)}`,
+          injectedFromThreadId: sourceThread.id,
+          injectedFromColor: sourceThread.color,
+        });
+      }
+    }
 
     if (injectedMessages.length === 0) {
       setContextLinkMode(null);
       return;
     }
 
-    const contextNode = createContextNode(sourceThread, contextLinkMode.selectedNodeIds, injectedMessages);
+    const contextNode = createContextNode(sourceThread, contextLinkMode.selectedNodes.map((s) => s.nodeId), injectedMessages);
 
     setState((current) => ({
       ...current,
@@ -947,8 +966,9 @@ export default function App() {
                 {contextLinkMode && (() => {
                   const srcLane = lanes.find((l) => l.thread.id === contextLinkMode.sourceThreadId);
                   if (!srcLane) return null;
+                  const selectedIds = new Set(contextLinkMode.selectedNodes.map((s) => s.nodeId));
                   const sorted = srcLane.nodes
-                    .filter((e) => contextLinkMode.selectedNodeIds.includes(e.node.id))
+                    .filter((e) => selectedIds.has(e.node.id))
                     .sort((a, b) => a.top - b.top);
                   if (sorted.length === 0) return null;
                   const offset = contextLinkMode.side === 'right' ? 22 : -22;
@@ -993,45 +1013,93 @@ export default function App() {
 
                       if (node.kind === 'context') {
                         const ctxNode = node;
+                        const isSelected = node.id === state.selectedNodeId;
+                        const ctxPart = contextLinkMode?.sourceThreadId === thread.id
+                          ? contextLinkMode.selectedNodes.find((s) => s.nodeId === node.id) ?? null
+                          : null;
+                        const isContextSource = ctxPart !== null;
                         const isContextTarget = contextLinkMode !== null && thread.id !== contextLinkMode.sourceThreadId;
+                        const showDots = isSelected || (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id);
+
+                        const handleSideDotCtx = (side: 'left' | 'right') => (e: React.MouseEvent) => {
+                          e.stopPropagation();
+                          if (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id && contextLinkMode.side === side) {
+                            if (contextLinkMode.selectedNodes.length <= 1) setContextLinkMode(null);
+                            else setContextLinkMode({ ...contextLinkMode, selectedNodes: [{ nodeId: node.id, parts: { user: true, assistant: true } }] });
+                          } else {
+                            enterContextLinkMode(thread, node.id, side);
+                          }
+                        };
+
                         return (
                           <div key={node.id} style={{ position: 'absolute', top, left: 0 }}>
                             <button
-                              className={`context-node ${isContextTarget ? 'context-target' : ''}`}
+                              className={`context-node ${isSelected ? 'selected' : ''} ${isContextSource ? 'context-source-selected' : ''} ${isContextTarget ? 'context-target' : ''}`}
                               style={{ '--ctx-color': ctxNode.sourceThreadColor, '--ctx-bg': hexToRgba(ctxNode.sourceThreadColor, 0.07), '--ctx-border': hexToRgba(ctxNode.sourceThreadColor, 0.35) } as React.CSSProperties}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                if (contextLinkMode && thread.id !== contextLinkMode.sourceThreadId) {
-                                  injectContextTo(thread.id);
-                                } else {
-                                  selectNode(thread.id, node.id);
+                                if (contextLinkMode) {
+                                  if (thread.id === contextLinkMode.sourceThreadId) toggleContextNode(node.id);
+                                  else injectContextTo(thread.id);
+                                  return;
                                 }
+                                selectNode(thread.id, node.id);
                               }}
                             >
-                              <div className="exchange-head">
+                              <div className="exchange-head" style={{ color: ctxNode.sourceThreadColor, opacity: 0.75 }}>
                                 <span>Context from</span>
                               </div>
-                              <strong>{ctxNode.sourceThreadTitle}</strong>
+                              <strong style={{ color: ctxNode.sourceThreadColor }}>{ctxNode.sourceThreadTitle}</strong>
                               <small>{ctxNode.messages.length} messages · {ctxNode.createdAt.slice(0, 10)}</small>
                             </button>
+                            {isContextSource && ctxPart && (
+                              <div className="context-select-overlay">
+                                <button className={`context-select-half user ${ctxPart.parts.user ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(node.id, 'user'); }}>
+                                  <span>User prompt</span>
+                                  <span className="context-select-check">{ctxPart.parts.user ? '✓' : '○'}</span>
+                                </button>
+                                <button className={`context-select-half assistant ${ctxPart.parts.assistant ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(node.id, 'assistant'); }}>
+                                  <span>Asst response</span>
+                                  <span className="context-select-check">{ctxPart.parts.assistant ? '✓' : '○'}</span>
+                                </button>
+                              </div>
+                            )}
+                            {showDots && (
+                              <>
+                                <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: -36 }} />
+                                <div className="action-dot-group action-left" style={{ top: CHAT_HEIGHT / 2 - 12, left: -84 }}>
+                                  <button className="action-dot" aria-label="Inject context left" onClick={handleSideDotCtx('left')} />
+                                  <div className="fork-dot-connector" />
+                                  <div className="fork-dot" aria-hidden="true" title="Fork (coming soon)" />
+                                </div>
+                                <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: NODE_WIDTH }} />
+                                <div className="action-dot-group action-right" style={{ top: CHAT_HEIGHT / 2 - 12, left: NODE_WIDTH + 36 }}>
+                                  <button className="action-dot" aria-label="Inject context right" onClick={handleSideDotCtx('right')} />
+                                  <div className="fork-dot-connector" />
+                                  <div className="fork-dot" aria-hidden="true" title="Fork (coming soon)" />
+                                </div>
+                                <div className="action-line-v" style={{ top: CHAT_HEIGHT, left: NODE_WIDTH / 2 }} />
+                                <button className="action-dot bottom" style={{ top: CHAT_HEIGHT + 36, left: NODE_WIDTH / 2 - 12 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setMiniChatOpen(true); }} />
+                              </>
+                            )}
                           </div>
                         );
                       }
 
                       const chatNode = node;
-                      const isSelected = node.id === activeNode?.id;
-                      const isContextSource = contextLinkMode?.sourceThreadId === thread.id && contextLinkMode.selectedNodeIds.includes(node.id);
+                      const isSelected = node.id === state.selectedNodeId;
+                      const ctxPart = contextLinkMode?.sourceThreadId === thread.id
+                        ? contextLinkMode.selectedNodes.find((s) => s.nodeId === node.id) ?? null
+                        : null;
+                      const isContextSource = ctxPart !== null;
                       const isContextTarget = contextLinkMode !== null && thread.id !== contextLinkMode.sourceThreadId;
                       const showDots = isSelected || (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id);
 
                       const handleSideDot = (side: 'left' | 'right') => (e: React.MouseEvent) => {
                         e.stopPropagation();
                         if (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id && contextLinkMode.side === side) {
-                          if (contextLinkMode.selectedNodeIds.length <= 1) {
-                            setContextLinkMode(null);
-                          } else {
-                            setContextLinkMode({ ...contextLinkMode, selectedNodeIds: [node.id] });
-                          }
+                          if (contextLinkMode.selectedNodes.length <= 1) setContextLinkMode(null);
+                          else setContextLinkMode({ ...contextLinkMode, selectedNodes: [{ nodeId: node.id, parts: { user: true, assistant: true } }] });
                         } else {
                           enterContextLinkMode(thread, node.id, side);
                         }
@@ -1045,11 +1113,8 @@ export default function App() {
                             onClick={(e) => {
                               e.stopPropagation();
                               if (contextLinkMode) {
-                                if (thread.id === contextLinkMode.sourceThreadId) {
-                                  toggleContextNode(node.id);
-                                } else {
-                                  injectContextTo(thread.id);
-                                }
+                                if (thread.id === contextLinkMode.sourceThreadId) toggleContextNode(node.id);
+                                else injectContextTo(thread.id);
                                 return;
                               }
                               selectNode(thread.id, node.id);
@@ -1062,21 +1127,34 @@ export default function App() {
                             <strong>{chatNode.summary}</strong>
                             <small>{chatNode.model}</small>
                           </button>
+                          {isContextSource && ctxPart && (
+                            <div className="context-select-overlay">
+                              <button className={`context-select-half user ${ctxPart.parts.user ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(node.id, 'user'); }}>
+                                <span>User prompt</span>
+                                <span className="context-select-check">{ctxPart.parts.user ? '✓' : '○'}</span>
+                              </button>
+                              <button className={`context-select-half assistant ${ctxPart.parts.assistant ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(node.id, 'assistant'); }}>
+                                <span>Asst response</span>
+                                <span className="context-select-check">{ctxPart.parts.assistant ? '✓' : '○'}</span>
+                              </button>
+                            </div>
+                          )}
                           {showDots && (
                             <>
                               <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: -36 }} />
-                              <button className="action-dot" style={{ top: CHAT_HEIGHT / 2 - 12, left: -60 }} aria-label="Inject context left" onClick={handleSideDot('left')} />
-                              <button className="fork-dot" style={{ top: CHAT_HEIGHT / 2 - 8, left: -88 }} aria-label="Fork thread" onClick={(e) => e.stopPropagation()} title="Fork to new thread (coming soon)" />
+                              <div className="action-dot-group action-left" style={{ top: CHAT_HEIGHT / 2 - 12, left: -84 }}>
+                                <button className="action-dot" aria-label="Inject context left" onClick={handleSideDot('left')} />
+                                <div className="fork-dot-connector" />
+                                <div className="fork-dot" aria-hidden="true" title="Fork (coming soon)" />
+                              </div>
                               <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: NODE_WIDTH }} />
-                              <button className="action-dot" style={{ top: CHAT_HEIGHT / 2 - 12, left: NODE_WIDTH + 36 }} aria-label="Inject context right" onClick={handleSideDot('right')} />
-                              <button className="fork-dot" style={{ top: CHAT_HEIGHT / 2 - 8, left: NODE_WIDTH + 64 }} aria-label="Fork thread" onClick={(e) => e.stopPropagation()} title="Fork to new thread (coming soon)" />
+                              <div className="action-dot-group action-right" style={{ top: CHAT_HEIGHT / 2 - 12, left: NODE_WIDTH + 36 }}>
+                                <button className="action-dot" aria-label="Inject context right" onClick={handleSideDot('right')} />
+                                <div className="fork-dot-connector" />
+                                <div className="fork-dot" aria-hidden="true" title="Fork (coming soon)" />
+                              </div>
                               <div className="action-line-v" style={{ top: CHAT_HEIGHT, left: NODE_WIDTH / 2 }} />
-                              <button
-                                className="action-dot bottom"
-                                style={{ top: CHAT_HEIGHT + 36, left: NODE_WIDTH / 2 - 12 }}
-                                aria-label="Open chat"
-                                onClick={(e) => { e.stopPropagation(); setMiniChatOpen(true); }}
-                              />
+                              <button className="action-dot bottom" style={{ top: CHAT_HEIGHT + 36, left: NODE_WIDTH / 2 - 12 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setMiniChatOpen(true); }} />
                             </>
                           )}
                         </div>

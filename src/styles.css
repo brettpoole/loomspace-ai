@@ -1211,31 +1211,74 @@ button.quiet {
   box-shadow: 0 0 14px rgba(124, 247, 194, 0.35);
 }
 
-.fork-dot {
+/* Action dot group — contains action-dot + fork-dot, fork only appears on side-dot hover */
+
+.action-dot-group {
   position: absolute;
+  display: flex;
+  align-items: center;
+}
+
+.action-dot-group.action-left {
+  flex-direction: row-reverse;
+}
+
+.action-dot-group .action-dot {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.fork-dot {
+  position: relative;
   width: 16px;
   height: 16px;
   padding: 0;
+  flex-shrink: 0;
   border-radius: 50%;
   border: 1.5px solid rgba(255, 213, 102, 0.55);
   background: rgba(255, 213, 102, 0.12);
-  cursor: pointer;
-  font-size: 10px;
   display: grid;
   place-items: center;
-  color: rgba(255, 213, 102, 0.8);
-  transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+  color: rgba(255, 213, 102, 0.85);
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 200ms ease, transform 200ms ease;
 }
 
 .fork-dot::after {
   content: '+';
-  line-height: 1;
 }
 
-.fork-dot:hover {
-  background: rgba(255, 213, 102, 0.22);
-  border-color: rgba(255, 213, 102, 0.8);
-  transform: scale(1.15);
+.fork-dot-connector {
+  width: 12px;
+  height: 1.5px;
+  flex-shrink: 0;
+  background: rgba(255, 213, 102, 0.38);
+  opacity: 0;
+  transition: opacity 200ms ease;
+}
+
+/* Left group: fork-dot is leftmost, slides out leftward from near action dot */
+.action-dot-group.action-left .fork-dot {
+  transform: translateX(24px);
+}
+
+/* Right group: fork-dot is rightmost, slides out rightward from near action dot */
+.action-dot-group.action-right .fork-dot {
+  transform: translateX(-24px);
+}
+
+.action-dot-group .action-dot:hover + .fork-dot-connector,
+.action-dot-group .action-dot:focus-visible + .fork-dot-connector {
+  opacity: 1;
+}
+
+.action-dot-group .action-dot:hover + .fork-dot-connector + .fork-dot,
+.action-dot-group .action-dot:focus-visible + .fork-dot-connector + .fork-dot {
+  opacity: 1;
+  transform: translateX(0);
 }
 
 .action-line-h {
