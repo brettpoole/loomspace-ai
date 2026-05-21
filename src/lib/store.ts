@@ -40,15 +40,7 @@ export function providerInfo(provider: AIProvider): ProviderInfo {
 }
 
 export function defaultProviderConfigs(): AIProviderConfig[] {
-  return PROVIDERS.filter((entry) => entry.id !== 'openai-compatible-custom').map((entry) => ({
-    id: entry.id,
-    kind: entry.id,
-    label: entry.label,
-    model: entry.defaultModel,
-    apiKey: '',
-    hasEncryptedApiKey: false,
-    baseUrl: entry.baseUrl,
-  }));
+  return [];
 }
 
 export function defaultProviderConfigId(kind: AIProvider): string {
@@ -198,7 +190,7 @@ export function clearProviderSecret(configId: string) {
 export function deleteProviderConfig(settings: AISettings, configId: string): AISettings {
   clearProviderSecret(configId);
   const remaining = settings.providerConfigs.filter((config) => config.id !== configId);
-  const configs = remaining.length > 0 ? remaining : defaultProviderConfigs();
+  const configs = remaining;
   const nextActiveId =
     settings.activeProviderConfigId === configId
       ? configs[0]?.id ?? 'openai'

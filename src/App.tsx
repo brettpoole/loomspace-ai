@@ -47,9 +47,11 @@ const TITLE_INFO_EXTRA = 84;
 const CHAT_HEIGHT = 92;
 const NODE_GAP = 30;
 const NODE_WIDTH = 232;
-const MIN_ZOOM = 0.7;
+const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 1.6;
 const EDGE_PADDING = 80;
+const CANVAS_MIN_WIDTH = 4000;
+const CANVAS_MIN_HEIGHT = 2400;
 
 interface ThreadDraft {
   title: string;
@@ -109,13 +111,15 @@ export default function App() {
   );
 
   const canvasWidth = Math.max(
-    1280,
+    CANVAS_MIN_WIDTH,
     LEFT_PAD * 2 + Math.max(0, state.threads.length - 1) * (LANE_WIDTH + LANE_GAP) + LANE_WIDTH,
   );
 
   const lanes = useMemo(() => {
+    const threadGroupWidth = state.threads.length * LANE_WIDTH + Math.max(0, state.threads.length - 1) * LANE_GAP;
+    const groupLeft = canvasWidth / 2 - threadGroupWidth / 2;
     return state.threads.map((thread, index) => {
-      const centerX = state.threads.length === 1 ? canvasWidth / 2 : LEFT_PAD + index * (LANE_WIDTH + LANE_GAP) + LANE_WIDTH / 2;
+      const centerX = groupLeft + index * (LANE_WIDTH + LANE_GAP) + LANE_WIDTH / 2;
       const nodes: Array<{ node: ThreadNode; top: number }> = [];
       let cursorTop = TOP_PAD;
       for (const node of thread.nodes) {
@@ -131,7 +135,7 @@ export default function App() {
     });
   }, [canvasWidth, state.threads]);
 
-  const canvasHeight = Math.max(720, ...lanes.map((lane) => lane.height));
+  const canvasHeight = Math.max(CANVAS_MIN_HEIGHT, ...lanes.map((lane) => lane.height));
 
   useEffect(() => {
     clampViewport();
@@ -142,6 +146,14 @@ export default function App() {
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, [canvasWidth, canvasHeight]);
+
+  const didInitCenter = useRef(false);
+  useEffect(() => {
+    if (!didInitCenter.current && state.panX === 0 && state.panY === 0) {
+      didInitCenter.current = true;
+      resetView();
+    }
+  }, []);
 
   function clampViewport(next?: Partial<Pick<LoomspaceState, 'panX' | 'panY' | 'zoom'>>) {
     const viewport = viewportRef.current;
@@ -509,8 +521,8 @@ export default function App() {
     }
     const rect = viewport.getBoundingClientRect();
     const centered = boundedPan(
-      Math.max(0, (rect.width - canvasWidth) / 2),
-      Math.max(0, (rect.height - canvasHeight) / 2),
+      (rect.width - canvasWidth) / 2,
+      EDGE_PADDING,
       1,
       rect.width,
       rect.height,
@@ -618,49 +630,73 @@ export default function App() {
                 Manage
               </button>
             </div>
-            <div className="profile-list">
-              {settings.providerConfigs.map((config) => {
-                const isActive = config.id === activeProviderConfig?.id;
-                const lock = config.hasEncryptedApiKey
-                  ? config.apiKey.trim()
-                    ? 'unlocked'
-                    : 'locked'
-                  : 'none';
-                return (
+            {settings.providerConfigs.length === 0 ? (
+              <div className="profile-list-empty">
+                <p>No AI profiles yet.</p>
+                <button
+                  type="button"
+                  className="profile-list-empty-cta"
+                  onClick={() => {
+                    const next = createProviderConfig('openai-compatible-custom', { label: 'New profile' });
+                    setSettings((current) => ({
+                      ...current,
+                      activeProviderConfigId: next.id,
+                      providerConfigs: [...current.providerConfigs, next],
+                    }));
+                    setSidebarOpen(false);
+                    setAiSettingsModalOpen(true);
+                  }}
+                >
+                  Add AI profile
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="profile-list">
+                  {settings.providerConfigs.map((config) => {
+                    const isActive = config.id === activeProviderConfig?.id;
+                    const lock = config.hasEncryptedApiKey
+                      ? config.apiKey.trim()
+                        ? 'unlocked'
+                        : 'locked'
+                      : 'none';
+                    return (
+                      <button
+                        key={config.id}
+                        type="button"
+                        className={`profile-chip ${isActive ? 'selected' : ''}`}
+                        onClick={() => changeSettingsProvider(config.id)}
+                      >
+                        <span className="profile-chip-copy">
+                          <strong>{config.label}</strong>
+                          <small>{providerInfo(config.kind).label} · {config.model}</small>
+                        </span>
+                        <span className={`pill profile-lock ${lock}`}>
+                          {lock === 'none' ? 'no key' : lock === 'unlocked' ? 'unlocked' : 'locked'}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="editor-actions left-aligned">
                   <button
-                    key={config.id}
                     type="button"
-                    className={`profile-chip ${isActive ? 'selected' : ''}`}
-                    onClick={() => changeSettingsProvider(config.id)}
+                    onClick={() => {
+                      const next = createProviderConfig('openai-compatible-custom', { label: 'New profile' });
+                      setSettings((current) => ({
+                        ...current,
+                        activeProviderConfigId: next.id,
+                        providerConfigs: [...current.providerConfigs, next],
+                      }));
+                      setSidebarOpen(false);
+                      setAiSettingsModalOpen(true);
+                    }}
                   >
-                    <span className="profile-chip-copy">
-                      <strong>{config.label}</strong>
-                      <small>{providerInfo(config.kind).label} · {config.model}</small>
-                    </span>
-                    <span className={`pill profile-lock ${lock}`}>
-                      {lock === 'none' ? 'no key' : lock === 'unlocked' ? 'unlocked' : 'locked'}
-                    </span>
+                    Add profile
                   </button>
-                );
-              })}
-            </div>
-            <div className="editor-actions left-aligned">
-              <button
-                type="button"
-                onClick={() => {
-                  const next = createProviderConfig('openai-compatible-custom', { label: 'New profile' });
-                  setSettings((current) => ({
-                    ...current,
-                    activeProviderConfigId: next.id,
-                    providerConfigs: [...current.providerConfigs, next],
-                  }));
-                  setSidebarOpen(false);
-                  setAiSettingsModalOpen(true);
-                }}
-              >
-                Add profile
-              </button>
-            </div>
+                </div>
+              </>
+            )}
           </section>
 
           <div className="thread-list-spacer">
@@ -810,26 +846,32 @@ export default function App() {
                   </button>
                 </div>
                 <div className="thread-meta-row stack">
-                  <label className="field compact">
-                    AI profile
-                    <select
-                      value={activeProviderConfig?.id ?? ''}
-                      onChange={(event) => {
-                        const nextConfigId = event.target.value;
-                        changeSettingsProvider(nextConfigId);
-                        const nextConfig = settings.providerConfigs.find((config) => config.id === nextConfigId);
-                        if (nextConfig?.hasEncryptedApiKey && !nextConfig.apiKey.trim()) {
-                          setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: nextConfigId });
-                        }
-                      }}
-                    >
-                      {settings.providerConfigs.map((config) => (
-                        <option key={config.id} value={config.id}>
-                          {config.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                  {settings.providerConfigs.length === 0 ? (
+                    <button type="button" onClick={() => setAiSettingsModalOpen(true)}>
+                      Add AI profile to chat
+                    </button>
+                  ) : (
+                    <label className="field compact">
+                      AI profile
+                      <select
+                        value={activeProviderConfig?.id ?? ''}
+                        onChange={(event) => {
+                          const nextConfigId = event.target.value;
+                          changeSettingsProvider(nextConfigId);
+                          const nextConfig = settings.providerConfigs.find((config) => config.id === nextConfigId);
+                          if (nextConfig?.hasEncryptedApiKey && !nextConfig.apiKey.trim()) {
+                            setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: nextConfigId });
+                          }
+                        }}
+                      >
+                        {settings.providerConfigs.map((config) => (
+                          <option key={config.id} value={config.id}>
+                            {config.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
                   <span className="pill">Model: {activeProviderConfig?.model ?? '—'}</span>
                   <span className="pill">Context left: {activeThread ? remainingContext.toLocaleString() : '—'}</span>
                   <button type="button" className="quiet" onClick={() => setAiSettingsModalOpen(true)}>
