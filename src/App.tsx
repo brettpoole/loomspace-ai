@@ -1185,7 +1185,7 @@ export default function App() {
                           <div key={node.id} style={{ position: 'absolute', top, left: 0 }}>
                             <div
                               className={`context-node ${isSelected ? 'selected' : ''} ${isContextSource ? 'context-source-selected' : ''} ${isContextTarget ? 'context-target' : ''}`}
-                              style={{ '--ctx-color': ctxNode.sourceThreadColor, '--ctx-bg': hexToRgba(ctxNode.sourceThreadColor, 0.07), '--ctx-border': hexToRgba(ctxNode.sourceThreadColor, 0.35) } as React.CSSProperties}
+                              style={{ position: 'relative', '--ctx-color': ctxNode.sourceThreadColor, '--ctx-bg': hexToRgba(ctxNode.sourceThreadColor, 0.07), '--ctx-border': hexToRgba(ctxNode.sourceThreadColor, 0.35) } as React.CSSProperties}
                               onClick={(e) => {
                                 e.stopPropagation();
                                 if (contextLinkMode) {
