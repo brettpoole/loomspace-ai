@@ -345,7 +345,7 @@ export default function App() {
             return {
               ...baseThread,
               context: [...injectedMessages],
-              nodes: [baseThread.nodes[0], contextNode, ...baseThread.nodes.slice(1)],
+              nodes: [baseThread.nodes[0], contextNode],
               activeNodeId: baseThread.activeNodeId,
             };
           })()
@@ -1359,6 +1359,7 @@ export default function App() {
               </div>
               <div className="mini-chat-composer">
                 <textarea
+                  autoFocus
                   value={composerDraft}
                   onChange={(e) => setComposerDraft(e.target.value)}
                   placeholder="Ask the thread something"
