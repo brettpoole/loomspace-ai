@@ -1376,9 +1376,9 @@ export default function App() {
                   onKeyDown={(e) => {
                     if (e.key === 'Escape') { e.preventDefault(); setMiniChatOpen(false); return; }
                     if (e.key !== 'Enter') return;
-                    if (!e.ctrlKey && !e.metaKey) return;
+                    if (e.shiftKey) return;
                     e.preventDefault();
-                    sendMessage(true);
+                    if (e.ctrlKey || e.metaKey) { sendMessage(true); } else { sendMessage(); }
                   }}
                 />
                 {error ? <p className="error">{error}</p> : null}
@@ -1540,6 +1540,12 @@ export default function App() {
                     onChange={(event) => setComposerDraft(event.target.value)}
                     placeholder="Ask the thread something"
                     rows={5}
+                    onKeyDown={(e) => {
+                      if (e.key !== 'Enter') return;
+                      if (e.shiftKey) return;
+                      e.preventDefault();
+                      if (e.ctrlKey || e.metaKey) { sendMessage(true); } else { sendMessage(); }
+                    }}
                   />
                   {settingsLockState === 'locked' ? <p className="muted">Unlock the active AI profile to send a message.</p> : null}
                   {error ? <p className="error">{error}</p> : null}
