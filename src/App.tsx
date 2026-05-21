@@ -88,26 +88,30 @@ export default function App() {
   const pointerMap = useRef<Map<number, { x: number; y: number }>>(new Map());
   const pinchState = useRef<{ dist: number; zoom: number } | null>(null);
   const spaceHeld = useRef(false);
+  const ctrlHeld = useRef(false);
   const [panMode, setPanMode] = useState<'idle' | 'ready' | 'panning'>('idle');
 
   useEffect(() => saveWorkspace(state), [state]);
   useEffect(() => saveSettings(settings), [settings]);
 
   useEffect(() => {
+    const isNavKey = (code: string) => code === 'Space' || code === 'ControlLeft' || code === 'ControlRight';
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.code !== 'Space') return;
+      if (!isNavKey(e.code)) return;
       const tag = (e.target as HTMLElement).tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-      e.preventDefault();
-      if (!spaceHeld.current) {
-        spaceHeld.current = true;
-        setPanMode('ready');
-      }
+      if (e.code === 'Space') e.preventDefault();
+      if (e.code === 'Space') spaceHeld.current = true;
+      if (e.code === 'ControlLeft' || e.code === 'ControlRight') ctrlHeld.current = true;
+      setPanMode((m) => (m === 'panning' ? 'panning' : 'ready'));
     };
     const onKeyUp = (e: KeyboardEvent) => {
-      if (e.code !== 'Space') return;
-      spaceHeld.current = false;
-      setPanMode((m) => (m === 'panning' ? 'idle' : 'idle'));
+      if (!isNavKey(e.code)) return;
+      if (e.code === 'Space') spaceHeld.current = false;
+      if (e.code === 'ControlLeft' || e.code === 'ControlRight') ctrlHeld.current = false;
+      if (!spaceHeld.current && !ctrlHeld.current) {
+        setPanMode((m) => (m === 'panning' ? 'idle' : 'idle'));
+      }
     };
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
@@ -115,6 +119,14 @@ export default function App() {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
     };
+  }, []);
+
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const block = (e: Event) => e.preventDefault();
+    el.addEventListener('wheel', block, { passive: false });
+    return () => el.removeEventListener('wheel', block);
   }, []);
 
   const metrics = useMemo(() => computeMetrics(state), [state]);
@@ -484,16 +496,16 @@ export default function App() {
     }
 
     const isMiddle = event.button === 1;
-    const isSpace = spaceHeld.current;
+    const isPanKey = spaceHeld.current || ctrlHeld.current;
     const isBackground = event.target === event.currentTarget;
 
-    if (!isMiddle && !isSpace && !isBackground) return;
+    if (!isMiddle && !isPanKey && !isBackground) return;
 
     if (isMiddle) event.preventDefault();
 
     panGesture.current = { startX: event.clientX, startY: event.clientY, panX: state.panX, panY: state.panY };
     event.currentTarget.setPointerCapture(event.pointerId);
-    if (isSpace) setPanMode('panning');
+    if (isPanKey) setPanMode('panning');
   }
 
   function movePan(event: PointerEvent<HTMLDivElement>) {
@@ -532,7 +544,7 @@ export default function App() {
     if (pointerMap.current.size < 2) pinchState.current = null;
     if (pointerMap.current.size === 0) {
       panGesture.current = null;
-      if (spaceHeld.current) setPanMode('ready');
+      if (spaceHeld.current || ctrlHeld.current) setPanMode('ready');
       else setPanMode('idle');
     }
   }
