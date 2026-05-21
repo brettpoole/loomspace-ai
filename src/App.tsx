@@ -904,7 +904,7 @@ export default function App() {
             value={Math.round(state.zoom * 100)}
             onChange={(event) => setZoom(Number(event.target.value) / 100)}
           />
-          <button onClick={resetWorkspace} className="quiet topbar-reset-fabric">
+          <button onClick={() => { if (window.confirm('Reset the fabric?\n\nThis will permanently delete all threads and AI profiles from this browser. This cannot be undone.')) resetWorkspace(); }} className="quiet topbar-reset-fabric">
             Reset fabric
           </button>
         </div>
@@ -1232,18 +1232,18 @@ export default function App() {
                               <>
                                 <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: -36 }} />
                                 <div className="action-dot-group action-left" style={{ top: CHAT_HEIGHT / 2 - 20, left: -128 }}>
-                                  <button type="button" className="action-dot" aria-label="Inject context left" onClick={handleSideDotCtx('left')} />
+                                  <button type="button" className="action-dot" aria-label="Inject context left" onClick={handleSideDotCtx('left')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M7 9l-1 1a3 3 0 0 1-4.24-4.24l2-2a3 3 0 0 1 4.24 4.24"/><path d="M9 7l1-1a3 3 0 0 1 4.24 4.24l-2 2a3 3 0 0 1-4.24-4.24"/></svg></button>
                                   <div className="fork-dot-connector" />
                                   <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDotCtx('left')}>+</button>
                                 </div>
                                 <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: NODE_WIDTH }} />
                                 <div className="action-dot-group action-right" style={{ top: CHAT_HEIGHT / 2 - 20, left: NODE_WIDTH + 36 }}>
-                                  <button type="button" className="action-dot" aria-label="Inject context right" onClick={handleSideDotCtx('right')} />
+                                  <button type="button" className="action-dot" aria-label="Inject context right" onClick={handleSideDotCtx('right')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M7 9l-1 1a3 3 0 0 1-4.24-4.24l2-2a3 3 0 0 1 4.24 4.24"/><path d="M9 7l1-1a3 3 0 0 1 4.24 4.24l-2 2a3 3 0 0 1-4.24-4.24"/></svg></button>
                                   <div className="fork-dot-connector" />
                                   <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDotCtx('right')}>+</button>
                                 </div>
                                 <div className="action-line-v" style={{ top: CHAT_HEIGHT, left: NODE_WIDTH / 2 }} />
-                                <button type="button" className="action-dot bottom" style={{ top: CHAT_HEIGHT + 36, left: NODE_WIDTH / 2 - 12 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setChatModalOpen(false); setMiniChatOpen(true); }} />
+                                <button type="button" className="action-dot bottom" style={{ top: CHAT_HEIGHT + 36, left: NODE_WIDTH / 2 - 12 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setChatModalOpen(false); setMiniChatOpen(true); }}><svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="6.5" y1="1.5" x2="6.5" y2="11.5"/><line x1="1.5" y1="6.5" x2="11.5" y2="6.5"/></svg></button>
                               </>
                             )}
                           </div>
@@ -1319,18 +1319,18 @@ export default function App() {
                             <>
                               <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: -36 }} />
                               <div className="action-dot-group action-left" style={{ top: CHAT_HEIGHT / 2 - 20, left: -128 }}>
-                                <button type="button" className="action-dot" aria-label="Inject context left" onClick={handleSideDot('left')} />
+                                <button type="button" className="action-dot" aria-label="Inject context left" onClick={handleSideDot('left')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M7 9l-1 1a3 3 0 0 1-4.24-4.24l2-2a3 3 0 0 1 4.24 4.24"/><path d="M9 7l1-1a3 3 0 0 1 4.24 4.24l-2 2a3 3 0 0 1-4.24-4.24"/></svg></button>
                                 <div className="fork-dot-connector" />
                                 <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDot('left')}>+</button>
                               </div>
                               <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: NODE_WIDTH }} />
                               <div className="action-dot-group action-right" style={{ top: CHAT_HEIGHT / 2 - 20, left: NODE_WIDTH + 36 }}>
-                                <button type="button" className="action-dot" aria-label="Inject context right" onClick={handleSideDot('right')} />
+                                <button type="button" className="action-dot" aria-label="Inject context right" onClick={handleSideDot('right')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M7 9l-1 1a3 3 0 0 1-4.24-4.24l2-2a3 3 0 0 1 4.24 4.24"/><path d="M9 7l1-1a3 3 0 0 1 4.24 4.24l-2 2a3 3 0 0 1-4.24-4.24"/></svg></button>
                                 <div className="fork-dot-connector" />
                                 <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDot('right')}>+</button>
                               </div>
                               <div className="action-line-v" style={{ top: CHAT_HEIGHT, left: NODE_WIDTH / 2 }} />
-                              <button type="button" className="action-dot bottom" style={{ top: CHAT_HEIGHT + 36, left: NODE_WIDTH / 2 - 12 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setChatModalOpen(false); setMiniChatOpen(true); }} />
+                              <button type="button" className="action-dot bottom" style={{ top: CHAT_HEIGHT + 36, left: NODE_WIDTH / 2 - 12 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setChatModalOpen(false); setMiniChatOpen(true); }}><svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="6.5" y1="1.5" x2="6.5" y2="11.5"/><line x1="1.5" y1="6.5" x2="11.5" y2="6.5"/></svg></button>
                             </>
                           )}
                         </div>

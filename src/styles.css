@@ -1232,6 +1232,10 @@ button.quiet {
   border: 1.5px solid rgba(124, 247, 194, 0.55);
   background: rgba(124, 247, 194, 0.1);
   cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(124, 247, 194, 0.85);
   transition: background 120ms ease, border-color 120ms ease, transform 120ms ease, box-shadow 120ms ease;
 }
 
