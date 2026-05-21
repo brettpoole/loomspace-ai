@@ -749,7 +749,8 @@ button.icon-btn {
   box-shadow:
     0 0 0 2px rgba(255, 255, 255, 0.05),
     0 0 16px rgba(255, 255, 255, 0.07),
-    0 0 100px 28px rgba(124, 247, 194, 0.06),
+    0 0 60px rgba(124, 247, 194, 0.18),
+    0 0 160px 60px rgba(124, 247, 194, 0.08),
     0 18px 50px rgba(0, 0, 0, 0.35),
     inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
@@ -759,7 +760,8 @@ button.icon-btn {
   box-shadow:
     0 0 0 2px rgba(255, 255, 255, 0.05),
     0 0 16px rgba(255, 255, 255, 0.07),
-    0 0 100px 28px rgba(124, 247, 194, 0.06),
+    0 0 60px rgba(124, 247, 194, 0.18),
+    0 0 160px 60px rgba(124, 247, 194, 0.08),
     0 18px 50px rgba(0, 0, 0, 0.3),
     inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
@@ -860,15 +862,6 @@ button.icon-btn {
   letter-spacing: 0.08em;
 }
 
-.confidence {
-  padding: 2px 8px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.confidence.low { color: #ffb4b4; }
-.confidence.medium { color: #ffd58b; }
-.confidence.high { color: #9bf4cd; }
 
 .empty-state {
   position: absolute;

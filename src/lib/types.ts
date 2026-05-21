@@ -1,5 +1,4 @@
 export type AIProvider = 'openai' | 'anthropic' | 'openrouter' | 'openai-compatible-custom';
-export type Confidence = 'low' | 'medium' | 'high';
 export type ThreadStatus = 'draft' | 'active' | 'stitch-ready' | 'closed';
 export type MessageRole = 'user' | 'assistant' | 'system';
 export type ThreadNodeKind = 'title' | 'chat' | 'context';
@@ -32,7 +31,6 @@ export interface ThreadChatNode {
   summary: string;
   model: string;
   messages: ChatMessage[];
-  confidence: Confidence;
   createdAt: string;
   usage?: TokenUsage;
   status?: 'pending' | 'unread' | 'error';
