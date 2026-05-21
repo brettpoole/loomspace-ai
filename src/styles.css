@@ -424,14 +424,18 @@ button.quiet {
   width: 100%;
   height: 100%;
   touch-action: none;
-  cursor: grab;
+  cursor: default;
   background:
     radial-gradient(circle at 20% 20%, rgba(124, 247, 194, 0.06), transparent 18%),
     radial-gradient(circle at 70% 40%, rgba(126, 168, 255, 0.08), transparent 20%),
     linear-gradient(135deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0.01));
 }
 
-.canvas-viewport:active {
+.canvas-viewport.pan-ready {
+  cursor: grab;
+}
+
+.canvas-viewport.pan-panning {
   cursor: grabbing;
 }
 

@@ -85,9 +85,37 @@ export default function App() {
   const [modelsLoading, setModelsLoading] = useState(false);
   const viewportRef = useRef<HTMLDivElement>(null);
   const panGesture = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
+  const pointerMap = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const pinchState = useRef<{ dist: number; zoom: number } | null>(null);
+  const spaceHeld = useRef(false);
+  const [panMode, setPanMode] = useState<'idle' | 'ready' | 'panning'>('idle');
 
   useEffect(() => saveWorkspace(state), [state]);
   useEffect(() => saveSettings(settings), [settings]);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code !== 'Space') return;
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      e.preventDefault();
+      if (!spaceHeld.current) {
+        spaceHeld.current = true;
+        setPanMode('ready');
+      }
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code !== 'Space') return;
+      spaceHeld.current = false;
+      setPanMode((m) => (m === 'panning' ? 'idle' : 'idle'));
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+    };
+  }, []);
 
   const metrics = useMemo(() => computeMetrics(state), [state]);
   const activeThread = state.threads.find((thread) => thread.id === state.selectedThreadId) ?? null;
@@ -443,17 +471,44 @@ export default function App() {
   }
 
   function beginPan(event: PointerEvent<HTMLDivElement>) {
-    if (event.target !== event.currentTarget) return;
-    panGesture.current = {
-      startX: event.clientX,
-      startY: event.clientY,
-      panX: state.panX,
-      panY: state.panY,
-    };
+    pointerMap.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+
+    if (pointerMap.current.size === 2) {
+      panGesture.current = null;
+      const [p1, p2] = [...pointerMap.current.values()];
+      pinchState.current = {
+        dist: Math.hypot(p2.x - p1.x, p2.y - p1.y),
+        zoom: state.zoom,
+      };
+      return;
+    }
+
+    const isMiddle = event.button === 1;
+    const isSpace = spaceHeld.current;
+    const isBackground = event.target === event.currentTarget;
+
+    if (!isMiddle && !isSpace && !isBackground) return;
+
+    if (isMiddle) event.preventDefault();
+
+    panGesture.current = { startX: event.clientX, startY: event.clientY, panX: state.panX, panY: state.panY };
     event.currentTarget.setPointerCapture(event.pointerId);
+    if (isSpace) setPanMode('panning');
   }
 
   function movePan(event: PointerEvent<HTMLDivElement>) {
+    pointerMap.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+
+    if (pinchState.current && pointerMap.current.size === 2) {
+      const [p1, p2] = [...pointerMap.current.values()];
+      const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+      const nextZoom = clamp(pinchState.current.zoom * (dist / pinchState.current.dist), MIN_ZOOM, MAX_ZOOM);
+      const midX = (p1.x + p2.x) / 2;
+      const midY = (p1.y + p2.y) / 2;
+      zoomAt(midX, midY, nextZoom);
+      return;
+    }
+
     if (!panGesture.current) return;
     const deltaX = event.clientX - panGesture.current.startX;
     const deltaY = event.clientY - panGesture.current.startY;
@@ -472,8 +527,14 @@ export default function App() {
     setState((current) => ({ ...current, ...next }));
   }
 
-  function endPan() {
-    panGesture.current = null;
+  function endPan(event: PointerEvent<HTMLDivElement>) {
+    pointerMap.current.delete(event.pointerId);
+    if (pointerMap.current.size < 2) pinchState.current = null;
+    if (pointerMap.current.size === 0) {
+      panGesture.current = null;
+      if (spaceHeld.current) setPanMode('ready');
+      else setPanMode('idle');
+    }
   }
 
   function zoomAt(clientX: number, clientY: number, nextZoom: number) {
@@ -727,7 +788,7 @@ export default function App() {
             <span>{metrics.saturation * 100 < 50 ? 'light weave' : 'dense weave'}</span>
           </div>
 
-          <div ref={viewportRef} className={`canvas-viewport ${state.densityOverlay ? 'overlay' : ''}`} onWheel={onWheel}>
+          <div ref={viewportRef} className={`canvas-viewport ${state.densityOverlay ? 'overlay' : ''} pan-${panMode}`} onWheel={onWheel}>
             <div
               className="canvas-stage"
               style={{
@@ -738,7 +799,8 @@ export default function App() {
               onPointerDown={beginPan}
               onPointerMove={movePan}
               onPointerUp={endPan}
-              onPointerLeave={endPan}
+              onPointerCancel={endPan}
+              onContextMenu={(e) => { if (e.button === 1) e.preventDefault(); }}
             >
               <svg className="edges-layer" viewBox={`0 0 ${canvasWidth} ${canvasHeight}`} preserveAspectRatio="none">
                 {lanes.map((lane) => {
