@@ -147,12 +147,8 @@ export default function App() {
     return () => window.removeEventListener('resize', onResize);
   }, [canvasWidth, canvasHeight]);
 
-  const didInitCenter = useRef(false);
   useEffect(() => {
-    if (!didInitCenter.current && state.panX === 0 && state.panY === 0) {
-      didInitCenter.current = true;
-      resetView();
-    }
+    resetView();
   }, []);
 
   function clampViewport(next?: Partial<Pick<LoomspaceState, 'panX' | 'panY' | 'zoom'>>) {
