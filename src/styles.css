@@ -418,6 +418,13 @@ button.quiet {
   accent-color: #7cf7c2;
 }
 
+.canvas-area {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .canvas-viewport {
   position: relative;
   overflow: hidden;
@@ -1430,10 +1437,10 @@ button.quiet {
 
 .mini-chat {
   position: absolute;
+  top: 20px;
   bottom: 20px;
   right: 20px;
   width: 380px;
-  max-height: 520px;
   background: rgba(8, 11, 20, 0.97);
   border: 1px solid rgba(124, 247, 194, 0.2);
   border-radius: 20px;
@@ -1542,7 +1549,7 @@ button.quiet {
   .mini-chat {
     width: calc(100vw - 24px);
     right: 12px;
+    top: 12px;
     bottom: 12px;
-    max-height: 60dvh;
   }
 }

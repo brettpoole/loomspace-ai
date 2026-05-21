@@ -1048,6 +1048,7 @@ export default function App() {
             <span>{metrics.saturation * 100 < 50 ? 'light weave' : 'dense weave'}</span>
           </div>
 
+          <div className="canvas-area">
           <div ref={viewportRef} className={`canvas-viewport ${state.densityOverlay ? 'overlay' : ''} pan-${panMode}`} onWheel={onWheel}>
             <div
               className="canvas-stage"
@@ -1135,7 +1136,7 @@ export default function App() {
                   <div
                     key={thread.id}
                     className={`thread-lane ${isActiveLane ? 'active' : ''}`}
-                    style={{ left: lane.centerX - NODE_WIDTH / 2, top: 0, width: NODE_WIDTH, height: lane.height }}
+                    style={{ left: lane.centerX - NODE_WIDTH / 2, top: 0, width: NODE_WIDTH, height: lane.height, zIndex: thread.nodes.some((n) => n.kind === 'context') ? 0 : 1 }}
                   >
                     {lane.nodes.map(({ node, top }) => {
                       if (node.kind === 'title') {
@@ -1163,7 +1164,7 @@ export default function App() {
                           : null;
                         const isContextSource = ctxPart !== null;
                         const isContextTarget = contextLinkMode !== null && thread.id !== contextLinkMode.sourceThreadId;
-                        const showDots = isSelected || (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id);
+                        const showDots = !miniChatOpen && (isSelected || (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id));
 
                         const handleSideDotCtx = (side: 'left' | 'right') => (e: React.MouseEvent) => {
                           e.stopPropagation();
@@ -1332,8 +1333,9 @@ export default function App() {
                 );
               })}
             </div>
+          </div>
           {miniChatOpen && activeThread ? (
-            <div className="mini-chat" onWheel={(e) => e.stopPropagation()}>
+            <div className="mini-chat">
               <div className="mini-chat-header">
                 <span className="mini-chat-title">{activeThread.title}</span>
                 <button type="button" className="quiet mini-chat-close" onClick={() => setMiniChatOpen(false)} aria-label="Close chat">×</button>
@@ -1365,6 +1367,7 @@ export default function App() {
                   placeholder="Ask the thread something"
                   rows={3}
                   onKeyDown={(e) => {
+                    if (e.key === 'Escape') { e.preventDefault(); setMiniChatOpen(false); return; }
                     if (e.key !== 'Enter') return;
                     if (!e.ctrlKey && !e.metaKey) return;
                     e.preventDefault();
