@@ -738,6 +738,7 @@ button.quiet {
   box-shadow:
     0 0 0 2px rgba(255, 255, 255, 0.05),
     0 0 16px rgba(255, 255, 255, 0.07),
+    0 0 100px 28px rgba(124, 247, 194, 0.06),
     0 18px 50px rgba(0, 0, 0, 0.35),
     inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
@@ -747,6 +748,7 @@ button.quiet {
   box-shadow:
     0 0 0 2px rgba(255, 255, 255, 0.05),
     0 0 16px rgba(255, 255, 255, 0.07),
+    0 0 100px 28px rgba(124, 247, 194, 0.06),
     0 18px 50px rgba(0, 0, 0, 0.3),
     inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
@@ -767,10 +769,25 @@ button.quiet {
   animation: nodePulse 3.4s ease-in-out infinite;
 }
 
+.chat-node.sending {
+  animation: nodeSendingBorder 1.4s ease-in-out infinite;
+}
+
 .chat-node.sending::after {
   opacity: 0.65;
   background: radial-gradient(circle, rgba(126, 168, 255, 0.3), transparent 68%);
-  animation-duration: 1.2s;
+  animation-duration: 1.4s;
+}
+
+@keyframes nodeSendingBorder {
+  0%, 100% {
+    border-color: rgba(126, 168, 255, 0.3);
+    box-shadow: 0 0 0 1px rgba(126, 168, 255, 0.08), 0 18px 50px rgba(0, 0, 0, 0.35);
+  }
+  50% {
+    border-color: rgba(126, 168, 255, 0.75);
+    box-shadow: 0 0 0 2px rgba(126, 168, 255, 0.12), 0 0 28px rgba(126, 168, 255, 0.18), 0 18px 50px rgba(0, 0, 0, 0.35);
+  }
 }
 
 .chat-node.responded {
@@ -1036,7 +1053,7 @@ button.quiet {
   }
 }
 
-@media (max-width: 860px) {
+@media (max-width: 950px) {
   .layout {
     grid-template-columns: 1fr;
   }
@@ -1530,11 +1547,10 @@ button.quiet {
 }
 
 .mini-chat-model {
-  font-size: 11px;
-  max-width: 110px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  padding: 6px 10px;
 }
 
 .mini-chat-send {
@@ -1549,7 +1565,7 @@ button.quiet {
   padding: 6px 12px;
 }
 
-@media (max-width: 860px) {
+@media (max-width: 950px) {
   .mini-chat {
     width: calc(100vw - 24px);
     right: 12px;

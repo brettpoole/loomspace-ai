@@ -961,7 +961,7 @@ export default function App() {
                   type="button"
                   className="profile-list-empty-cta"
                   onClick={() => {
-                    const next = createProviderConfig('openai-compatible-custom', { label: 'New profile' });
+                    const next = createProviderConfig('openai-compatible-custom', { label: 'New profile', model: '' });
                     setSettings((current) => ({
                       ...current,
                       activeProviderConfigId: next.id,
@@ -1006,7 +1006,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => {
-                      const next = createProviderConfig('openai-compatible-custom', { label: 'New profile' });
+                      const next = createProviderConfig('openai-compatible-custom', { label: 'New profile', model: '' });
                       setSettings((current) => ({
                         ...current,
                         activeProviderConfigId: next.id,
@@ -1395,7 +1395,15 @@ export default function App() {
                       ))}
                     </select>
                   )}
-                  <span className="pill mini-chat-model">{activeProviderConfig?.model ?? '—'}</span>
+                  {activeProviderConfig ? (
+                    <select
+                      className="mini-chat-model"
+                      value={activeProviderConfig.model}
+                      onChange={(e) => updateProviderConfig(activeProviderConfig.id, { model: e.target.value })}
+                    >
+                      {settingsModels.map((m) => <option key={m} value={m}>{m}</option>)}
+                    </select>
+                  ) : null}
                   <button
                     className="mini-chat-send"
                     onClick={() => sendMessage()}
@@ -1610,7 +1618,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => {
-                      const next = createProviderConfig('openai-compatible-custom', { label: 'New profile' });
+                      const next = createProviderConfig('openai-compatible-custom', { label: 'New profile', model: '' });
                       setSettings((current) => ({
                         ...current,
                         activeProviderConfigId: next.id,
