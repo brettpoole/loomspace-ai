@@ -1326,8 +1326,10 @@ export default function App() {
                                 <div className="fork-dot-connector" />
                                 <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDot('right')}>+</button>
                               </div>
-                              <div className="action-line-v" style={{ top: CHAT_HEIGHT, left: NODE_WIDTH / 2 }} />
-                              <button type="button" className="action-dot bottom" style={{ top: CHAT_HEIGHT + 36, left: NODE_WIDTH / 2 - 12 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setChatModalOpen(false); setMiniChatOpen(true); }}><svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="6.5" y1="1.5" x2="6.5" y2="11.5"/><line x1="1.5" y1="6.5" x2="11.5" y2="6.5"/></svg></button>
+                              {nodeIndex === lane.nodes.length - 1 && (<>
+                                <div className="action-line-v" style={{ top: CHAT_HEIGHT, left: NODE_WIDTH / 2 }} />
+                                <button type="button" className="action-dot bottom" style={{ top: CHAT_HEIGHT + 36, left: NODE_WIDTH / 2 - 12 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setChatModalOpen(false); setMiniChatOpen(true); }}><svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="6.5" y1="1.5" x2="6.5" y2="11.5"/><line x1="1.5" y1="6.5" x2="11.5" y2="6.5"/></svg></button>
+                              </>)}
                             </>
                           )}
                         </div>
