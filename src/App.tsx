@@ -75,7 +75,9 @@ export default function App() {
   const [passphraseModal, setPassphraseModal] = useState<{ mode: 'encrypt' | 'unlock'; passphrase: string; busy: boolean; pendingKey?: string; targetConfigId?: string } | null>(null);
   const [savingSettings, setSavingSettings] = useState(false);
   const [chatModalOpen, setChatModalOpen] = useState(false);
+  const [miniChatOpen, setMiniChatOpen] = useState(false);
   const [aiSettingsModalOpen, setAiSettingsModalOpen] = useState(false);
+  const miniChatMessagesRef = useRef<HTMLDivElement>(null);
   const [threadEditorOpen, setThreadEditorOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [threadEditorMode, setThreadEditorMode] = useState<'create' | 'edit'>('create');
@@ -190,6 +192,12 @@ export default function App() {
   useEffect(() => {
     resetView();
   }, []);
+
+  useEffect(() => {
+    if (miniChatOpen && miniChatMessagesRef.current) {
+      miniChatMessagesRef.current.scrollTop = miniChatMessagesRef.current.scrollHeight;
+    }
+  }, [activeThread?.context.length, miniChatOpen]);
 
   function clampViewport(next?: Partial<Pick<LoomspaceState, 'panX' | 'panY' | 'zoom'>>) {
     const viewport = viewportRef.current;
@@ -331,7 +339,6 @@ export default function App() {
   }
 
   function selectNode(threadId: string, nodeId: string) {
-    setChatModalOpen(true);
     setState((current) => ({
       ...current,
       selectedThreadId: threadId,
@@ -340,6 +347,11 @@ export default function App() {
         thread.id === threadId ? threadWithActiveNode(thread, nodeId) : threadWithActiveNode(thread, thread.activeNodeId),
       ),
     }));
+  }
+
+  function deselectNode() {
+    setState((current) => ({ ...current, selectedNodeId: null }));
+    setMiniChatOpen(false);
   }
 
   function updateProviderConfig(configId: string, patch: Partial<AIProviderConfig>) {
@@ -811,8 +823,13 @@ export default function App() {
               onPointerDown={beginPan}
               onPointerMove={movePan}
               onPointerUp={endPan}
+              onPointerLeave={endPan}
               onPointerCancel={endPan}
               onContextMenu={(e) => { if (e.button === 1) e.preventDefault(); }}
+              onClick={(e) => {
+                if (e.target !== e.currentTarget) return;
+                deselectNode();
+              }}
             >
               <svg className="edges-layer" viewBox={`0 0 ${canvasWidth} ${canvasHeight}`} preserveAspectRatio="none">
                 {lanes.map((lane) => {
@@ -860,19 +877,35 @@ export default function App() {
                       const chatNode = node;
                       const isSelected = node.id === activeNode?.id;
                       return (
-                        <button
-                          key={node.id}
-                          className={`chat-node ${isSelected ? 'selected' : ''} ${isSelected ? 'pulse' : ''} ${sending && isSelected ? 'sending' : ''}`}
-                          style={{ top, left: 0 }}
-                          onClick={() => selectNode(thread.id, node.id)}
-                        >
-                          <div className="exchange-head">
-                            <span>AI chat</span>
-                            <span className={`confidence ${chatNode.confidence}`}>{chatNode.confidence}</span>
-                          </div>
-                          <strong>{chatNode.summary}</strong>
-                          <small>{chatNode.model}</small>
-                        </button>
+                        <div key={node.id} style={{ position: 'absolute', top, left: 0 }}>
+                          <button
+                            className={`chat-node ${isSelected ? 'selected' : ''} ${sending && isSelected ? 'sending' : ''}`}
+                            style={{ position: 'relative', top: 0, left: 0 }}
+                            onClick={(e) => { e.stopPropagation(); selectNode(thread.id, node.id); }}
+                          >
+                            <div className="exchange-head">
+                              <span>AI chat</span>
+                              <span className={`confidence ${chatNode.confidence}`}>{chatNode.confidence}</span>
+                            </div>
+                            <strong>{chatNode.summary}</strong>
+                            <small>{chatNode.model}</small>
+                          </button>
+                          {isSelected && (
+                            <>
+                              <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: -36 }} />
+                              <button className="action-dot" style={{ top: CHAT_HEIGHT / 2 - 12, left: -60 }} aria-label="Left action" onClick={(e) => e.stopPropagation()} />
+                              <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: NODE_WIDTH }} />
+                              <button className="action-dot" style={{ top: CHAT_HEIGHT / 2 - 12, left: NODE_WIDTH + 36 }} aria-label="Right action" onClick={(e) => e.stopPropagation()} />
+                              <div className="action-line-v" style={{ top: CHAT_HEIGHT, left: NODE_WIDTH / 2 }} />
+                              <button
+                                className="action-dot bottom"
+                                style={{ top: CHAT_HEIGHT + 36, left: NODE_WIDTH / 2 - 12 }}
+                                aria-label="Open chat"
+                                onClick={(e) => { e.stopPropagation(); setMiniChatOpen(true); }}
+                              />
+                            </>
+                          )}
+                        </div>
                       );
                     })}
                   </div>
@@ -888,6 +921,59 @@ export default function App() {
               </div>
             ) : null}
           </div>
+
+          {miniChatOpen && activeThread ? (
+            <div className="mini-chat">
+              <div className="mini-chat-header">
+                <span className="mini-chat-title">{activeThread.title}</span>
+                <button type="button" className="quiet mini-chat-close" onClick={() => setMiniChatOpen(false)} aria-label="Close chat">×</button>
+              </div>
+              <div className="mini-chat-messages" ref={miniChatMessagesRef}>
+                {activeThread.context.length === 0 ? (
+                  <p className="muted">No messages yet. Send the first one.</p>
+                ) : (
+                  activeThread.context.map((message) => (
+                    <div key={message.id} className={`bubble ${message.role}`}>
+                      <strong>{message.role === 'assistant' ? 'ai' : message.role}</strong>
+                      <FormattedMessage text={message.text} />
+                    </div>
+                  ))
+                )}
+              </div>
+              <div className="mini-chat-composer">
+                <textarea
+                  value={composerDraft}
+                  onChange={(e) => setComposerDraft(e.target.value)}
+                  placeholder="Ask the thread something"
+                  rows={3}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) sendMessage(); }}
+                />
+                {error ? <p className="error">{error}</p> : null}
+                <div className="mini-chat-actions">
+                  {settings.providerConfigs.length === 0 ? (
+                    <button type="button" className="mini-chat-add-profile" onClick={() => setAiSettingsModalOpen(true)}>Add AI profile</button>
+                  ) : (
+                    <select
+                      value={activeProviderConfig?.id ?? ''}
+                      onChange={(e) => changeSettingsProvider(e.target.value)}
+                    >
+                      {settings.providerConfigs.map((config) => (
+                        <option key={config.id} value={config.id}>{config.label}</option>
+                      ))}
+                    </select>
+                  )}
+                  <span className="pill mini-chat-model">{activeProviderConfig?.model ?? '—'}</span>
+                  <button
+                    className="mini-chat-send"
+                    onClick={sendMessage}
+                    disabled={!composerDraft.trim() || sending || !activeProviderConfig?.apiKey.trim()}
+                  >
+                    {sending ? '…' : 'Send'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
         </section>
       </main>
 
