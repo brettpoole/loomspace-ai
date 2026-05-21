@@ -513,6 +513,21 @@ button.quiet {
   gap: 12px;
 }
 
+.node-preview-modal {
+  max-width: 560px;
+  max-height: 80dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+.node-preview-messages {
+  overflow-y: auto;
+  padding: 18px;
+  display: grid;
+  gap: 10px;
+  flex: 1;
+}
+
 .message-copy p + p,
 .message-copy ul + p,
 .message-copy p + ul,
@@ -698,7 +713,7 @@ button.quiet {
 .chat-node {
   position: absolute;
   width: 232px;
-  height: 124px;
+  height: 148px;
   text-align: left;
   padding: 11px 12px 10px;
   background: linear-gradient(180deg, rgba(14, 18, 30, 0.95), rgba(8, 11, 20, 0.86));
@@ -1097,7 +1112,7 @@ button.quiet {
 .context-node {
   position: absolute;
   width: 232px;
-  height: 124px;
+  height: 148px;
   text-align: left;
   padding: 11px 12px 10px;
   background: var(--ctx-bg, rgba(124, 247, 194, 0.07));

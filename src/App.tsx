@@ -48,7 +48,7 @@ const LEFT_PAD = 64;
 const TOP_PAD = 28;
 const TITLE_HEIGHT = 66;
 const TITLE_INFO_EXTRA = 84;
-const CHAT_HEIGHT = 124;
+const CHAT_HEIGHT = 148;
 const NODE_GAP = 30;
 const NODE_WIDTH = 232;
 const MIN_ZOOM = 0.25;
@@ -94,7 +94,7 @@ export default function App() {
   const [threadEditorDraft, setThreadEditorDraft] = useState<ThreadDraft>(DEFAULT_THREAD_DRAFT);
   const [threadEditorTargetId, setThreadEditorTargetId] = useState<string | null>(null);
   const [forkDraft, setForkDraft] = useState<ForkDraft | null>(null);
-  const [expandedNodeIds, setExpandedNodeIds] = useState<string[]>([]);
+  const [nodePreviewModal, setNodePreviewModal] = useState<{ title: string; messages: ChatMessage[] } | null>(null);
   const [modelCache, setModelCache] = useState<ModelCache>({});
   const [modelsLoading, setModelsLoading] = useState(false);
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -164,8 +164,6 @@ export default function App() {
     [modelCache, activeProviderConfig],
   );
 
-  const expandedNodeSet = useMemo(() => new Set(expandedNodeIds), [expandedNodeIds]);
-
   const canvasWidth = Math.max(
     CANVAS_MIN_WIDTH,
     LEFT_PAD * 2 + Math.max(0, state.threads.length - 1) * (LANE_WIDTH + LANE_GAP) + LANE_WIDTH,
@@ -180,7 +178,7 @@ export default function App() {
       let cursorTop = TOP_PAD;
       for (const node of thread.nodes) {
         nodes.push({ node, top: cursorTop });
-        cursorTop += nodeHeight(thread, node, expandedNodeSet.has(node.id)) + NODE_GAP;
+        cursorTop += nodeHeight(thread, node) + NODE_GAP;
       }
       return {
         thread,
@@ -189,7 +187,7 @@ export default function App() {
         height: cursorTop + 72,
       };
     });
-  }, [canvasWidth, expandedNodeSet, state.threads]);
+  }, [canvasWidth, state.threads]);
 
   const canvasHeight = Math.max(CANVAS_MIN_HEIGHT, ...lanes.map((lane) => lane.height));
 
@@ -547,12 +545,6 @@ export default function App() {
       return [{ ...s, parts: newParts }];
     });
     setContextLinkMode({ ...contextLinkMode, selectedNodes });
-  }
-
-  function toggleNodeExpansion(nodeId: string) {
-    setExpandedNodeIds((current) =>
-      current.includes(nodeId) ? current.filter((entry) => entry !== nodeId) : [...current, nodeId],
-    );
   }
 
   function injectContextTo(destThreadId: string) {
@@ -1076,8 +1068,8 @@ export default function App() {
             >
               <svg className="edges-layer" viewBox={`0 0 ${canvasWidth} ${canvasHeight}`} preserveAspectRatio="none">
                 {lanes.map((lane) => {
-                  const path = buildThreadPath(lane.centerX, lane.nodes.map((entry) => entry.node), lane.thread, expandedNodeSet);
-                  const anchors = buildAnchors(lane.centerX, lane.nodes.map((entry) => entry.node), lane.thread, expandedNodeSet);
+                  const path = buildThreadPath(lane.centerX, lane.nodes.map((entry) => entry.node), lane.thread);
+                  const anchors = buildAnchors(lane.centerX, lane.nodes.map((entry) => entry.node), lane.thread);
                   return (
                     <g key={lane.thread.id}>
                       <path d={path} className={`rope-shadow ${lane.thread.id === activeThread?.id ? 'active' : ''}`} />
@@ -1165,7 +1157,6 @@ export default function App() {
                       if (node.kind === 'context') {
                         const ctxNode = node;
                         const isSelected = node.id === state.selectedNodeId;
-                        const isExpanded = expandedNodeSet.has(node.id);
                         const ctxPart = contextLinkMode?.sourceThreadId === thread.id
                           ? contextLinkMode.selectedNodes.find((s) => s.nodeId === node.id) ?? null
                           : null;
@@ -1221,31 +1212,23 @@ export default function App() {
                                     </button>
                                   </div>
                                 ) : null}
-                                <button type="button" className="node-expand-toggle" onClick={(e) => { e.stopPropagation(); toggleNodeExpansion(node.id); }}>
-                                  {isExpanded ? 'Collapse' : 'Read more'}
-                                </button>
+                                {ctxNode.messages.length > 0 ? (
+                                  <button type="button" className="node-expand-toggle" onClick={(e) => { e.stopPropagation(); setNodePreviewModal({ title: ctxNode.sourceThreadTitle, messages: ctxNode.messages }); }}>
+                                    Read more
+                                  </button>
+                                ) : null}
                               </div>
-                              {isExpanded ? (
-                                <div className="node-expanded-content">
-                                  {ctxNode.messages.map((message) => (
-                                    <div key={message.id} className={`node-message-row ${message.role} ${message.injectedFromThreadId ? 'injected' : ''}`}>
-                                      <strong>{message.role === 'assistant' ? 'ai' : message.role}</strong>
-                                      <FormattedMessage text={message.text} />
-                                    </div>
-                                  ))}
-                                </div>
-                              ) : null}
                             </div>
                             {showDots && (
                               <>
                                 <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: -36 }} />
-                                <div className="action-dot-group action-left" style={{ top: CHAT_HEIGHT / 2 - 18, left: -98 }}>
+                                <div className="action-dot-group action-left" style={{ top: CHAT_HEIGHT / 2 - 20, left: -128 }}>
                                   <button type="button" className="action-dot" aria-label="Inject context left" onClick={handleSideDotCtx('left')} />
                                   <div className="fork-dot-connector" />
                                   <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDotCtx('left')}>+</button>
                                 </div>
                                 <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: NODE_WIDTH }} />
-                                <div className="action-dot-group action-right" style={{ top: CHAT_HEIGHT / 2 - 18, left: NODE_WIDTH + 36 }}>
+                                <div className="action-dot-group action-right" style={{ top: CHAT_HEIGHT / 2 - 20, left: NODE_WIDTH + 36 }}>
                                   <button type="button" className="action-dot" aria-label="Inject context right" onClick={handleSideDotCtx('right')} />
                                   <div className="fork-dot-connector" />
                                   <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDotCtx('right')}>+</button>
@@ -1260,7 +1243,6 @@ export default function App() {
 
                       const chatNode = node;
                       const isSelected = node.id === state.selectedNodeId;
-                      const isExpanded = expandedNodeSet.has(node.id);
                       const ctxPart = contextLinkMode?.sourceThreadId === thread.id
                         ? contextLinkMode.selectedNodes.find((s) => s.nodeId === node.id) ?? null
                         : null;
@@ -1317,31 +1299,23 @@ export default function App() {
                                   </button>
                                 </div>
                               ) : null}
-                              <button type="button" className="node-expand-toggle" onClick={(e) => { e.stopPropagation(); toggleNodeExpansion(node.id); }}>
-                                {isExpanded ? 'Collapse' : 'Read more'}
-                              </button>
+                              {chatNode.messages.length > 0 ? (
+                                <button type="button" className="node-expand-toggle" onClick={(e) => { e.stopPropagation(); setNodePreviewModal({ title: chatNode.summary, messages: chatNode.messages }); }}>
+                                  Read more
+                                </button>
+                              ) : null}
                             </div>
-                            {isExpanded ? (
-                              <div className="node-expanded-content">
-                                {chatNode.messages.map((message) => (
-                                  <div key={message.id} className={`node-message-row ${message.role} ${message.injectedFromThreadId ? 'injected' : ''}`}>
-                                    <strong>{message.role === 'assistant' ? 'ai' : message.role}</strong>
-                                    <FormattedMessage text={message.text} />
-                                  </div>
-                                ))}
-                              </div>
-                            ) : null}
                           </div>
                           {showDots && (
                             <>
                               <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: -36 }} />
-                              <div className="action-dot-group action-left" style={{ top: CHAT_HEIGHT / 2 - 18, left: -98 }}>
+                              <div className="action-dot-group action-left" style={{ top: CHAT_HEIGHT / 2 - 20, left: -128 }}>
                                 <button type="button" className="action-dot" aria-label="Inject context left" onClick={handleSideDot('left')} />
                                 <div className="fork-dot-connector" />
                                 <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDot('left')}>+</button>
                               </div>
                               <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: NODE_WIDTH }} />
-                              <div className="action-dot-group action-right" style={{ top: CHAT_HEIGHT / 2 - 18, left: NODE_WIDTH + 36 }}>
+                              <div className="action-dot-group action-right" style={{ top: CHAT_HEIGHT / 2 - 20, left: NODE_WIDTH + 36 }}>
                                 <button type="button" className="action-dot" aria-label="Inject context right" onClick={handleSideDot('right')} />
                                 <div className="fork-dot-connector" />
                                 <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDot('right')}>+</button>
@@ -1424,6 +1398,28 @@ export default function App() {
           </div>
         </section>
       </main>
+
+      {nodePreviewModal ? (
+        <div className="chat-modal-backdrop" onClick={() => setNodePreviewModal(null)}>
+          <section className="chat-modal node-preview-modal" onClick={(e) => e.stopPropagation()}>
+            <header className="chat-modal-header">
+              <div>
+                <p className="eyebrow">Node preview</p>
+                <h2>{nodePreviewModal.title}</h2>
+              </div>
+              <button type="button" className="quiet" onClick={() => setNodePreviewModal(null)} aria-label="Close">×</button>
+            </header>
+            <div className="node-preview-messages">
+              {nodePreviewModal.messages.map((message) => (
+                <div key={message.id} className={`bubble ${message.role} ${message.injectedFromThreadId ? 'injected' : ''}`}>
+                  <strong>{message.role === 'assistant' ? 'ai' : message.role}</strong>
+                  <FormattedMessage text={message.text} />
+                </div>
+              ))}
+            </div>
+          </section>
+        </div>
+      ) : null}
 
       {chatModalOpen && activeThread ? (
         <div className="chat-modal-backdrop" onClick={() => setChatModalOpen(false)}>
@@ -2004,19 +2000,19 @@ function normalizeUsage(model: string, inputTokens: number, outputTokens: number
   };
 }
 
-function nodeHeight(thread: ThreadLane, node: ThreadNode, expanded = false) {
+function nodeHeight(thread: ThreadLane, node: ThreadNode) {
   if (node.kind === 'title') return TITLE_HEIGHT + (thread.infoOpen ? TITLE_INFO_EXTRA : 0);
-  return CHAT_HEIGHT + (expanded ? Math.max(54, node.kind === 'chat' ? node.messages.length * 42 : node.messages.length * 36) : 0);
+  return CHAT_HEIGHT;
 }
 
-function buildThreadPath(centerX: number, nodes: ThreadNode[], thread: ThreadLane, expandedNodeIds = new Set<string>()) {
+function buildThreadPath(centerX: number, nodes: ThreadNode[], thread: ThreadLane) {
   if (!nodes.length) return '';
   const commands: string[] = [];
   let cursor = TOP_PAD;
   commands.push(`M ${centerX} ${cursor}`);
 
   nodes.forEach((node, index) => {
-    const height = nodeHeight(thread, node, expandedNodeIds.has(node.id));
+    const height = nodeHeight(thread, node);
     commands.push(`L ${centerX} ${cursor + height}`);
     cursor += height;
     if (index < nodes.length - 1) {
@@ -2028,11 +2024,11 @@ function buildThreadPath(centerX: number, nodes: ThreadNode[], thread: ThreadLan
   return commands.join(' ');
 }
 
-function buildAnchors(centerX: number, nodes: ThreadNode[], thread: ThreadLane, expandedNodeIds = new Set<string>()) {
+function buildAnchors(centerX: number, nodes: ThreadNode[], thread: ThreadLane) {
   const points: Array<{ x: number; y: number }> = [];
   let cursor = TOP_PAD;
   for (const node of nodes) {
-    const height = nodeHeight(thread, node, expandedNodeIds.has(node.id));
+    const height = nodeHeight(thread, node);
     points.push({ x: centerX, y: cursor });
     points.push({ x: centerX, y: cursor + height });
     cursor += height + NODE_GAP;
