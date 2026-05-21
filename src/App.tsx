@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent, type WheelEvent } from 'react';
+import Markdown from 'react-markdown';
 import {
   PROVIDERS,
   appendChatToThread,
@@ -863,7 +864,7 @@ export default function App() {
                 ) : (
                   activeThread.context.map((message) => (
                     <div key={message.id} className={`bubble ${message.role}`}>
-                      <strong>{message.role}</strong>
+                      <strong>{message.role === 'assistant' ? 'ai' : message.role}</strong>
                       <FormattedMessage text={message.text} />
                     </div>
                   ))
@@ -1414,68 +1415,9 @@ function clamp(value: number, min: number, max: number) {
 }
 
 function FormattedMessage({ text }: { text: string }) {
-  const blocks = formatBlocks(text);
   return (
     <div className="message-copy">
-      {blocks.map((block, index) => {
-        if (block.type === 'list') {
-          return (
-            <ul key={index}>
-              {block.items.map((item, itemIndex) => (
-                <li key={itemIndex}>{item}</li>
-              ))}
-            </ul>
-          );
-        }
-
-        return <p key={index}>{block.text}</p>;
-      })}
+      <Markdown>{text}</Markdown>
     </div>
   );
-}
-
-function formatBlocks(text: string) {
-  const lines = text.replace(/\r/g, '').split('\n');
-  const blocks: Array<{ type: 'paragraph'; text: string } | { type: 'list'; items: string[] }> = [];
-  let paragraph: string[] = [];
-  let list: string[] = [];
-
-  const flushParagraph = () => {
-    const value = paragraph.join(' ').trim();
-    if (value) blocks.push({ type: 'paragraph', text: value });
-    paragraph = [];
-  };
-
-  const flushList = () => {
-    if (list.length) blocks.push({ type: 'list', items: list });
-    list = [];
-  };
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) {
-      flushParagraph();
-      flushList();
-      continue;
-    }
-
-    const bullet = trimmed.match(/^[-*•]\s+(.*)$/) || trimmed.match(/^\d+[.)]\s+(.*)$/);
-    if (bullet) {
-      flushParagraph();
-      list.push(bullet[1]);
-      continue;
-    }
-
-    if (list.length) flushList();
-    paragraph.push(trimmed);
-  }
-
-  flushParagraph();
-  flushList();
-
-  if (!blocks.length) {
-    blocks.push({ type: 'paragraph', text });
-  }
-
-  return blocks;
 }
