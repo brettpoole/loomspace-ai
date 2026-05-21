@@ -213,11 +213,18 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && contextLinkMode) setContextLinkMode(null);
+      if (e.key !== 'Escape') return;
+      if (nodePreviewModal) { setNodePreviewModal(null); return; }
+      if (chatModalOpen) { setChatModalOpen(false); return; }
+      if (threadEditorOpen) { closeThreadEditor(); return; }
+      if (aiSettingsModalOpen) { setAiSettingsModalOpen(false); return; }
+      if (passphraseModal && !passphraseModal.busy) { closePassphraseModal(); return; }
+      if (contextLinkMode) { setContextLinkMode(null); return; }
+      if (state.selectedThreadId) { deselectNode(); }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [contextLinkMode]);
+  }, [nodePreviewModal, chatModalOpen, threadEditorOpen, aiSettingsModalOpen, passphraseModal, contextLinkMode, state.selectedThreadId]);
 
   function clampViewport(next?: Partial<Pick<LoomspaceState, 'panX' | 'panY' | 'zoom'>>) {
     const viewport = viewportRef.current;
@@ -1250,7 +1257,7 @@ export default function App() {
                         : null;
                       const isContextSource = ctxPart !== null;
                       const isContextTarget = contextLinkMode !== null && thread.id !== contextLinkMode.sourceThreadId;
-                      const showDots = isSelected || (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id);
+                      const showDots = !miniChatOpen && (isSelected || (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id));
 
                       const handleSideDot = (side: 'left' | 'right') => (e: React.MouseEvent) => {
                         e.stopPropagation();
