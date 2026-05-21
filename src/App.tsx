@@ -3,10 +3,12 @@ import Markdown from 'react-markdown';
 import {
   PROVIDERS,
   appendChatToThread,
+  appendContextInjection,
   clearProviderSecret,
   clearSettingsCookies,
   computeMetrics,
   createChatNode,
+  createContextNode,
   createProviderConfig,
   createThread,
   deleteProviderConfig,
@@ -33,6 +35,7 @@ import type {
   ChatMessage,
   LoomspaceState,
   ThreadChatNode,
+  ThreadContextNode,
   ThreadLane,
   ThreadNode,
   TokenUsage,
@@ -76,6 +79,12 @@ export default function App() {
   const [savingSettings, setSavingSettings] = useState(false);
   const [chatModalOpen, setChatModalOpen] = useState(false);
   const [miniChatOpen, setMiniChatOpen] = useState(false);
+  const [contextLinkMode, setContextLinkMode] = useState<{
+    sourceThreadId: string;
+    dotNodeId: string;
+    selectedNodeIds: string[];
+    side: 'left' | 'right';
+  } | null>(null);
   const [aiSettingsModalOpen, setAiSettingsModalOpen] = useState(false);
   const miniChatMessagesRef = useRef<HTMLDivElement>(null);
   const [threadEditorOpen, setThreadEditorOpen] = useState(false);
@@ -198,6 +207,14 @@ export default function App() {
       miniChatMessagesRef.current.scrollTop = miniChatMessagesRef.current.scrollHeight;
     }
   }, [activeThread?.context.length, miniChatOpen]);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && contextLinkMode) setContextLinkMode(null);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [contextLinkMode]);
 
   function clampViewport(next?: Partial<Pick<LoomspaceState, 'panX' | 'panY' | 'zoom'>>) {
     const viewport = viewportRef.current;
@@ -352,6 +369,62 @@ export default function App() {
   function deselectNode() {
     setState((current) => ({ ...current, selectedNodeId: null }));
     setMiniChatOpen(false);
+  }
+
+  function enterContextLinkMode(thread: ThreadLane, nodeId: string, side: 'left' | 'right') {
+    const chatNodes = thread.nodes.filter((n): n is ThreadChatNode => n.kind === 'chat');
+    const idx = chatNodes.findIndex((n) => n.id === nodeId);
+    if (idx < 0) return;
+    const selectedNodeIds = chatNodes.slice(0, idx + 1).map((n) => n.id);
+    setContextLinkMode({ sourceThreadId: thread.id, dotNodeId: nodeId, selectedNodeIds, side });
+  }
+
+  function toggleContextNode(nodeId: string) {
+    if (!contextLinkMode) return;
+    const isSelected = contextLinkMode.selectedNodeIds.includes(nodeId);
+    if (isSelected && contextLinkMode.selectedNodeIds.length === 1) return;
+    const selectedNodeIds = isSelected
+      ? contextLinkMode.selectedNodeIds.filter((id) => id !== nodeId)
+      : [...contextLinkMode.selectedNodeIds, nodeId];
+    setContextLinkMode({ ...contextLinkMode, selectedNodeIds });
+  }
+
+  function injectContextTo(destThreadId: string) {
+    if (!contextLinkMode) return;
+    const sourceThread = state.threads.find((t) => t.id === contextLinkMode.sourceThreadId);
+    if (!sourceThread) return;
+
+    const sourceChatNodes = sourceThread.nodes.filter(
+      (n): n is ThreadChatNode => n.kind === 'chat' && contextLinkMode.selectedNodeIds.includes(n.id),
+    );
+
+    const injectedMessages: ChatMessage[] = sourceChatNodes.flatMap((n) =>
+      n.messages.map((msg) => ({
+        ...msg,
+        id: `injected-${crypto.randomUUID().slice(0, 8)}`,
+        injectedFromThreadId: sourceThread.id,
+        injectedFromColor: sourceThread.color,
+      })),
+    );
+
+    if (injectedMessages.length === 0) {
+      setContextLinkMode(null);
+      return;
+    }
+
+    const contextNode = createContextNode(sourceThread, contextLinkMode.selectedNodeIds, injectedMessages);
+
+    setState((current) => ({
+      ...current,
+      version: current.version + 1,
+      threads: current.threads.map((t) =>
+        t.id === destThreadId ? appendContextInjection(t, contextNode, injectedMessages) : t,
+      ),
+      selectedThreadId: destThreadId,
+      selectedNodeId: contextNode.id,
+    }));
+
+    setContextLinkMode(null);
   }
 
   function updateProviderConfig(configId: string, patch: Partial<AIProviderConfig>) {
@@ -845,6 +918,50 @@ export default function App() {
                     </g>
                   );
                 })}
+                {lanes.flatMap((destLane) =>
+                  destLane.nodes
+                    .filter((entry): entry is { node: ThreadContextNode; top: number } => entry.node.kind === 'context')
+                    .map(({ node: ctxNode, top: destTop }) => {
+                      const sourceLane = lanes.find((l) => l.thread.id === ctxNode.sourceThreadId);
+                      if (!sourceLane) return null;
+                      const firstEntry = sourceLane.nodes.find((e) => e.node.id === ctxNode.sourceNodeIds[0]);
+                      const lastEntry = sourceLane.nodes.find((e) => e.node.id === ctxNode.sourceNodeIds[ctxNode.sourceNodeIds.length - 1]);
+                      if (!firstEntry || !lastEntry) return null;
+                      const dir = destLane.centerX >= sourceLane.centerX ? 1 : -1;
+                      const srcX = sourceLane.centerX + dir * 22;
+                      const srcY1 = firstEntry.top + CHAT_HEIGHT / 2;
+                      const srcY2 = lastEntry.top + CHAT_HEIGHT / 2;
+                      const dstX = destLane.centerX;
+                      const dstY = destTop + CHAT_HEIGHT / 2;
+                      const dx = Math.abs(dstX - srcX) * 0.45;
+                      return (
+                        <path
+                          key={ctxNode.id}
+                          d={`M ${srcX} ${srcY1} L ${srcX} ${srcY2} C ${srcX + dir * dx} ${srcY2} ${dstX - dir * dx} ${dstY} ${dstX} ${dstY}`}
+                          className="context-link"
+                          stroke={ctxNode.sourceThreadColor}
+                        />
+                      );
+                    })
+                )}
+                {contextLinkMode && (() => {
+                  const srcLane = lanes.find((l) => l.thread.id === contextLinkMode.sourceThreadId);
+                  if (!srcLane) return null;
+                  const sorted = srcLane.nodes
+                    .filter((e) => contextLinkMode.selectedNodeIds.includes(e.node.id))
+                    .sort((a, b) => a.top - b.top);
+                  if (sorted.length === 0) return null;
+                  const offset = contextLinkMode.side === 'right' ? 22 : -22;
+                  const srcX = srcLane.centerX + offset;
+                  return (
+                    <line
+                      key="ctx-preview"
+                      x1={srcX} y1={sorted[0].top + CHAT_HEIGHT / 2}
+                      x2={srcX} y2={sorted[sorted.length - 1].top + CHAT_HEIGHT / 2}
+                      className="context-link-preview"
+                    />
+                  );
+                })()}
               </svg>
 
               {lanes.map((lane) => {
@@ -874,14 +991,69 @@ export default function App() {
                         );
                       }
 
+                      if (node.kind === 'context') {
+                        const ctxNode = node;
+                        const isContextTarget = contextLinkMode !== null && thread.id !== contextLinkMode.sourceThreadId;
+                        return (
+                          <div key={node.id} style={{ position: 'absolute', top, left: 0 }}>
+                            <button
+                              className={`context-node ${isContextTarget ? 'context-target' : ''}`}
+                              style={{ '--ctx-color': ctxNode.sourceThreadColor, '--ctx-bg': hexToRgba(ctxNode.sourceThreadColor, 0.07), '--ctx-border': hexToRgba(ctxNode.sourceThreadColor, 0.35) } as React.CSSProperties}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (contextLinkMode && thread.id !== contextLinkMode.sourceThreadId) {
+                                  injectContextTo(thread.id);
+                                } else {
+                                  selectNode(thread.id, node.id);
+                                }
+                              }}
+                            >
+                              <div className="exchange-head">
+                                <span>Context from</span>
+                              </div>
+                              <strong>{ctxNode.sourceThreadTitle}</strong>
+                              <small>{ctxNode.messages.length} messages · {ctxNode.createdAt.slice(0, 10)}</small>
+                            </button>
+                          </div>
+                        );
+                      }
+
                       const chatNode = node;
                       const isSelected = node.id === activeNode?.id;
+                      const isContextSource = contextLinkMode?.sourceThreadId === thread.id && contextLinkMode.selectedNodeIds.includes(node.id);
+                      const isContextTarget = contextLinkMode !== null && thread.id !== contextLinkMode.sourceThreadId;
+                      const showDots = isSelected || (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id);
+
+                      const handleSideDot = (side: 'left' | 'right') => (e: React.MouseEvent) => {
+                        e.stopPropagation();
+                        if (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id && contextLinkMode.side === side) {
+                          if (contextLinkMode.selectedNodeIds.length <= 1) {
+                            setContextLinkMode(null);
+                          } else {
+                            setContextLinkMode({ ...contextLinkMode, selectedNodeIds: [node.id] });
+                          }
+                        } else {
+                          enterContextLinkMode(thread, node.id, side);
+                        }
+                      };
+
                       return (
                         <div key={node.id} style={{ position: 'absolute', top, left: 0 }}>
                           <button
-                            className={`chat-node ${isSelected ? 'selected' : ''} ${sending && isSelected ? 'sending' : ''}`}
+                            className={`chat-node ${isSelected ? 'selected' : ''} ${sending && isSelected ? 'sending' : ''} ${isContextSource ? 'context-source-selected' : ''} ${isContextTarget ? 'context-target' : ''}`}
                             style={{ position: 'relative', top: 0, left: 0 }}
-                            onClick={(e) => { e.stopPropagation(); selectNode(thread.id, node.id); }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (contextLinkMode) {
+                                if (thread.id === contextLinkMode.sourceThreadId) {
+                                  toggleContextNode(node.id);
+                                } else {
+                                  injectContextTo(thread.id);
+                                }
+                                return;
+                              }
+                              selectNode(thread.id, node.id);
+                            }}
                           >
                             <div className="exchange-head">
                               <span>AI chat</span>
@@ -890,12 +1062,14 @@ export default function App() {
                             <strong>{chatNode.summary}</strong>
                             <small>{chatNode.model}</small>
                           </button>
-                          {isSelected && (
+                          {showDots && (
                             <>
                               <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: -36 }} />
-                              <button className="action-dot" style={{ top: CHAT_HEIGHT / 2 - 12, left: -60 }} aria-label="Left action" onClick={(e) => e.stopPropagation()} />
+                              <button className="action-dot" style={{ top: CHAT_HEIGHT / 2 - 12, left: -60 }} aria-label="Inject context left" onClick={handleSideDot('left')} />
+                              <button className="fork-dot" style={{ top: CHAT_HEIGHT / 2 - 8, left: -88 }} aria-label="Fork thread" onClick={(e) => e.stopPropagation()} title="Fork to new thread (coming soon)" />
                               <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: NODE_WIDTH }} />
-                              <button className="action-dot" style={{ top: CHAT_HEIGHT / 2 - 12, left: NODE_WIDTH + 36 }} aria-label="Right action" onClick={(e) => e.stopPropagation()} />
+                              <button className="action-dot" style={{ top: CHAT_HEIGHT / 2 - 12, left: NODE_WIDTH + 36 }} aria-label="Inject context right" onClick={handleSideDot('right')} />
+                              <button className="fork-dot" style={{ top: CHAT_HEIGHT / 2 - 8, left: NODE_WIDTH + 64 }} aria-label="Fork thread" onClick={(e) => e.stopPropagation()} title="Fork to new thread (coming soon)" />
                               <div className="action-line-v" style={{ top: CHAT_HEIGHT, left: NODE_WIDTH / 2 }} />
                               <button
                                 className="action-dot bottom"
@@ -933,7 +1107,14 @@ export default function App() {
                   <p className="muted">No messages yet. Send the first one.</p>
                 ) : (
                   activeThread.context.map((message) => (
-                    <div key={message.id} className={`bubble ${message.role}`}>
+                    <div
+                      key={message.id}
+                      className={`bubble ${message.role} ${message.injectedFromThreadId ? 'injected' : ''}`}
+                      style={message.injectedFromColor ? {
+                        '--inject-bg': hexToRgba(message.injectedFromColor, 0.07),
+                        '--inject-border': hexToRgba(message.injectedFromColor, 0.3),
+                      } as React.CSSProperties : undefined}
+                    >
                       <strong>{message.role === 'assistant' ? 'ai' : message.role}</strong>
                       <FormattedMessage text={message.text} />
                     </div>
@@ -1061,7 +1242,14 @@ export default function App() {
                   <p className="muted">No messages yet. Send the first one.</p>
                 ) : (
                   activeThread.context.map((message) => (
-                    <div key={message.id} className={`bubble ${message.role}`}>
+                    <div
+                      key={message.id}
+                      className={`bubble ${message.role} ${message.injectedFromThreadId ? 'injected' : ''}`}
+                      style={message.injectedFromColor ? {
+                        '--inject-bg': hexToRgba(message.injectedFromColor, 0.07),
+                        '--inject-border': hexToRgba(message.injectedFromColor, 0.3),
+                      } as React.CSSProperties : undefined}
+                    >
                       <strong>{message.role === 'assistant' ? 'ai' : message.role}</strong>
                       <FormattedMessage text={message.text} />
                     </div>
@@ -1618,4 +1806,11 @@ function FormattedMessage({ text }: { text: string }) {
       <Markdown>{text}</Markdown>
     </div>
   );
+}
+
+function hexToRgba(hex: string, alpha: number): string {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }

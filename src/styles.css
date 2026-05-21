@@ -1082,6 +1082,104 @@ button.quiet {
   }
 }
 
+/* Context injection node */
+
+.context-node {
+  position: absolute;
+  width: 232px;
+  height: 92px;
+  text-align: left;
+  padding: 11px 12px 10px;
+  background: var(--ctx-bg, rgba(124, 247, 194, 0.07));
+  border-radius: 16px;
+  border: 1px solid var(--ctx-border, rgba(124, 247, 194, 0.35));
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.03) inset,
+    0 18px 50px rgba(0, 0, 0, 0.3);
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.context-node strong {
+  display: block;
+  margin-top: 6px;
+  color: var(--ctx-color, #9bf4cd);
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.context-node small {
+  display: block;
+  margin-top: 8px;
+  color: #93a2c4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-node .exchange-head {
+  color: var(--ctx-color, #9bf4cd);
+  opacity: 0.75;
+}
+
+/* Context source highlight (nodes selected for injection) */
+
+.chat-node.context-source-selected {
+  border-color: rgba(255, 213, 102, 0.6);
+  box-shadow:
+    0 0 0 2px rgba(255, 213, 102, 0.15),
+    0 0 14px rgba(255, 213, 102, 0.12),
+    0 18px 50px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+/* Context target hint — nodes on other threads while in context link mode */
+
+.chat-node.context-target,
+.context-node.context-target {
+  border-color: rgba(126, 168, 255, 0.45);
+  box-shadow:
+    0 0 0 2px rgba(126, 168, 255, 0.1),
+    0 18px 50px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  cursor: crosshair;
+}
+
+/* Cross-thread context link lines */
+
+.context-link {
+  fill: none;
+  stroke-width: 2;
+  stroke-dasharray: 4 6;
+  stroke-linecap: round;
+  opacity: 0.7;
+}
+
+.context-link-preview {
+  fill: none;
+  stroke: rgba(255, 213, 102, 0.55);
+  stroke-width: 2;
+  stroke-dasharray: 4 6;
+  stroke-linecap: round;
+}
+
+/* Injected message bubbles */
+
+.bubble.injected {
+  background: var(--inject-bg, rgba(124, 247, 194, 0.07));
+  border-color: var(--inject-border, rgba(124, 247, 194, 0.3));
+  opacity: 0.82;
+}
+
+.bubble.injected > strong {
+  opacity: 0.6;
+}
+
 /* Action dots — shown on selected nodes */
 
 .action-dot {
@@ -1111,6 +1209,33 @@ button.quiet {
 .action-dot.bottom:hover {
   background: rgba(124, 247, 194, 0.32);
   box-shadow: 0 0 14px rgba(124, 247, 194, 0.35);
+}
+
+.fork-dot {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1.5px solid rgba(255, 213, 102, 0.55);
+  background: rgba(255, 213, 102, 0.12);
+  cursor: pointer;
+  font-size: 10px;
+  display: grid;
+  place-items: center;
+  color: rgba(255, 213, 102, 0.8);
+  transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+
+.fork-dot::after {
+  content: '+';
+  line-height: 1;
+}
+
+.fork-dot:hover {
+  background: rgba(255, 213, 102, 0.22);
+  border-color: rgba(255, 213, 102, 0.8);
+  transform: scale(1.15);
 }
 
 .action-line-h {

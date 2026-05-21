@@ -9,6 +9,7 @@ import type {
   PersistedWorkspace,
   ProviderInfo,
   ThreadChatNode,
+  ThreadContextNode,
   ThreadLane,
   ThreadTitleNode,
   ThreadUsageSummary,
@@ -279,6 +280,33 @@ export function updateThreadTitle(thread: ThreadLane, title: string): ThreadLane
 
 export function updateThreadDescription(thread: ThreadLane, description: string): ThreadLane {
   return updateThreadDetails(thread, { title: thread.title, description });
+}
+
+export function createContextNode(
+  source: { id: string; title: string; color: string },
+  sourceNodeIds: string[],
+  messages: ChatMessage[],
+): ThreadContextNode {
+  return {
+    id: `ctx-${crypto.randomUUID().slice(0, 8)}`,
+    kind: 'context',
+    sourceThreadId: source.id,
+    sourceThreadTitle: source.title,
+    sourceThreadColor: source.color,
+    sourceNodeIds,
+    messages,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+export function appendContextInjection(thread: ThreadLane, contextNode: ThreadContextNode, injectedMessages: ChatMessage[]): ThreadLane {
+  return {
+    ...thread,
+    status: 'active',
+    nodes: [...thread.nodes, contextNode],
+    context: [...thread.context, ...injectedMessages],
+    activeNodeId: contextNode.id,
+  };
 }
 
 export function appendChatToThread(thread: ThreadLane, chat: ThreadChatNode, messages: ChatMessage[]): ThreadLane {

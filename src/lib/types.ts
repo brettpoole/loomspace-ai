@@ -2,12 +2,14 @@ export type AIProvider = 'openai' | 'anthropic' | 'openrouter' | 'openai-compati
 export type Confidence = 'low' | 'medium' | 'high';
 export type ThreadStatus = 'draft' | 'active' | 'stitch-ready' | 'closed';
 export type MessageRole = 'user' | 'assistant' | 'system';
-export type ThreadNodeKind = 'title' | 'chat';
+export type ThreadNodeKind = 'title' | 'chat' | 'context';
 
 export interface ChatMessage {
   id: string;
   role: MessageRole;
   text: string;
+  injectedFromThreadId?: string;
+  injectedFromColor?: string;
 }
 
 export interface TokenUsage {
@@ -35,7 +37,18 @@ export interface ThreadChatNode {
   usage?: TokenUsage;
 }
 
-export type ThreadNode = ThreadTitleNode | ThreadChatNode;
+export interface ThreadContextNode {
+  id: string;
+  kind: 'context';
+  sourceThreadId: string;
+  sourceThreadTitle: string;
+  sourceThreadColor: string;
+  sourceNodeIds: string[];
+  messages: ChatMessage[];
+  createdAt: string;
+}
+
+export type ThreadNode = ThreadTitleNode | ThreadChatNode | ThreadContextNode;
 
 export interface ThreadLane {
   id: string;
