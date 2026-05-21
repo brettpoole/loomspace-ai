@@ -249,6 +249,7 @@ export function createChatNode(
   messages: ChatMessage[] = [],
   model = 'gpt-4o-mini',
   usage?: TokenUsage,
+  status?: ThreadChatNode['status'],
 ): ThreadChatNode {
   return {
     id: `chat-${crypto.randomUUID().slice(0, 8)}`,
@@ -259,6 +260,7 @@ export function createChatNode(
     confidence,
     createdAt: new Date().toISOString(),
     usage,
+    status,
   };
 }
 

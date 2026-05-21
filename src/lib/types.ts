@@ -35,6 +35,7 @@ export interface ThreadChatNode {
   confidence: Confidence;
   createdAt: string;
   usage?: TokenUsage;
+  status?: 'pending' | 'unread' | 'error';
 }
 
 export interface ThreadContextNode {
@@ -114,4 +115,11 @@ export interface ProviderInfo {
   label: string;
   defaultModel: string;
   baseUrl?: string;
+}
+
+export interface ForkDraft {
+  sourceThreadId: string;
+  sourceThreadTitle: string;
+  sourceThreadColor: string;
+  selectedNodes: Array<{ nodeId: string; parts: { user: boolean; assistant: boolean } }>;
 }

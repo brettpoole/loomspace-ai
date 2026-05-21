@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState, type PointerEvent, type WheelEven
 import Markdown from 'react-markdown';
 import {
   PROVIDERS,
-  appendChatToThread,
   appendContextInjection,
   clearProviderSecret,
   clearSettingsCookies,
@@ -21,6 +20,7 @@ import {
   saveProviderSecret,
   saveSettings,
   saveWorkspace,
+  summarize,
   summarizeThreadUsage,
   threadWithActiveNode,
   threadWithInfo,
@@ -33,6 +33,7 @@ import type {
   AIProviderConfig,
   AISettings,
   ChatMessage,
+  ForkDraft,
   LoomspaceState,
   ThreadChatNode,
   ThreadContextNode,
@@ -47,7 +48,7 @@ const LEFT_PAD = 64;
 const TOP_PAD = 28;
 const TITLE_HEIGHT = 66;
 const TITLE_INFO_EXTRA = 84;
-const CHAT_HEIGHT = 92;
+const CHAT_HEIGHT = 124;
 const NODE_GAP = 30;
 const NODE_WIDTH = 232;
 const MIN_ZOOM = 0.25;
@@ -92,6 +93,8 @@ export default function App() {
   const [threadEditorMode, setThreadEditorMode] = useState<'create' | 'edit'>('create');
   const [threadEditorDraft, setThreadEditorDraft] = useState<ThreadDraft>(DEFAULT_THREAD_DRAFT);
   const [threadEditorTargetId, setThreadEditorTargetId] = useState<string | null>(null);
+  const [forkDraft, setForkDraft] = useState<ForkDraft | null>(null);
+  const [expandedNodeIds, setExpandedNodeIds] = useState<string[]>([]);
   const [modelCache, setModelCache] = useState<ModelCache>({});
   const [modelsLoading, setModelsLoading] = useState(false);
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -161,6 +164,8 @@ export default function App() {
     [modelCache, activeProviderConfig],
   );
 
+  const expandedNodeSet = useMemo(() => new Set(expandedNodeIds), [expandedNodeIds]);
+
   const canvasWidth = Math.max(
     CANVAS_MIN_WIDTH,
     LEFT_PAD * 2 + Math.max(0, state.threads.length - 1) * (LANE_WIDTH + LANE_GAP) + LANE_WIDTH,
@@ -175,7 +180,7 @@ export default function App() {
       let cursorTop = TOP_PAD;
       for (const node of thread.nodes) {
         nodes.push({ node, top: cursorTop });
-        cursorTop += nodeHeight(thread, node) + NODE_GAP;
+        cursorTop += nodeHeight(thread, node, expandedNodeSet.has(node.id)) + NODE_GAP;
       }
       return {
         thread,
@@ -184,7 +189,7 @@ export default function App() {
         height: cursorTop + 72,
       };
     });
-  }, [canvasWidth, state.threads]);
+  }, [canvasWidth, expandedNodeSet, state.threads]);
 
   const canvasHeight = Math.max(CANVAS_MIN_HEIGHT, ...lanes.map((lane) => lane.height));
 
@@ -232,16 +237,26 @@ export default function App() {
 
   function selectThread(threadId: string, nodeId?: string | null) {
     setChatModalOpen(true);
+    setMiniChatOpen(false);
     setSidebarOpen(false);
     setState((current) => ({
       ...current,
       selectedThreadId: threadId,
       selectedNodeId: nodeId ?? current.threads.find((thread) => thread.id === threadId)?.activeNodeId ?? null,
-      threads: current.threads.map((thread) =>
-        thread.id === threadId
-          ? threadWithActiveNode(thread, nodeId ?? thread.activeNodeId)
-          : threadWithActiveNode(thread, thread.activeNodeId),
-      ),
+      threads: current.threads.map((thread) => {
+        if (thread.id !== threadId) {
+          return threadWithActiveNode(thread, thread.activeNodeId);
+        }
+        const nextNodeId = nodeId ?? thread.activeNodeId;
+        return {
+          ...threadWithActiveNode(thread, nextNodeId),
+          nodes: thread.nodes.map((entry) =>
+            entry.id === nextNodeId && entry.kind === 'chat' && entry.status === 'unread'
+              ? { ...entry, status: undefined }
+              : entry,
+          ),
+        };
+      }),
     }));
   }
 
@@ -257,8 +272,60 @@ export default function App() {
     setThreadEditorOpen(true);
   }
 
+  function openForkThreadEditor(thread: ThreadLane, nodeId: string, side: 'left' | 'right') {
+    const forkSelection = buildContextSelection(thread, nodeId);
+    if (!forkSelection) return;
+    setForkDraft({
+      sourceThreadId: thread.id,
+      sourceThreadTitle: thread.title,
+      sourceThreadColor: thread.color,
+      selectedNodes: forkSelection,
+    });
+    setContextLinkMode({ sourceThreadId: thread.id, dotNodeId: nodeId, selectedNodes: forkSelection, side });
+    setThreadEditorMode('create');
+    setThreadEditorTargetId(null);
+    setThreadEditorDraft({
+      title: `Fork of ${thread.title}`,
+      description: thread.description,
+    });
+    setChatModalOpen(false);
+    setMiniChatOpen(false);
+    setThreadEditorOpen(true);
+  }
+
   function closeThreadEditor() {
     setThreadEditorOpen(false);
+    setForkDraft(null);
+  }
+
+  function buildContextSelection(thread: ThreadLane, nodeId: string) {
+    const selectableNodes = thread.nodes.filter((n) => n.kind === 'chat' || n.kind === 'context');
+    const idx = selectableNodes.findIndex((n) => n.id === nodeId);
+    if (idx < 0) return null;
+    return selectableNodes.slice(0, idx + 1).map((n) => ({
+      nodeId: n.id,
+      parts: { user: true, assistant: true },
+    }));
+  }
+
+  function collectSelectedMessages(sourceThread: ThreadLane, selectedNodes: ForkDraft['selectedNodes']) {
+    const injectedMessages: ChatMessage[] = [];
+    for (const node of sourceThread.nodes) {
+      if (node.kind !== 'chat' && node.kind !== 'context') continue;
+      const selection = selectedNodes.find((s) => s.nodeId === node.id);
+      if (!selection) continue;
+      for (const msg of node.messages) {
+        if (msg.role === 'user' && !selection.parts.user) continue;
+        if (msg.role === 'assistant' && !selection.parts.assistant) continue;
+        injectedMessages.push({
+          ...msg,
+          id: `injected-${crypto.randomUUID().slice(0, 8)}`,
+          injectedFromThreadId: sourceThread.id,
+          injectedFromColor: sourceThread.color,
+        });
+      }
+    }
+    return injectedMessages;
   }
 
   function submitThreadEditor() {
@@ -266,9 +333,26 @@ export default function App() {
     const description = threadEditorDraft.description.trim() || 'A new lane for a project idea and its AI chat context.';
 
     if (threadEditorMode === 'create') {
-      const thread = createThread(title, description, state.threads.length, {
+      const baseThread = createThread(title, description, state.threads.length, {
         initialModel: activeProviderConfig?.model,
       });
+
+      const thread = forkDraft && forkDraft.selectedNodes.length > 0
+        ? (() => {
+            const sourceThread = state.threads.find((entry) => entry.id === forkDraft.sourceThreadId);
+            if (!sourceThread) return baseThread;
+            const injectedMessages = collectSelectedMessages(sourceThread, forkDraft.selectedNodes);
+            if (injectedMessages.length === 0) return baseThread;
+            const contextNode = createContextNode(sourceThread, forkDraft.selectedNodes.map((entry) => entry.nodeId), injectedMessages);
+            return {
+              ...baseThread,
+              context: [...injectedMessages],
+              nodes: [baseThread.nodes[0], contextNode, ...baseThread.nodes.slice(1)],
+              activeNodeId: baseThread.activeNodeId,
+            };
+          })()
+        : baseThread;
+
       setState((current) => ({
         ...current,
         version: current.version + 1,
@@ -277,7 +361,9 @@ export default function App() {
         selectedNodeId: thread.activeNodeId,
         panX: current.threads.length === 0 ? current.panX : current.panX - 40,
       }));
-      setChatModalOpen(true);
+      setChatModalOpen(false);
+      setMiniChatOpen(true);
+      setContextLinkMode(null);
     } else if (threadEditorTargetId) {
       setState((current) => ({
         ...current,
@@ -292,8 +378,8 @@ export default function App() {
     setError(null);
   }
 
-  async function sendMessage() {
-    if (!activeThread || !activeNodeIsChat || !composerDraft.trim() || sending) return;
+  async function sendMessage(closeAfter = false) {
+    if (!activeThread || !composerDraft.trim() || sending) return;
     const activeConfig = activeProviderConfig;
     if (!activeConfig) {
       setError('Pick an AI profile first.');
@@ -307,10 +393,28 @@ export default function App() {
 
     const userText = composerDraft.trim();
     const userMessage: ChatMessage = { id: `msg-${crypto.randomUUID().slice(0, 8)}`, role: 'user', text: userText };
+    const pendingChatNode = createChatNode('Thinking…', 'medium', [userMessage], activeConfig.model, undefined, 'pending');
 
     setSending(true);
     setError(null);
     setComposerDraft('');
+    setState((current) => ({
+      ...current,
+      version: current.version + 1,
+      threads: current.threads.map((thread) =>
+        thread.id === activeThread.id
+          ? {
+              ...thread,
+              status: 'active',
+              context: [...thread.context, userMessage],
+              nodes: [...thread.nodes, pendingChatNode],
+              activeNodeId: pendingChatNode.id,
+            }
+          : thread,
+      ),
+      selectedThreadId: activeThread.id,
+      selectedNodeId: pendingChatNode.id,
+    }));
 
     try {
       const { assistantText, usage } = await requestAiReply(activeConfig, activeThread, [...activeThread.context, userMessage]);
@@ -319,18 +423,49 @@ export default function App() {
         role: 'assistant',
         text: assistantText,
       };
-      const newChatNode = createChatNode(`${userText} → ${assistantText}`, 'medium', [userMessage, assistantMessage], activeConfig.model, usage);
 
       setState((current) => ({
         ...current,
         version: current.version + 1,
-        threads: current.threads.map((thread) =>
-          thread.id === activeThread.id ? appendChatToThread(thread, newChatNode, [userMessage, assistantMessage]) : thread,
-        ),
+        threads: current.threads.map((thread) => {
+          if (thread.id !== activeThread.id) return thread;
+          return {
+            ...thread,
+            context: [...thread.context, assistantMessage],
+            nodes: thread.nodes.map((node) =>
+              node.id === pendingChatNode.id && node.kind === 'chat'
+                ? {
+                    ...node,
+                    summary: summarize(`${userText} → ${assistantText}`, 52),
+                    messages: [userMessage, assistantMessage],
+                    usage,
+                    status: 'unread',
+                  }
+                : node,
+            ),
+            activeNodeId: pendingChatNode.id,
+          };
+        }),
         selectedThreadId: activeThread.id,
-        selectedNodeId: newChatNode.id,
+        selectedNodeId: pendingChatNode.id,
       }));
+      if (closeAfter) setMiniChatOpen(false);
     } catch (err) {
+      setState((current) => ({
+        ...current,
+        version: current.version + 1,
+        threads: current.threads.map((thread) => {
+          if (thread.id !== activeThread.id) return thread;
+          return {
+            ...thread,
+            nodes: thread.nodes.map((node) =>
+              node.id === pendingChatNode.id && node.kind === 'chat'
+                ? { ...node, status: 'error' }
+                : node,
+            ),
+          };
+        }),
+      }));
       setError(err instanceof Error ? err.message : 'AI request failed');
       setComposerDraft(userText);
     } finally {
@@ -360,9 +495,19 @@ export default function App() {
       ...current,
       selectedThreadId: threadId,
       selectedNodeId: nodeId,
-      threads: current.threads.map((thread) =>
-        thread.id === threadId ? threadWithActiveNode(thread, nodeId) : threadWithActiveNode(thread, thread.activeNodeId),
-      ),
+      threads: current.threads.map((thread) => {
+        if (thread.id !== threadId) {
+          return threadWithActiveNode(thread, thread.activeNodeId);
+        }
+        return {
+          ...threadWithActiveNode(thread, nodeId),
+          nodes: thread.nodes.map((node) =>
+            node.id === nodeId && node.kind === 'chat' && node.status === 'unread'
+              ? { ...node, status: undefined }
+              : node,
+          ),
+        };
+      }),
     }));
   }
 
@@ -402,6 +547,12 @@ export default function App() {
       return [{ ...s, parts: newParts }];
     });
     setContextLinkMode({ ...contextLinkMode, selectedNodes });
+  }
+
+  function toggleNodeExpansion(nodeId: string) {
+    setExpandedNodeIds((current) =>
+      current.includes(nodeId) ? current.filter((entry) => entry !== nodeId) : [...current, nodeId],
+    );
   }
 
   function injectContextTo(destThreadId: string) {
@@ -708,7 +859,7 @@ export default function App() {
   function onWheel(event: WheelEvent<HTMLDivElement>) {
     event.preventDefault();
     if (event.ctrlKey || event.metaKey) {
-      zoomAt(event.clientX, event.clientY, state.zoom - event.deltaY * 0.0015);
+      zoomAt(event.clientX, event.clientY, state.zoom - event.deltaY * 0.0005);
       return;
     }
     const viewport = viewportRef.current;
@@ -925,8 +1076,8 @@ export default function App() {
             >
               <svg className="edges-layer" viewBox={`0 0 ${canvasWidth} ${canvasHeight}`} preserveAspectRatio="none">
                 {lanes.map((lane) => {
-                  const path = buildThreadPath(lane.centerX, lane.nodes.map((entry) => entry.node), lane.thread);
-                  const anchors = buildAnchors(lane.centerX, lane.nodes.map((entry) => entry.node), lane.thread);
+                  const path = buildThreadPath(lane.centerX, lane.nodes.map((entry) => entry.node), lane.thread, expandedNodeSet);
+                  const anchors = buildAnchors(lane.centerX, lane.nodes.map((entry) => entry.node), lane.thread, expandedNodeSet);
                   return (
                     <g key={lane.thread.id}>
                       <path d={path} className={`rope-shadow ${lane.thread.id === activeThread?.id ? 'active' : ''}`} />
@@ -1014,6 +1165,7 @@ export default function App() {
                       if (node.kind === 'context') {
                         const ctxNode = node;
                         const isSelected = node.id === state.selectedNodeId;
+                        const isExpanded = expandedNodeSet.has(node.id);
                         const ctxPart = contextLinkMode?.sourceThreadId === thread.id
                           ? contextLinkMode.selectedNodes.find((s) => s.nodeId === node.id) ?? null
                           : null;
@@ -1031,9 +1183,14 @@ export default function App() {
                           }
                         };
 
+                        const handleForkDotCtx = (side: 'left' | 'right') => (e: React.MouseEvent) => {
+                          e.stopPropagation();
+                          openForkThreadEditor(thread, node.id, side);
+                        };
+
                         return (
                           <div key={node.id} style={{ position: 'absolute', top, left: 0 }}>
-                            <button
+                            <div
                               className={`context-node ${isSelected ? 'selected' : ''} ${isContextSource ? 'context-source-selected' : ''} ${isContextTarget ? 'context-target' : ''}`}
                               style={{ '--ctx-color': ctxNode.sourceThreadColor, '--ctx-bg': hexToRgba(ctxNode.sourceThreadColor, 0.07), '--ctx-border': hexToRgba(ctxNode.sourceThreadColor, 0.35) } as React.CSSProperties}
                               onClick={(e) => {
@@ -1051,35 +1208,50 @@ export default function App() {
                               </div>
                               <strong style={{ color: ctxNode.sourceThreadColor }}>{ctxNode.sourceThreadTitle}</strong>
                               <small>{ctxNode.messages.length} messages · {ctxNode.createdAt.slice(0, 10)}</small>
-                            </button>
-                            {isContextSource && ctxPart && (
-                              <div className="context-select-overlay">
-                                <button className={`context-select-half user ${ctxPart.parts.user ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(node.id, 'user'); }}>
-                                  <span>User prompt</span>
-                                  <span className="context-select-check">{ctxPart.parts.user ? '✓' : '○'}</span>
-                                </button>
-                                <button className={`context-select-half assistant ${ctxPart.parts.assistant ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(node.id, 'assistant'); }}>
-                                  <span>Asst response</span>
-                                  <span className="context-select-check">{ctxPart.parts.assistant ? '✓' : '○'}</span>
+                              <div className="node-footer">
+                                {isContextSource && ctxPart ? (
+                                  <div className="context-select-inline" onClick={(e) => e.stopPropagation()}>
+                                    <button type="button" className={`context-select-half user ${ctxPart.parts.user ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(node.id, 'user'); }}>
+                                      <span>User prompt</span>
+                                      <span className="context-select-check">{ctxPart.parts.user ? '✓' : '○'}</span>
+                                    </button>
+                                    <button type="button" className={`context-select-half assistant ${ctxPart.parts.assistant ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(node.id, 'assistant'); }}>
+                                      <span>Asst response</span>
+                                      <span className="context-select-check">{ctxPart.parts.assistant ? '✓' : '○'}</span>
+                                    </button>
+                                  </div>
+                                ) : null}
+                                <button type="button" className="node-expand-toggle" onClick={(e) => { e.stopPropagation(); toggleNodeExpansion(node.id); }}>
+                                  {isExpanded ? 'Collapse' : 'Read more'}
                                 </button>
                               </div>
-                            )}
+                              {isExpanded ? (
+                                <div className="node-expanded-content">
+                                  {ctxNode.messages.map((message) => (
+                                    <div key={message.id} className={`node-message-row ${message.role} ${message.injectedFromThreadId ? 'injected' : ''}`}>
+                                      <strong>{message.role === 'assistant' ? 'ai' : message.role}</strong>
+                                      <FormattedMessage text={message.text} />
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : null}
+                            </div>
                             {showDots && (
                               <>
                                 <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: -36 }} />
-                                <div className="action-dot-group action-left" style={{ top: CHAT_HEIGHT / 2 - 12, left: -84 }}>
-                                  <button className="action-dot" aria-label="Inject context left" onClick={handleSideDotCtx('left')} />
+                                <div className="action-dot-group action-left" style={{ top: CHAT_HEIGHT / 2 - 18, left: -98 }}>
+                                  <button type="button" className="action-dot" aria-label="Inject context left" onClick={handleSideDotCtx('left')} />
                                   <div className="fork-dot-connector" />
-                                  <div className="fork-dot" aria-hidden="true" title="Fork (coming soon)" />
+                                  <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDotCtx('left')}>+</button>
                                 </div>
                                 <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: NODE_WIDTH }} />
-                                <div className="action-dot-group action-right" style={{ top: CHAT_HEIGHT / 2 - 12, left: NODE_WIDTH + 36 }}>
-                                  <button className="action-dot" aria-label="Inject context right" onClick={handleSideDotCtx('right')} />
+                                <div className="action-dot-group action-right" style={{ top: CHAT_HEIGHT / 2 - 18, left: NODE_WIDTH + 36 }}>
+                                  <button type="button" className="action-dot" aria-label="Inject context right" onClick={handleSideDotCtx('right')} />
                                   <div className="fork-dot-connector" />
-                                  <div className="fork-dot" aria-hidden="true" title="Fork (coming soon)" />
+                                  <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDotCtx('right')}>+</button>
                                 </div>
                                 <div className="action-line-v" style={{ top: CHAT_HEIGHT, left: NODE_WIDTH / 2 }} />
-                                <button className="action-dot bottom" style={{ top: CHAT_HEIGHT + 36, left: NODE_WIDTH / 2 - 12 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setMiniChatOpen(true); }} />
+                                <button type="button" className="action-dot bottom" style={{ top: CHAT_HEIGHT + 36, left: NODE_WIDTH / 2 - 12 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setChatModalOpen(false); setMiniChatOpen(true); }} />
                               </>
                             )}
                           </div>
@@ -1088,6 +1260,7 @@ export default function App() {
 
                       const chatNode = node;
                       const isSelected = node.id === state.selectedNodeId;
+                      const isExpanded = expandedNodeSet.has(node.id);
                       const ctxPart = contextLinkMode?.sourceThreadId === thread.id
                         ? contextLinkMode.selectedNodes.find((s) => s.nodeId === node.id) ?? null
                         : null;
@@ -1105,10 +1278,15 @@ export default function App() {
                         }
                       };
 
+                      const handleForkDot = (side: 'left' | 'right') => (e: React.MouseEvent) => {
+                        e.stopPropagation();
+                        openForkThreadEditor(thread, node.id, side);
+                      };
+
                       return (
                         <div key={node.id} style={{ position: 'absolute', top, left: 0 }}>
-                          <button
-                            className={`chat-node ${isSelected ? 'selected' : ''} ${sending && isSelected ? 'sending' : ''} ${isContextSource ? 'context-source-selected' : ''} ${isContextTarget ? 'context-target' : ''}`}
+                          <div
+                            className={`chat-node ${isSelected ? 'selected' : ''} ${chatNode.status === 'pending' ? 'sending' : ''} ${chatNode.status === 'unread' ? 'responded' : ''} ${isContextSource ? 'context-source-selected' : ''} ${isContextTarget ? 'context-target' : ''}`}
                             style={{ position: 'relative', top: 0, left: 0 }}
                             onClick={(e) => {
                               e.stopPropagation();
@@ -1126,35 +1304,50 @@ export default function App() {
                             </div>
                             <strong>{chatNode.summary}</strong>
                             <small>{chatNode.model}</small>
-                          </button>
-                          {isContextSource && ctxPart && (
-                            <div className="context-select-overlay">
-                              <button className={`context-select-half user ${ctxPart.parts.user ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(node.id, 'user'); }}>
-                                <span>User prompt</span>
-                                <span className="context-select-check">{ctxPart.parts.user ? '✓' : '○'}</span>
-                              </button>
-                              <button className={`context-select-half assistant ${ctxPart.parts.assistant ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(node.id, 'assistant'); }}>
-                                <span>Asst response</span>
-                                <span className="context-select-check">{ctxPart.parts.assistant ? '✓' : '○'}</span>
+                            <div className="node-footer">
+                              {isContextSource && ctxPart ? (
+                                <div className="context-select-inline" onClick={(e) => e.stopPropagation()}>
+                                  <button type="button" className={`context-select-half user ${ctxPart.parts.user ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(node.id, 'user'); }}>
+                                    <span>User prompt</span>
+                                    <span className="context-select-check">{ctxPart.parts.user ? '✓' : '○'}</span>
+                                  </button>
+                                  <button type="button" className={`context-select-half assistant ${ctxPart.parts.assistant ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(node.id, 'assistant'); }}>
+                                    <span>Asst response</span>
+                                    <span className="context-select-check">{ctxPart.parts.assistant ? '✓' : '○'}</span>
+                                  </button>
+                                </div>
+                              ) : null}
+                              <button type="button" className="node-expand-toggle" onClick={(e) => { e.stopPropagation(); toggleNodeExpansion(node.id); }}>
+                                {isExpanded ? 'Collapse' : 'Read more'}
                               </button>
                             </div>
-                          )}
+                            {isExpanded ? (
+                              <div className="node-expanded-content">
+                                {chatNode.messages.map((message) => (
+                                  <div key={message.id} className={`node-message-row ${message.role} ${message.injectedFromThreadId ? 'injected' : ''}`}>
+                                    <strong>{message.role === 'assistant' ? 'ai' : message.role}</strong>
+                                    <FormattedMessage text={message.text} />
+                                  </div>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
                           {showDots && (
                             <>
                               <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: -36 }} />
-                              <div className="action-dot-group action-left" style={{ top: CHAT_HEIGHT / 2 - 12, left: -84 }}>
-                                <button className="action-dot" aria-label="Inject context left" onClick={handleSideDot('left')} />
+                              <div className="action-dot-group action-left" style={{ top: CHAT_HEIGHT / 2 - 18, left: -98 }}>
+                                <button type="button" className="action-dot" aria-label="Inject context left" onClick={handleSideDot('left')} />
                                 <div className="fork-dot-connector" />
-                                <div className="fork-dot" aria-hidden="true" title="Fork (coming soon)" />
+                                <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDot('left')}>+</button>
                               </div>
                               <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: NODE_WIDTH }} />
-                              <div className="action-dot-group action-right" style={{ top: CHAT_HEIGHT / 2 - 12, left: NODE_WIDTH + 36 }}>
-                                <button className="action-dot" aria-label="Inject context right" onClick={handleSideDot('right')} />
+                              <div className="action-dot-group action-right" style={{ top: CHAT_HEIGHT / 2 - 18, left: NODE_WIDTH + 36 }}>
+                                <button type="button" className="action-dot" aria-label="Inject context right" onClick={handleSideDot('right')} />
                                 <div className="fork-dot-connector" />
-                                <div className="fork-dot" aria-hidden="true" title="Fork (coming soon)" />
+                                <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDot('right')}>+</button>
                               </div>
                               <div className="action-line-v" style={{ top: CHAT_HEIGHT, left: NODE_WIDTH / 2 }} />
-                              <button className="action-dot bottom" style={{ top: CHAT_HEIGHT + 36, left: NODE_WIDTH / 2 - 12 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setMiniChatOpen(true); }} />
+                              <button type="button" className="action-dot bottom" style={{ top: CHAT_HEIGHT + 36, left: NODE_WIDTH / 2 - 12 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setChatModalOpen(false); setMiniChatOpen(true); }} />
                             </>
                           )}
                         </div>
@@ -1164,16 +1357,6 @@ export default function App() {
                 );
               })}
             </div>
-            {lanes.length === 0 ? (
-              <div className="empty-state">
-                <p className="eyebrow">Canvas idle</p>
-                <h2>Start a thread to begin the weave</h2>
-                <p>The first thread centers itself. New threads line up to the right.</p>
-                <button onClick={() => openThreadEditor('create')}>Create first thread</button>
-              </div>
-            ) : null}
-          </div>
-
           {miniChatOpen && activeThread ? (
             <div className="mini-chat">
               <div className="mini-chat-header">
@@ -1205,7 +1388,12 @@ export default function App() {
                   onChange={(e) => setComposerDraft(e.target.value)}
                   placeholder="Ask the thread something"
                   rows={3}
-                  onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) sendMessage(); }}
+                  onKeyDown={(e) => {
+                    if (e.key !== 'Enter') return;
+                    if (e.shiftKey) return;
+                    e.preventDefault();
+                    sendMessage(e.ctrlKey || e.metaKey);
+                  }}
                 />
                 {error ? <p className="error">{error}</p> : null}
                 <div className="mini-chat-actions">
@@ -1224,7 +1412,7 @@ export default function App() {
                   <span className="pill mini-chat-model">{activeProviderConfig?.model ?? '—'}</span>
                   <button
                     className="mini-chat-send"
-                    onClick={sendMessage}
+                    onClick={() => sendMessage()}
                     disabled={!composerDraft.trim() || sending || !activeProviderConfig?.apiKey.trim()}
                   >
                     {sending ? '…' : 'Send'}
@@ -1233,6 +1421,7 @@ export default function App() {
               </div>
             </div>
           ) : null}
+          </div>
         </section>
       </main>
 
@@ -1346,7 +1535,7 @@ export default function App() {
                   />
                   {settingsLockState === 'locked' ? <p className="muted">Unlock the active AI profile to send a message.</p> : null}
                   {error ? <p className="error">{error}</p> : null}
-                  <button onClick={sendMessage} disabled={!composerDraft.trim() || sending || !activeProviderConfig?.apiKey.trim()}>
+                  <button onClick={() => sendMessage()} disabled={!composerDraft.trim() || sending || !activeProviderConfig?.apiKey.trim()}>
                     {sending ? 'Thinking…' : settingsLockState === 'locked' ? 'Unlock to send' : 'Send'}
                   </button>
                 </section>
@@ -1815,19 +2004,19 @@ function normalizeUsage(model: string, inputTokens: number, outputTokens: number
   };
 }
 
-function nodeHeight(thread: ThreadLane, node: ThreadNode) {
+function nodeHeight(thread: ThreadLane, node: ThreadNode, expanded = false) {
   if (node.kind === 'title') return TITLE_HEIGHT + (thread.infoOpen ? TITLE_INFO_EXTRA : 0);
-  return CHAT_HEIGHT;
+  return CHAT_HEIGHT + (expanded ? Math.max(54, node.kind === 'chat' ? node.messages.length * 42 : node.messages.length * 36) : 0);
 }
 
-function buildThreadPath(centerX: number, nodes: ThreadNode[], thread: ThreadLane) {
+function buildThreadPath(centerX: number, nodes: ThreadNode[], thread: ThreadLane, expandedNodeIds = new Set<string>()) {
   if (!nodes.length) return '';
   const commands: string[] = [];
   let cursor = TOP_PAD;
   commands.push(`M ${centerX} ${cursor}`);
 
   nodes.forEach((node, index) => {
-    const height = nodeHeight(thread, node);
+    const height = nodeHeight(thread, node, expandedNodeIds.has(node.id));
     commands.push(`L ${centerX} ${cursor + height}`);
     cursor += height;
     if (index < nodes.length - 1) {
@@ -1839,11 +2028,11 @@ function buildThreadPath(centerX: number, nodes: ThreadNode[], thread: ThreadLan
   return commands.join(' ');
 }
 
-function buildAnchors(centerX: number, nodes: ThreadNode[], thread: ThreadLane) {
+function buildAnchors(centerX: number, nodes: ThreadNode[], thread: ThreadLane, expandedNodeIds = new Set<string>()) {
   const points: Array<{ x: number; y: number }> = [];
   let cursor = TOP_PAD;
   for (const node of nodes) {
-    const height = nodeHeight(thread, node);
+    const height = nodeHeight(thread, node, expandedNodeIds.has(node.id));
     points.push({ x: centerX, y: cursor });
     points.push({ x: centerX, y: cursor + height });
     cursor += height + NODE_GAP;
