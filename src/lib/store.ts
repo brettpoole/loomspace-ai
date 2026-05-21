@@ -228,7 +228,7 @@ export function createThread(title: string, description: string, index: number, 
     title,
     description,
   };
-  const firstChatNode = createChatNode('AI chat ready', 'medium', [], initialModel);
+  const firstChatNode = createChatNode('AI chat ready', [], initialModel);
 
   return {
     id: threadId,
@@ -245,9 +245,8 @@ export function createThread(title: string, description: string, index: number, 
 
 export function createChatNode(
   summarySource: string,
-  confidence: 'low' | 'medium' | 'high',
   messages: ChatMessage[] = [],
-  model = 'gpt-4o-mini',
+  model = '',
   usage?: TokenUsage,
   status?: ThreadChatNode['status'],
 ): ThreadChatNode {
@@ -257,7 +256,6 @@ export function createChatNode(
     summary: summarize(summarySource, 52),
     messages,
     model,
-    confidence,
     createdAt: new Date().toISOString(),
     usage,
     status,

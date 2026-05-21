@@ -398,7 +398,7 @@ export default function App() {
 
     const userText = composerDraft.trim();
     const userMessage: ChatMessage = { id: `msg-${crypto.randomUUID().slice(0, 8)}`, role: 'user', text: userText };
-    const pendingChatNode = createChatNode('Thinking…', 'medium', [userMessage], activeConfig.model, undefined, 'pending');
+    const pendingChatNode = createChatNode('Thinking…', [userMessage], activeConfig.model, undefined, 'pending');
 
     setSending(true);
     setError(null);
@@ -1287,7 +1287,6 @@ export default function App() {
                           >
                             <div className="exchange-head">
                               <span>AI chat</span>
-                              <span className={`confidence ${chatNode.confidence}`}>{chatNode.confidence}</span>
                             </div>
                             <strong>{chatNode.summary}</strong>
                             <small>{chatNode.model}</small>
@@ -1536,6 +1535,7 @@ export default function App() {
                 <section className="inspector-card send-card">
                   <h4>Send to AI</h4>
                   <textarea
+                    autoFocus
                     value={composerDraft}
                     onChange={(event) => setComposerDraft(event.target.value)}
                     placeholder="Ask the thread something"
@@ -1592,6 +1592,7 @@ export default function App() {
                     <label className="field compact-inline">
                       <span>Profile</span>
                       <select
+                        autoFocus
                         value={activeProviderConfig?.id ?? ''}
                         onChange={(event) => changeSettingsProvider(event.target.value)}
                       >
@@ -1760,6 +1761,7 @@ export default function App() {
               <label className="field">
                 Thread title
                 <input
+                  autoFocus
                   value={threadEditorDraft.title}
                   onChange={(event) => setThreadEditorDraft((current) => ({ ...current, title: event.target.value }))}
                   placeholder="e.g. deployment plan"
