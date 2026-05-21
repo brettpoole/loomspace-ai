@@ -54,7 +54,7 @@ export function createProviderConfig(kind: AIProvider = 'openai-compatible-custo
     id: overrides.id ?? `provider-${crypto.randomUUID().slice(0, 8)}`,
     kind,
     label: overrides.label ?? info.label,
-    model: overrides.model ?? info.defaultModel,
+    model: overrides.model ?? '',
     apiKey: overrides.apiKey ?? '',
     hasEncryptedApiKey: overrides.hasEncryptedApiKey ?? false,
     baseUrl: overrides.baseUrl ?? info.baseUrl,
@@ -136,7 +136,7 @@ export function loadSettings(): AISettings {
 
     return {
       ...config,
-      model: model.trim() || providerInfo(config.kind).defaultModel,
+      model: model.trim(),
       apiKey: '',
       hasEncryptedApiKey: Boolean(persistedConfig?.hasEncryptedApiKey || hasSecret),
     };
@@ -220,7 +220,7 @@ export function summarize(text: string, limit = 60) {
 }
 
 export function createThread(title: string, description: string, index: number, defaults?: { initialModel?: string }): ThreadLane {
-  const initialModel = defaults?.initialModel ?? providerInfo('openai').defaultModel;
+  const initialModel = defaults?.initialModel ?? '';
   const threadId = `thread-${crypto.randomUUID().slice(0, 8)}`;
   const titleNode: ThreadTitleNode = {
     id: `title-${crypto.randomUUID().slice(0, 8)}`,
@@ -427,7 +427,7 @@ function readSettingsPayload(): PersistedSettingsPayload | null {
             id: entry.id,
             kind: entry.kind,
             label: entry.label,
-            model: typeof entry.model === 'string' ? entry.model : providerInfo(entry.kind).defaultModel,
+            model: typeof entry.model === 'string' ? entry.model : '',
             hasEncryptedApiKey: Boolean(entry.hasEncryptedApiKey),
             baseUrl: typeof entry.baseUrl === 'string' ? entry.baseUrl : providerInfo(entry.kind).baseUrl,
           })),
@@ -454,7 +454,7 @@ function readLegacySettingsPayload(): LegacySettingsPayload | null {
     const parsed = JSON.parse(raw) as Partial<LegacySettingsPayload>;
     return {
       provider: typeof parsed.provider === 'string' && isProvider(parsed.provider) ? parsed.provider : 'openai',
-      model: typeof parsed.model === 'string' ? parsed.model : providerInfo('openai').defaultModel,
+      model: typeof parsed.model === 'string' ? parsed.model : '',
     };
   } catch {
     return null;

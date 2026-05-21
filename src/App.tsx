@@ -304,7 +304,7 @@ export default function App() {
   }
 
   function buildContextSelection(thread: ThreadLane, nodeId: string) {
-    const selectableNodes = thread.nodes.filter((n) => n.kind === 'chat' || n.kind === 'context');
+    const selectableNodes = thread.nodes.filter((n) => (n.kind === 'chat' && n.messages.length > 0) || n.kind === 'context');
     const idx = selectableNodes.findIndex((n) => n.id === nodeId);
     if (idx < 0) return null;
     return selectableNodes.slice(0, idx + 1).map((n) => ({
@@ -524,7 +524,7 @@ export default function App() {
   }
 
   function enterContextLinkMode(thread: ThreadLane, nodeId: string, side: 'left' | 'right') {
-    const selectableNodes = thread.nodes.filter((n) => n.kind === 'chat' || n.kind === 'context');
+    const selectableNodes = thread.nodes.filter((n) => (n.kind === 'chat' && n.messages.length > 0) || n.kind === 'context');
     const idx = selectableNodes.findIndex((n) => n.id === nodeId);
     if (idx < 0) return;
     const selectedNodes = selectableNodes.slice(0, idx + 1).map((n) => ({
@@ -1587,47 +1587,48 @@ export default function App() {
             </header>
             <div className="chat-modal-body">
               <section className="inspector-card settings-card">
-                <div className="meta-row">
-                  <h4>Active profile</h4>
-                  <span className={`pill settings-pill ${settingsLockState}`}>
-                    {settingsLockState === 'none' ? 'no saved key' : settingsLockState === 'unlocked' ? 'unlocked for session' : 'saved, locked'}
-                  </span>
-                </div>
-                <label className="field">
-                  Profile
-                  <select
-                    value={activeProviderConfig?.id ?? ''}
-                    onChange={(event) => changeSettingsProvider(event.target.value)}
-                  >
-                    {settings.providerConfigs.map((config) => (
-                      <option key={config.id} value={config.id}>
-                        {config.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <div className="editor-actions left-aligned">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const next = createProviderConfig('openai-compatible-custom', { label: 'New profile', model: '' });
-                      setSettings((current) => ({
-                        ...current,
-                        activeProviderConfigId: next.id,
-                        providerConfigs: [...current.providerConfigs, next],
-                      }));
-                    }}
-                  >
-                    New profile
-                  </button>
-                  <button
-                    type="button"
-                    className="quiet"
-                    onClick={() => activeProviderConfig && deleteProfile(activeProviderConfig.id)}
-                    disabled={!activeProviderConfig}
-                  >
-                    Delete profile
-                  </button>
+                <div className="settings-management-header">
+                  <div className="settings-management-row">
+                    <label className="field compact-inline">
+                      <span>Profile</span>
+                      <select
+                        value={activeProviderConfig?.id ?? ''}
+                        onChange={(event) => changeSettingsProvider(event.target.value)}
+                      >
+                        {settings.providerConfigs.map((config) => (
+                          <option key={config.id} value={config.id}>
+                            {config.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <span className={`pill settings-pill ${settingsLockState}`}>
+                      {settingsLockState === 'none' ? 'no saved key' : settingsLockState === 'unlocked' ? 'unlocked' : 'locked'}
+                    </span>
+                  </div>
+                  <div className="editor-actions left-aligned">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const next = createProviderConfig('openai-compatible-custom', { label: 'New profile', model: '' });
+                        setSettings((current) => ({
+                          ...current,
+                          activeProviderConfigId: next.id,
+                          providerConfigs: [...current.providerConfigs, next],
+                        }));
+                      }}
+                    >
+                      New profile
+                    </button>
+                    <button
+                      type="button"
+                      className="quiet btn-danger"
+                      onClick={() => activeProviderConfig && deleteProfile(activeProviderConfig.id)}
+                      disabled={!activeProviderConfig}
+                    >
+                      Delete profile
+                    </button>
+                  </div>
                 </div>
                 {activeProviderConfig ? (
                   <>
@@ -1641,7 +1642,7 @@ export default function App() {
                           updateProviderConfig(activeProviderConfig.id, {
                             kind,
                             label: activeProviderConfig.label || info.label,
-                            model: info.defaultModel,
+                            model: '',
                             baseUrl: info.baseUrl,
                           });
                           setSettings((current) => ({ ...current, activeProviderConfigId: activeProviderConfig.id }));
@@ -1727,7 +1728,7 @@ export default function App() {
                       </button>
                       <button
                         type="button"
-                        className="quiet"
+                        className="quiet btn-danger"
                         onClick={deleteSavedKey}
                         disabled={savingSettings || !activeProviderConfig.hasEncryptedApiKey}
                       >
@@ -1876,8 +1877,7 @@ export default function App() {
 function modelsForConfig(cache: ModelCache, config: AIProviderConfig | null | undefined, currentModel: string): string[] {
   if (!config) return currentModel ? [currentModel] : [];
   const cached = cache[config.id];
-  const fallback = providerInfo(config.kind).defaultModel;
-  const base = cached && cached.length > 0 ? cached : [fallback];
+  const base = cached && cached.length > 0 ? cached : [];
   if (currentModel && !base.includes(currentModel)) {
     return [currentModel, ...base];
   }
