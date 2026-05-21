@@ -140,6 +140,17 @@ button.quiet {
   color: #a3b1d2;
 }
 
+button.icon-btn {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  flex-shrink: 0;
+}
+
 .layout {
   min-height: 0;
   display: grid;

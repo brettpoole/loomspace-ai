@@ -892,9 +892,9 @@ export default function App() {
           </div>
         </div>
         <div className="topbar-actions">
-          <button onClick={() => openThreadEditor('create')}>New thread</button>
+          <button onClick={() => openThreadEditor('create')}><svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="6.5" y1="1.5" x2="6.5" y2="11.5"/><line x1="1.5" y1="6.5" x2="11.5" y2="6.5"/></svg> New thread</button>
           <button onClick={() => zoomFromButton(-1)} aria-label="Zoom out">−</button>
-          <button onClick={resetView} className="topbar-reset-view">Reset view</button>
+          <button onClick={resetView} className="topbar-reset-view" aria-label="Reset view"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M2 8a6 6 0 1 0 1.17-3.6"/><polyline points="2 4 2 8 6 8"/></svg></button>
           <button onClick={() => zoomFromButton(1)} aria-label="Zoom in">+</button>
           <input
             className="zoom-slider"
@@ -904,9 +904,7 @@ export default function App() {
             value={Math.round(state.zoom * 100)}
             onChange={(event) => setZoom(Number(event.target.value) / 100)}
           />
-          <button onClick={() => { if (window.confirm('Reset the fabric?\n\nThis will permanently delete all threads and AI profiles from this browser. This cannot be undone.')) resetWorkspace(); }} className="quiet topbar-reset-fabric">
-            Reset fabric
-          </button>
+          <button onClick={() => { if (window.confirm('Reset the fabric?\n\nThis will permanently delete all threads and AI profiles from this browser. This cannot be undone.')) resetWorkspace(); }} className="quiet topbar-reset-fabric icon-btn" aria-label="Reset fabric"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 3 14 13 14 13 6"/><line x1="1" y1="3" x2="15" y2="3"/><line x1="6" y1="3" x2="6" y2="1"/><line x1="10" y1="3" x2="10" y2="1"/></svg></button>
         </div>
       </header>
 
@@ -920,9 +918,7 @@ export default function App() {
                   <p className="eyebrow">Selected thread</p>
                   <h2>{activeThread.title}</h2>
                 </div>
-                <button className="quiet" onClick={() => openThreadEditor('edit', activeThread)}>
-                  Edit thread
-                </button>
+                <button className="quiet icon-btn" onClick={() => openThreadEditor('edit', activeThread)} aria-label="Edit thread"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M11.5 2.5a1.5 1.5 0 0 1 2.12 2.12L5 13.24l-3 .76.76-3 8.74-8.5z"/></svg></button>
               </div>
               <p>{activeThread.description}</p>
               <button onClick={() => selectThread(activeThread.id, activeThread.activeNodeId)} style={{ marginTop: 12 }}>
@@ -1277,7 +1273,7 @@ export default function App() {
                       return (
                         <div key={node.id} style={{ position: 'absolute', top, left: 0 }}>
                           <div
-                            className={`chat-node ${isSelected ? 'selected' : ''} ${chatNode.status === 'pending' ? 'sending' : ''} ${chatNode.status === 'unread' ? 'responded' : ''} ${isContextSource ? 'context-source-selected' : ''} ${isContextTarget ? 'context-target' : ''}`}
+                            className={`chat-node ${isSelected ? 'selected' : ''} ${chatNode.status === 'pending' ? 'sending' : ''} ${chatNode.status === 'unread' && !(miniChatOpen && thread.id === state.selectedThreadId) ? 'responded' : ''} ${isContextSource ? 'context-source-selected' : ''} ${isContextTarget ? 'context-target' : ''}`}
                             style={{ position: 'relative', top: 0, left: 0 }}
                             onClick={(e) => {
                               e.stopPropagation();
@@ -1461,9 +1457,7 @@ export default function App() {
                     <h3>{activeThread.description}</h3>
                     <p>{activeThread.nodes.length} nodes in this lane.</p>
                   </div>
-                  <button className="quiet" onClick={() => openThreadEditor('edit', activeThread)}>
-                    Edit thread
-                  </button>
+                  <button className="quiet icon-btn" onClick={() => openThreadEditor('edit', activeThread)} aria-label="Edit thread"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M11.5 2.5a1.5 1.5 0 0 1 2.12 2.12L5 13.24l-3 .76.76-3 8.74-8.5z"/></svg></button>
                 </div>
                 <div className="thread-meta-row stack">
                   {settings.providerConfigs.length === 0 ? (
@@ -1494,9 +1488,7 @@ export default function App() {
                   )}
                   <span className="pill">Model: {activeProviderConfig?.model ?? '—'}</span>
                   <span className="pill">Context left: {activeThread ? remainingContext.toLocaleString() : '—'}</span>
-                  <button type="button" className="quiet" onClick={() => setAiSettingsModalOpen(true)}>
-                    Manage AI settings
-                  </button>
+                  <button type="button" className="quiet icon-btn" onClick={() => setAiSettingsModalOpen(true)} aria-label="AI settings"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="8" cy="8" r="2.5"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.05 3.05l1.41 1.41M11.54 11.54l1.41 1.41M3.05 12.95l1.41-1.41M11.54 4.46l1.41-1.41"/></svg></button>
                 </div>
                 {selectedThreadUsage ? (
                   <div className="usage-grid">
