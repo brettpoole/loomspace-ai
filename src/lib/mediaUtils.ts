@@ -1,4 +1,5 @@
-import type { MediaAttachment, MessageContentType, MessageContent, ChatMessage } from './types';
+import type { MessageContentType, MessageContent, ChatMessage, MediaAttachment } from './types';
+export type { MediaAttachment };
 
 // File processing utilities
 export async function processFile(file: File): Promise<MediaAttachment> {
@@ -9,7 +10,7 @@ export async function processFile(file: File): Promise<MediaAttachment> {
       const base64 = result.split(',')[1]; // Remove data URL prefix
       
       resolve({
-        id: `media-${crypto.randomUUID().slice(0, 8)}`,
+        id: `media-${crypto.randomUUID()}`,
         type: file.type.startsWith('image/') ? 'image' : 'document',
         filename: file.name,
         mimeType: file.type,
@@ -29,15 +30,32 @@ export function validateFile(file: File): { valid: boolean; error?: string } {
     'image/jpeg', 'image/png', 'image/gif', 'image/webp',
     'application/pdf', 'text/plain', 'text/markdown'
   ];
-  
+
   if (file.size > MAX_SIZE) {
     return { valid: false, error: 'File too large (max 4MB)' };
   }
-  
+
   if (!ALLOWED_TYPES.includes(file.type)) {
     return { valid: false, error: 'File type not supported' };
   }
-  
+
+  return { valid: true };
+}
+
+// Verify image magic bytes to catch MIME spoofing
+export async function verifyImageBytes(file: File): Promise<{ valid: boolean; error?: string }> {
+  if (file.type === 'image/png') {
+    const bytes = new Uint8Array(await file.slice(0, 8).arrayBuffer());
+    const pngHeader = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+    if (!bytes.every((b, i) => b === pngHeader[i])) {
+      return { valid: false, error: `${file.name}: file is not a valid PNG image` };
+    }
+  } else if (file.type === 'image/jpeg') {
+    const bytes = new Uint8Array(await file.slice(0, 3).arrayBuffer());
+    if (bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes[2] !== 0xff) {
+      return { valid: false, error: `${file.name}: file is not a valid JPEG image` };
+    }
+  }
   return { valid: true };
 }
 
@@ -65,15 +83,15 @@ export function createMixedMessage(text: string, attachments: MediaAttachment[])
 export function migrateMessage(oldMessage: any): ChatMessage {
   // If already has content object, it's already migrated
   if (oldMessage.content && typeof oldMessage.content === 'object') {
-    return oldMessage;
+    return oldMessage as ChatMessage;
   }
-  
+
   // Migrate old text-only message
   const text = oldMessage.text || oldMessage.content || '';
   return {
     ...oldMessage,
     content: createTextMessage(text),
-    text: text // Keep for backward compatibility
+    text: text // Keep for backward compatibility — clean up after migration period ends
   };
 }
 
