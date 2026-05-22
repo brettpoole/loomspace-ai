@@ -10,6 +10,7 @@ import type {
   PersistedWorkspace,
   ProviderInfo,
   ThreadChatNode,
+  ThreadContextNode,
   ThreadLane,
   ThreadTitleNode,
   ThreadUsageSummary,
@@ -41,15 +42,7 @@ export function providerInfo(provider: AIProvider): ProviderInfo {
 }
 
 export function defaultProviderConfigs(): AIProviderConfig[] {
-  return PROVIDERS.filter((entry) => entry.id !== 'openai-compatible-custom').map((entry) => ({
-    id: entry.id,
-    kind: entry.id,
-    label: entry.label,
-    model: entry.defaultModel,
-    apiKey: '',
-    hasEncryptedApiKey: false,
-    baseUrl: entry.baseUrl,
-  }));
+  return [];
 }
 
 export function defaultProviderConfigId(kind: AIProvider): string {
@@ -62,7 +55,7 @@ export function createProviderConfig(kind: AIProvider = 'openai-compatible-custo
     id: overrides.id ?? `provider-${crypto.randomUUID().slice(0, 8)}`,
     kind,
     label: overrides.label ?? info.label,
-    model: overrides.model ?? info.defaultModel,
+    model: overrides.model ?? '',
     apiKey: overrides.apiKey ?? '',
     hasEncryptedApiKey: overrides.hasEncryptedApiKey ?? false,
     baseUrl: overrides.baseUrl ?? info.baseUrl,
@@ -144,7 +137,7 @@ export function loadSettings(): AISettings {
 
     return {
       ...config,
-      model: model.trim() || providerInfo(config.kind).defaultModel,
+      model: model.trim(),
       apiKey: '',
       hasEncryptedApiKey: Boolean(persistedConfig?.hasEncryptedApiKey || hasSecret),
     };
@@ -199,7 +192,7 @@ export function clearProviderSecret(configId: string) {
 export function deleteProviderConfig(settings: AISettings, configId: string): AISettings {
   clearProviderSecret(configId);
   const remaining = settings.providerConfigs.filter((config) => config.id !== configId);
-  const configs = remaining.length > 0 ? remaining : defaultProviderConfigs();
+  const configs = remaining;
   const nextActiveId =
     settings.activeProviderConfigId === configId
       ? configs[0]?.id ?? 'openai'
@@ -228,7 +221,7 @@ export function summarize(text: string, limit = 60) {
 }
 
 export function createThread(title: string, description: string, index: number, defaults?: { initialModel?: string }): ThreadLane {
-  const initialModel = defaults?.initialModel ?? providerInfo('openai').defaultModel;
+  const initialModel = defaults?.initialModel ?? '';
   const threadId = `thread-${crypto.randomUUID().slice(0, 8)}`;
   const titleNode: ThreadTitleNode = {
     id: `title-${crypto.randomUUID().slice(0, 8)}`,
@@ -236,7 +229,7 @@ export function createThread(title: string, description: string, index: number, 
     title,
     description,
   };
-  const firstChatNode = createChatNode('AI chat ready', 'medium', [], initialModel);
+  const firstChatNode = createChatNode('AI chat ready', [], initialModel);
 
   return {
     id: threadId,
@@ -253,10 +246,10 @@ export function createThread(title: string, description: string, index: number, 
 
 export function createChatNode(
   summarySource: string,
-  confidence: 'low' | 'medium' | 'high',
   messages: ChatMessage[] = [],
-  model = 'gpt-4o-mini',
+  model = '',
   usage?: TokenUsage,
+  status?: ThreadChatNode['status'],
 ): ThreadChatNode {
   return {
     id: `chat-${crypto.randomUUID().slice(0, 8)}`,
@@ -264,9 +257,9 @@ export function createChatNode(
     summary: summarize(summarySource, 52),
     messages,
     model,
-    confidence,
     createdAt: new Date().toISOString(),
     usage,
+    status,
   };
 }
 
@@ -288,6 +281,33 @@ export function updateThreadTitle(thread: ThreadLane, title: string): ThreadLane
 
 export function updateThreadDescription(thread: ThreadLane, description: string): ThreadLane {
   return updateThreadDetails(thread, { title: thread.title, description });
+}
+
+export function createContextNode(
+  source: { id: string; title: string; color: string },
+  sourceNodeIds: string[],
+  messages: ChatMessage[],
+): ThreadContextNode {
+  return {
+    id: `ctx-${crypto.randomUUID().slice(0, 8)}`,
+    kind: 'context',
+    sourceThreadId: source.id,
+    sourceThreadTitle: source.title,
+    sourceThreadColor: source.color,
+    sourceNodeIds,
+    messages,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+export function appendContextInjection(thread: ThreadLane, contextNode: ThreadContextNode, injectedMessages: ChatMessage[]): ThreadLane {
+  return {
+    ...thread,
+    status: 'active',
+    nodes: [...thread.nodes, contextNode],
+    context: [...thread.context, ...injectedMessages],
+    activeNodeId: contextNode.id,
+  };
 }
 
 export function appendChatToThread(thread: ThreadLane, chat: ThreadChatNode, messages: ChatMessage[]): ThreadLane {
@@ -406,7 +426,7 @@ function readSettingsPayload(): PersistedSettingsPayload | null {
             id: entry.id,
             kind: entry.kind,
             label: entry.label,
-            model: typeof entry.model === 'string' ? entry.model : providerInfo(entry.kind).defaultModel,
+            model: typeof entry.model === 'string' ? entry.model : '',
             hasEncryptedApiKey: Boolean(entry.hasEncryptedApiKey),
             baseUrl: typeof entry.baseUrl === 'string' ? entry.baseUrl : providerInfo(entry.kind).baseUrl,
           })),
@@ -433,7 +453,7 @@ function readLegacySettingsPayload(): LegacySettingsPayload | null {
     const parsed = JSON.parse(raw) as Partial<LegacySettingsPayload>;
     return {
       provider: typeof parsed.provider === 'string' && isProvider(parsed.provider) ? parsed.provider : 'openai',
-      model: typeof parsed.model === 'string' ? parsed.model : providerInfo('openai').defaultModel,
+      model: typeof parsed.model === 'string' ? parsed.model : '',
     };
   } catch {
     return null;

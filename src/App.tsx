@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent, type WheelEvent } from 'react';
+import Markdown from 'react-markdown';
 import {
   PROVIDERS,
-  appendChatToThread,
+  appendContextInjection,
   clearProviderSecret,
   clearSettingsCookies,
   computeMetrics,
   createChatNode,
+  createContextNode,
   createProviderConfig,
   createThread,
   deleteProviderConfig,
@@ -18,6 +20,7 @@ import {
   saveProviderSecret,
   saveSettings,
   saveWorkspace,
+  summarize,
   summarizeThreadUsage,
   threadWithActiveNode,
   threadWithInfo,
@@ -41,8 +44,10 @@ import type {
   AIProviderConfig,
   AISettings,
   ChatMessage,
+  ForkDraft,
   LoomspaceState,
   ThreadChatNode,
+  ThreadContextNode,
   ThreadLane,
   ThreadNode,
   TokenUsage,
@@ -54,12 +59,14 @@ const LEFT_PAD = 64;
 const TOP_PAD = 28;
 const TITLE_HEIGHT = 66;
 const TITLE_INFO_EXTRA = 84;
-const CHAT_HEIGHT = 92;
+const CHAT_HEIGHT = 148;
 const NODE_GAP = 30;
 const NODE_WIDTH = 232;
-const MIN_ZOOM = 0.7;
+const MIN_ZOOM = 0.25;
 const MAX_ZOOM = 1.6;
 const EDGE_PADDING = 80;
+const CANVAS_MIN_WIDTH = 4000;
+const CANVAS_MIN_HEIGHT = 2400;
 
 interface ThreadDraft {
   title: string;
@@ -84,19 +91,69 @@ export default function App() {
   const [passphraseModal, setPassphraseModal] = useState<{ mode: 'encrypt' | 'unlock'; passphrase: string; busy: boolean; pendingKey?: string; targetConfigId?: string } | null>(null);
   const [savingSettings, setSavingSettings] = useState(false);
   const [chatModalOpen, setChatModalOpen] = useState(false);
+  const [miniChatOpen, setMiniChatOpen] = useState(false);
+  const [contextLinkMode, setContextLinkMode] = useState<{
+    sourceThreadId: string;
+    dotNodeId: string;
+    selectedNodes: Array<{ nodeId: string; parts: { user: boolean; assistant: boolean } }>;
+    side: 'left' | 'right';
+  } | null>(null);
   const [aiSettingsModalOpen, setAiSettingsModalOpen] = useState(false);
+  const miniChatMessagesRef = useRef<HTMLDivElement>(null);
   const [threadEditorOpen, setThreadEditorOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [threadEditorMode, setThreadEditorMode] = useState<'create' | 'edit'>('create');
   const [threadEditorDraft, setThreadEditorDraft] = useState<ThreadDraft>(DEFAULT_THREAD_DRAFT);
   const [threadEditorTargetId, setThreadEditorTargetId] = useState<string | null>(null);
+  const [forkDraft, setForkDraft] = useState<ForkDraft | null>(null);
+  const [nodePreviewModal, setNodePreviewModal] = useState<{ title: string; messages: ChatMessage[] } | null>(null);
   const [modelCache, setModelCache] = useState<ModelCache>({});
   const [modelsLoading, setModelsLoading] = useState(false);
   const viewportRef = useRef<HTMLDivElement>(null);
   const panGesture = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
+  const pointerMap = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const pinchState = useRef<{ dist: number; zoom: number } | null>(null);
+  const spaceHeld = useRef(false);
+  const ctrlHeld = useRef(false);
+  const [panMode, setPanMode] = useState<'idle' | 'ready' | 'panning'>('idle');
 
   useEffect(() => saveWorkspace(state), [state]);
   useEffect(() => saveSettings(settings), [settings]);
+
+  useEffect(() => {
+    const isNavKey = (code: string) => code === 'Space' || code === 'ControlLeft' || code === 'ControlRight';
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!isNavKey(e.code)) return;
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (e.code === 'Space') e.preventDefault();
+      if (e.code === 'Space') spaceHeld.current = true;
+      if (e.code === 'ControlLeft' || e.code === 'ControlRight') ctrlHeld.current = true;
+      setPanMode((m) => (m === 'panning' ? 'panning' : 'ready'));
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (!isNavKey(e.code)) return;
+      if (e.code === 'Space') spaceHeld.current = false;
+      if (e.code === 'ControlLeft' || e.code === 'ControlRight') ctrlHeld.current = false;
+      if (!spaceHeld.current && !ctrlHeld.current) {
+        setPanMode((m) => (m === 'panning' ? 'idle' : 'idle'));
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+    };
+  }, []);
+
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const block = (e: Event) => e.preventDefault();
+    el.addEventListener('wheel', block, { passive: false });
+    return () => el.removeEventListener('wheel', block);
+  }, []);
 
   const metrics = useMemo(() => computeMetrics(state), [state]);
   const activeThread = state.threads.find((thread) => thread.id === state.selectedThreadId) ?? null;
@@ -120,13 +177,15 @@ export default function App() {
   );
 
   const canvasWidth = Math.max(
-    1280,
+    CANVAS_MIN_WIDTH,
     LEFT_PAD * 2 + Math.max(0, state.threads.length - 1) * (LANE_WIDTH + LANE_GAP) + LANE_WIDTH,
   );
 
   const lanes = useMemo(() => {
+    const threadGroupWidth = state.threads.length * LANE_WIDTH + Math.max(0, state.threads.length - 1) * LANE_GAP;
+    const groupLeft = canvasWidth / 2 - threadGroupWidth / 2;
     return state.threads.map((thread, index) => {
-      const centerX = state.threads.length === 1 ? canvasWidth / 2 : LEFT_PAD + index * (LANE_WIDTH + LANE_GAP) + LANE_WIDTH / 2;
+      const centerX = groupLeft + index * (LANE_WIDTH + LANE_GAP) + LANE_WIDTH / 2;
       const nodes: Array<{ node: ThreadNode; top: number }> = [];
       let cursorTop = TOP_PAD;
       for (const node of thread.nodes) {
@@ -142,7 +201,7 @@ export default function App() {
     });
   }, [canvasWidth, state.threads]);
 
-  const canvasHeight = Math.max(720, ...lanes.map((lane) => lane.height));
+  const canvasHeight = Math.max(CANVAS_MIN_HEIGHT, ...lanes.map((lane) => lane.height));
 
   useEffect(() => {
     clampViewport();
@@ -153,6 +212,31 @@ export default function App() {
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, [canvasWidth, canvasHeight]);
+
+  useEffect(() => {
+    resetView();
+  }, []);
+
+  useEffect(() => {
+    if (miniChatOpen && miniChatMessagesRef.current) {
+      miniChatMessagesRef.current.scrollTop = miniChatMessagesRef.current.scrollHeight;
+    }
+  }, [activeThread?.context.length, miniChatOpen]);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (nodePreviewModal) { setNodePreviewModal(null); return; }
+      if (chatModalOpen) { setChatModalOpen(false); return; }
+      if (threadEditorOpen) { closeThreadEditor(); return; }
+      if (aiSettingsModalOpen) { setAiSettingsModalOpen(false); return; }
+      if (passphraseModal && !passphraseModal.busy) { closePassphraseModal(); return; }
+      if (contextLinkMode) { setContextLinkMode(null); return; }
+      if (state.selectedThreadId) { deselectNode(); }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [nodePreviewModal, chatModalOpen, threadEditorOpen, aiSettingsModalOpen, passphraseModal, contextLinkMode, state.selectedThreadId]);
 
   function clampViewport(next?: Partial<Pick<LoomspaceState, 'panX' | 'panY' | 'zoom'>>) {
     const viewport = viewportRef.current;
@@ -170,16 +254,26 @@ export default function App() {
 
   function selectThread(threadId: string, nodeId?: string | null) {
     setChatModalOpen(true);
+    setMiniChatOpen(false);
     setSidebarOpen(false);
     setState((current) => ({
       ...current,
       selectedThreadId: threadId,
       selectedNodeId: nodeId ?? current.threads.find((thread) => thread.id === threadId)?.activeNodeId ?? null,
-      threads: current.threads.map((thread) =>
-        thread.id === threadId
-          ? threadWithActiveNode(thread, nodeId ?? thread.activeNodeId)
-          : threadWithActiveNode(thread, thread.activeNodeId),
-      ),
+      threads: current.threads.map((thread) => {
+        if (thread.id !== threadId) {
+          return threadWithActiveNode(thread, thread.activeNodeId);
+        }
+        const nextNodeId = nodeId ?? thread.activeNodeId;
+        return {
+          ...threadWithActiveNode(thread, nextNodeId),
+          nodes: thread.nodes.map((entry) =>
+            entry.id === nextNodeId && entry.kind === 'chat' && entry.status === 'unread'
+              ? { ...entry, status: undefined }
+              : entry,
+          ),
+        };
+      }),
     }));
   }
 
@@ -195,8 +289,60 @@ export default function App() {
     setThreadEditorOpen(true);
   }
 
+  function openForkThreadEditor(thread: ThreadLane, nodeId: string, side: 'left' | 'right') {
+    const forkSelection = buildContextSelection(thread, nodeId);
+    if (!forkSelection) return;
+    setForkDraft({
+      sourceThreadId: thread.id,
+      sourceThreadTitle: thread.title,
+      sourceThreadColor: thread.color,
+      selectedNodes: forkSelection,
+    });
+    setContextLinkMode({ sourceThreadId: thread.id, dotNodeId: nodeId, selectedNodes: forkSelection, side });
+    setThreadEditorMode('create');
+    setThreadEditorTargetId(null);
+    setThreadEditorDraft({
+      title: `Fork of ${thread.title}`,
+      description: thread.description,
+    });
+    setChatModalOpen(false);
+    setMiniChatOpen(false);
+    setThreadEditorOpen(true);
+  }
+
   function closeThreadEditor() {
     setThreadEditorOpen(false);
+    setForkDraft(null);
+  }
+
+  function buildContextSelection(thread: ThreadLane, nodeId: string) {
+    const selectableNodes = thread.nodes.filter((n) => (n.kind === 'chat' && n.messages.length > 0) || n.kind === 'context');
+    const idx = selectableNodes.findIndex((n) => n.id === nodeId);
+    if (idx < 0) return null;
+    return selectableNodes.slice(0, idx + 1).map((n) => ({
+      nodeId: n.id,
+      parts: { user: true, assistant: true },
+    }));
+  }
+
+  function collectSelectedMessages(sourceThread: ThreadLane, selectedNodes: ForkDraft['selectedNodes']) {
+    const injectedMessages: ChatMessage[] = [];
+    for (const node of sourceThread.nodes) {
+      if (node.kind !== 'chat' && node.kind !== 'context') continue;
+      const selection = selectedNodes.find((s) => s.nodeId === node.id);
+      if (!selection) continue;
+      for (const msg of node.messages) {
+        if (msg.role === 'user' && !selection.parts.user) continue;
+        if (msg.role === 'assistant' && !selection.parts.assistant) continue;
+        injectedMessages.push({
+          ...msg,
+          id: `injected-${crypto.randomUUID().slice(0, 8)}`,
+          injectedFromThreadId: sourceThread.id,
+          injectedFromColor: sourceThread.color,
+        });
+      }
+    }
+    return injectedMessages;
   }
 
   function submitThreadEditor() {
@@ -204,9 +350,26 @@ export default function App() {
     const description = threadEditorDraft.description.trim() || 'A new lane for a project idea and its AI chat context.';
 
     if (threadEditorMode === 'create') {
-      const thread = createThread(title, description, state.threads.length, {
+      const baseThread = createThread(title, description, state.threads.length, {
         initialModel: activeProviderConfig?.model,
       });
+
+      const thread = forkDraft && forkDraft.selectedNodes.length > 0
+        ? (() => {
+            const sourceThread = state.threads.find((entry) => entry.id === forkDraft.sourceThreadId);
+            if (!sourceThread) return baseThread;
+            const injectedMessages = collectSelectedMessages(sourceThread, forkDraft.selectedNodes);
+            if (injectedMessages.length === 0) return baseThread;
+            const contextNode = createContextNode(sourceThread, forkDraft.selectedNodes.map((entry) => entry.nodeId), injectedMessages);
+            return {
+              ...baseThread,
+              context: [...injectedMessages],
+              nodes: [baseThread.nodes[0], contextNode],
+              activeNodeId: baseThread.activeNodeId,
+            };
+          })()
+        : baseThread;
+
       setState((current) => ({
         ...current,
         version: current.version + 1,
@@ -215,7 +378,9 @@ export default function App() {
         selectedNodeId: thread.activeNodeId,
         panX: current.threads.length === 0 ? current.panX : current.panX - 40,
       }));
-      setChatModalOpen(true);
+      setChatModalOpen(false);
+      setMiniChatOpen(true);
+      setContextLinkMode(null);
     } else if (threadEditorTargetId) {
       setState((current) => ({
         ...current,
@@ -230,7 +395,7 @@ export default function App() {
     setError(null);
   }
 
-  async function sendMessage() {
+async function sendMessage(closeAfter = false) {
     if (!activeThread || !activeNodeIsChat || (!composerDraft.trim() && composerAttachments.length === 0) || sending) return;
     const activeConfig = activeProviderConfig;
     if (!activeConfig) {
@@ -244,17 +409,36 @@ export default function App() {
     }
 
     const userText = composerDraft.trim();
-    const userMessage: ChatMessage = { 
-      id: `msg-${crypto.randomUUID().slice(0, 8)}`, 
-      role: 'user', 
+const userMessage: ChatMessage = {
+      id: `msg-${crypto.randomUUID()}`,
+      role: 'user',
       content: createMixedMessage(userText, composerAttachments),
       text: userText // Keep for backward compatibility
     };
+    const pendingChatNode = createChatNode('Thinking…', [userMessage], activeConfig.model, undefined, 'pending');
 
     setSending(true);
     setError(null);
     setComposerDraft('');
+if (closeAfter) setMiniChatOpen(false);
     setComposerAttachments([]);
+    setState((current) => ({
+      ...current,
+      version: current.version + 1,
+      threads: current.threads.map((thread) =>
+        thread.id === activeThread.id
+          ? {
+              ...thread,
+              status: 'active',
+              context: [...thread.context, userMessage],
+              nodes: [...thread.nodes, pendingChatNode],
+              activeNodeId: pendingChatNode.id,
+            }
+          : thread,
+      ),
+      selectedThreadId: activeThread.id,
+      selectedNodeId: pendingChatNode.id,
+    }));
 
     try {
       const { assistantText, usage } = await requestAiReply(activeConfig, activeThread, [...activeThread.context, userMessage]);
@@ -264,18 +448,49 @@ export default function App() {
         content: createTextMessage(assistantText),
         text: assistantText // Keep for backward compatibility
       };
-      const newChatNode = createChatNode(`${userText} → ${assistantText}`, 'medium', [userMessage, assistantMessage], activeConfig.model, usage);
 
       setState((current) => ({
         ...current,
         version: current.version + 1,
-        threads: current.threads.map((thread) =>
-          thread.id === activeThread.id ? appendChatToThread(thread, newChatNode, [userMessage, assistantMessage]) : thread,
-        ),
+        threads: current.threads.map((thread) => {
+          if (thread.id !== activeThread.id) return thread;
+          return {
+            ...thread,
+            context: [...thread.context, assistantMessage],
+            nodes: thread.nodes.map((node) =>
+              node.id === pendingChatNode.id && node.kind === 'chat'
+                ? {
+                    ...node,
+                    summary: summarize(`${userText} → ${assistantText}`, 52),
+                    messages: [userMessage, assistantMessage],
+                    usage,
+                    status: 'unread',
+                  }
+                : node,
+            ),
+            activeNodeId: pendingChatNode.id,
+          };
+        }),
         selectedThreadId: activeThread.id,
-        selectedNodeId: newChatNode.id,
+        selectedNodeId: pendingChatNode.id,
       }));
+      // mini chat already closed if closeAfter was set
     } catch (err) {
+      setState((current) => ({
+        ...current,
+        version: current.version + 1,
+        threads: current.threads.map((thread) => {
+          if (thread.id !== activeThread.id) return thread;
+          return {
+            ...thread,
+            nodes: thread.nodes.map((node) =>
+              node.id === pendingChatNode.id && node.kind === 'chat'
+                ? { ...node, status: 'error' }
+                : node,
+            ),
+          };
+        }),
+      }));
       setError(err instanceof Error ? err.message : 'AI request failed');
       setComposerDraft(userText);
     } finally {
@@ -301,15 +516,104 @@ export default function App() {
   }
 
   function selectNode(threadId: string, nodeId: string) {
-    setChatModalOpen(true);
     setState((current) => ({
       ...current,
       selectedThreadId: threadId,
       selectedNodeId: nodeId,
-      threads: current.threads.map((thread) =>
-        thread.id === threadId ? threadWithActiveNode(thread, nodeId) : threadWithActiveNode(thread, thread.activeNodeId),
-      ),
+      threads: current.threads.map((thread) => {
+        if (thread.id !== threadId) {
+          return threadWithActiveNode(thread, thread.activeNodeId);
+        }
+        return {
+          ...threadWithActiveNode(thread, nodeId),
+          nodes: thread.nodes.map((node) =>
+            node.id === nodeId && node.kind === 'chat' && node.status === 'unread'
+              ? { ...node, status: undefined }
+              : node,
+          ),
+        };
+      }),
     }));
+  }
+
+  function deselectNode() {
+    setState((current) => ({ ...current, selectedThreadId: null, selectedNodeId: null }));
+    setContextLinkMode(null);
+    setMiniChatOpen(false);
+  }
+
+  function enterContextLinkMode(thread: ThreadLane, nodeId: string, side: 'left' | 'right') {
+    const selectableNodes = thread.nodes.filter((n) => (n.kind === 'chat' && n.messages.length > 0) || n.kind === 'context');
+    const idx = selectableNodes.findIndex((n) => n.id === nodeId);
+    if (idx < 0) return;
+    const selectedNodes = selectableNodes.slice(0, idx + 1).map((n) => ({
+      nodeId: n.id,
+      parts: { user: true, assistant: true },
+    }));
+    setContextLinkMode({ sourceThreadId: thread.id, dotNodeId: nodeId, selectedNodes, side });
+  }
+
+  function toggleContextNode(nodeId: string) {
+    if (!contextLinkMode) return;
+    const isSelected = contextLinkMode.selectedNodes.some((s) => s.nodeId === nodeId);
+    if (isSelected && contextLinkMode.selectedNodes.length === 1) return;
+    const selectedNodes = isSelected
+      ? contextLinkMode.selectedNodes.filter((s) => s.nodeId !== nodeId)
+      : [...contextLinkMode.selectedNodes, { nodeId, parts: { user: true, assistant: true } }];
+    setContextLinkMode({ ...contextLinkMode, selectedNodes });
+  }
+
+  function toggleContextPart(nodeId: string, part: 'user' | 'assistant') {
+    if (!contextLinkMode) return;
+    const selectedNodes = contextLinkMode.selectedNodes.flatMap((s) => {
+      if (s.nodeId !== nodeId) return [s];
+      const newParts = { ...s.parts, [part]: !s.parts[part] };
+      if (!newParts.user && !newParts.assistant) return [];
+      return [{ ...s, parts: newParts }];
+    });
+    setContextLinkMode({ ...contextLinkMode, selectedNodes });
+  }
+
+  function injectContextTo(destThreadId: string) {
+    if (!contextLinkMode) return;
+    const sourceThread = state.threads.find((t) => t.id === contextLinkMode.sourceThreadId);
+    if (!sourceThread) return;
+
+    const injectedMessages: ChatMessage[] = [];
+    for (const node of sourceThread.nodes) {
+      if (node.kind !== 'chat' && node.kind !== 'context') continue;
+      const selection = contextLinkMode.selectedNodes.find((s) => s.nodeId === node.id);
+      if (!selection) continue;
+      for (const msg of node.messages) {
+        if (msg.role === 'user' && !selection.parts.user) continue;
+        if (msg.role === 'assistant' && !selection.parts.assistant) continue;
+        injectedMessages.push({
+          ...msg,
+          id: `injected-${crypto.randomUUID().slice(0, 8)}`,
+          injectedFromThreadId: sourceThread.id,
+          injectedFromColor: sourceThread.color,
+        });
+      }
+    }
+
+    if (injectedMessages.length === 0) {
+      setContextLinkMode(null);
+      return;
+    }
+
+    const contextNode = createContextNode(sourceThread, contextLinkMode.selectedNodes.map((s) => s.nodeId), injectedMessages);
+
+    setState((current) => ({
+      ...current,
+      version: current.version + 1,
+      threads: current.threads.map((t) =>
+        t.id === destThreadId ? appendContextInjection(t, contextNode, injectedMessages) : t,
+      ),
+      selectedThreadId: destThreadId,
+      selectedNodeId: contextNode.id,
+    }));
+
+    setContextLinkMode(null);
   }
 
   function updateProviderConfig(configId: string, patch: Partial<AIProviderConfig>) {
@@ -453,17 +757,44 @@ export default function App() {
   }
 
   function beginPan(event: PointerEvent<HTMLDivElement>) {
-    if (event.target !== event.currentTarget) return;
-    panGesture.current = {
-      startX: event.clientX,
-      startY: event.clientY,
-      panX: state.panX,
-      panY: state.panY,
-    };
+    pointerMap.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+
+    if (pointerMap.current.size === 2) {
+      panGesture.current = null;
+      const [p1, p2] = [...pointerMap.current.values()];
+      pinchState.current = {
+        dist: Math.hypot(p2.x - p1.x, p2.y - p1.y),
+        zoom: state.zoom,
+      };
+      return;
+    }
+
+    const isMiddle = event.button === 1;
+    const isPanKey = spaceHeld.current || ctrlHeld.current;
+    const isBackground = event.target === event.currentTarget;
+
+    if (!isMiddle && !isPanKey && !isBackground) return;
+
+    if (isMiddle) event.preventDefault();
+
+    panGesture.current = { startX: event.clientX, startY: event.clientY, panX: state.panX, panY: state.panY };
     event.currentTarget.setPointerCapture(event.pointerId);
+    if (isPanKey) setPanMode('panning');
   }
 
   function movePan(event: PointerEvent<HTMLDivElement>) {
+    pointerMap.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+
+    if (pinchState.current && pointerMap.current.size === 2) {
+      const [p1, p2] = [...pointerMap.current.values()];
+      const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+      const nextZoom = clamp(pinchState.current.zoom * (dist / pinchState.current.dist), MIN_ZOOM, MAX_ZOOM);
+      const midX = (p1.x + p2.x) / 2;
+      const midY = (p1.y + p2.y) / 2;
+      zoomAt(midX, midY, nextZoom);
+      return;
+    }
+
     if (!panGesture.current) return;
     const deltaX = event.clientX - panGesture.current.startX;
     const deltaY = event.clientY - panGesture.current.startY;
@@ -482,8 +813,14 @@ export default function App() {
     setState((current) => ({ ...current, ...next }));
   }
 
-  function endPan() {
-    panGesture.current = null;
+  function endPan(event: PointerEvent<HTMLDivElement>) {
+    pointerMap.current.delete(event.pointerId);
+    if (pointerMap.current.size < 2) pinchState.current = null;
+    if (pointerMap.current.size === 0) {
+      panGesture.current = null;
+      if (spaceHeld.current || ctrlHeld.current) setPanMode('ready');
+      else setPanMode('idle');
+    }
   }
 
   function zoomAt(clientX: number, clientY: number, nextZoom: number) {
@@ -527,8 +864,8 @@ export default function App() {
     }
     const rect = viewport.getBoundingClientRect();
     const centered = boundedPan(
-      Math.max(0, (rect.width - canvasWidth) / 2),
-      Math.max(0, (rect.height - canvasHeight) / 2),
+      (rect.width - canvasWidth) / 2,
+      EDGE_PADDING,
       1,
       rect.width,
       rect.height,
@@ -541,7 +878,7 @@ export default function App() {
   function onWheel(event: WheelEvent<HTMLDivElement>) {
     event.preventDefault();
     if (event.ctrlKey || event.metaKey) {
-      zoomAt(event.clientX, event.clientY, state.zoom - event.deltaY * 0.0015);
+      zoomAt(event.clientX, event.clientY, state.zoom - event.deltaY * 0.0005);
       return;
     }
     const viewport = viewportRef.current;
@@ -574,9 +911,9 @@ export default function App() {
           </div>
         </div>
         <div className="topbar-actions">
-          <button onClick={() => openThreadEditor('create')}>New thread</button>
+          <button onClick={() => openThreadEditor('create')}><svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="6.5" y1="1.5" x2="6.5" y2="11.5"/><line x1="1.5" y1="6.5" x2="11.5" y2="6.5"/></svg> New thread</button>
           <button onClick={() => zoomFromButton(-1)} aria-label="Zoom out">−</button>
-          <button onClick={resetView} className="topbar-reset-view">Reset view</button>
+          <button onClick={resetView} className="topbar-reset-view" aria-label="Reset view"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M2 8a6 6 0 1 0 1.17-3.6"/><polyline points="2 4 2 8 6 8"/></svg></button>
           <button onClick={() => zoomFromButton(1)} aria-label="Zoom in">+</button>
           <input
             className="zoom-slider"
@@ -586,9 +923,7 @@ export default function App() {
             value={Math.round(state.zoom * 100)}
             onChange={(event) => setZoom(Number(event.target.value) / 100)}
           />
-          <button onClick={resetWorkspace} className="quiet topbar-reset-fabric">
-            Reset fabric
-          </button>
+          <button onClick={() => { if (window.confirm('Reset the fabric?\n\nThis will permanently delete all threads and AI profiles from this browser. This cannot be undone.')) resetWorkspace(); }} className="quiet topbar-reset-fabric icon-btn" aria-label="Reset fabric"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 3 14 13 14 13 6"/><line x1="1" y1="3" x2="15" y2="3"/><line x1="6" y1="3" x2="6" y2="1"/><line x1="10" y1="3" x2="10" y2="1"/></svg></button>
         </div>
       </header>
 
@@ -602,9 +937,7 @@ export default function App() {
                   <p className="eyebrow">Selected thread</p>
                   <h2>{activeThread.title}</h2>
                 </div>
-                <button className="quiet" onClick={() => openThreadEditor('edit', activeThread)}>
-                  Edit thread
-                </button>
+                <button className="quiet icon-btn" onClick={() => openThreadEditor('edit', activeThread)} aria-label="Edit thread"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M11.5 2.5a1.5 1.5 0 0 1 2.12 2.12L5 13.24l-3 .76.76-3 8.74-8.5z"/></svg></button>
               </div>
               <p>{activeThread.description}</p>
               <button onClick={() => selectThread(activeThread.id, activeThread.activeNodeId)} style={{ marginTop: 12 }}>
@@ -636,49 +969,73 @@ export default function App() {
                 Manage
               </button>
             </div>
-            <div className="profile-list">
-              {settings.providerConfigs.map((config) => {
-                const isActive = config.id === activeProviderConfig?.id;
-                const lock = config.hasEncryptedApiKey
-                  ? config.apiKey.trim()
-                    ? 'unlocked'
-                    : 'locked'
-                  : 'none';
-                return (
+            {settings.providerConfigs.length === 0 ? (
+              <div className="profile-list-empty">
+                <p>No AI profiles yet.</p>
+                <button
+                  type="button"
+                  className="profile-list-empty-cta"
+                  onClick={() => {
+                    const next = createProviderConfig('openai-compatible-custom', { label: 'New profile', model: '' });
+                    setSettings((current) => ({
+                      ...current,
+                      activeProviderConfigId: next.id,
+                      providerConfigs: [...current.providerConfigs, next],
+                    }));
+                    setSidebarOpen(false);
+                    setAiSettingsModalOpen(true);
+                  }}
+                >
+                  Add AI profile
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="profile-list">
+                  {settings.providerConfigs.map((config) => {
+                    const isActive = config.id === activeProviderConfig?.id;
+                    const lock = config.hasEncryptedApiKey
+                      ? config.apiKey.trim()
+                        ? 'unlocked'
+                        : 'locked'
+                      : 'none';
+                    return (
+                      <button
+                        key={config.id}
+                        type="button"
+                        className={`profile-chip ${isActive ? 'selected' : ''}`}
+                        onClick={() => changeSettingsProvider(config.id)}
+                      >
+                        <span className="profile-chip-copy">
+                          <strong>{config.label}</strong>
+                          <small>{providerInfo(config.kind).label} · {config.model}</small>
+                        </span>
+                        <span className={`pill profile-lock ${lock}`}>
+                          {lock === 'none' ? 'no key' : lock === 'unlocked' ? 'unlocked' : 'locked'}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="editor-actions left-aligned">
                   <button
-                    key={config.id}
                     type="button"
-                    className={`profile-chip ${isActive ? 'selected' : ''}`}
-                    onClick={() => changeSettingsProvider(config.id)}
+                    onClick={() => {
+                      const next = createProviderConfig('openai-compatible-custom', { label: 'New profile', model: '' });
+                      setSettings((current) => ({
+                        ...current,
+                        activeProviderConfigId: next.id,
+                        providerConfigs: [...current.providerConfigs, next],
+                      }));
+                      setSidebarOpen(false);
+                      setAiSettingsModalOpen(true);
+                    }}
                   >
-                    <span className="profile-chip-copy">
-                      <strong>{config.label}</strong>
-                      <small>{providerInfo(config.kind).label} · {config.model}</small>
-                    </span>
-                    <span className={`pill profile-lock ${lock}`}>
-                      {lock === 'none' ? 'no key' : lock === 'unlocked' ? 'unlocked' : 'locked'}
-                    </span>
+                    Add profile
                   </button>
-                );
-              })}
-            </div>
-            <div className="editor-actions left-aligned">
-              <button
-                type="button"
-                onClick={() => {
-                  const next = createProviderConfig('openai-compatible-custom', { label: 'New profile' });
-                  setSettings((current) => ({
-                    ...current,
-                    activeProviderConfigId: next.id,
-                    providerConfigs: [...current.providerConfigs, next],
-                  }));
-                  setSidebarOpen(false);
-                  setAiSettingsModalOpen(true);
-                }}
-              >
-                Add profile
-              </button>
-            </div>
+                </div>
+              </>
+            )}
           </section>
 
           <div className="thread-list-spacer">
@@ -713,7 +1070,8 @@ export default function App() {
             <span>{metrics.saturation * 100 < 50 ? 'light weave' : 'dense weave'}</span>
           </div>
 
-          <div ref={viewportRef} className={`canvas-viewport ${state.densityOverlay ? 'overlay' : ''}`} onWheel={onWheel}>
+          <div className="canvas-area">
+          <div ref={viewportRef} className={`canvas-viewport ${state.densityOverlay ? 'overlay' : ''} pan-${panMode}`} onWheel={onWheel}>
             <div
               className="canvas-stage"
               style={{
@@ -725,6 +1083,12 @@ export default function App() {
               onPointerMove={movePan}
               onPointerUp={endPan}
               onPointerLeave={endPan}
+              onPointerCancel={endPan}
+              onContextMenu={(e) => { if (e.button === 1) e.preventDefault(); }}
+              onClick={(e) => {
+                if (e.target !== e.currentTarget) return;
+                deselectNode();
+              }}
             >
               <svg className="edges-layer" viewBox={`0 0 ${canvasWidth} ${canvasHeight}`} preserveAspectRatio="none">
                 {lanes.map((lane) => {
@@ -740,6 +1104,51 @@ export default function App() {
                     </g>
                   );
                 })}
+                {lanes.flatMap((destLane) =>
+                  destLane.nodes
+                    .filter((entry): entry is { node: ThreadContextNode; top: number } => entry.node.kind === 'context')
+                    .map(({ node: ctxNode, top: destTop }) => {
+                      const sourceLane = lanes.find((l) => l.thread.id === ctxNode.sourceThreadId);
+                      if (!sourceLane) return null;
+                      const firstEntry = sourceLane.nodes.find((e) => e.node.id === ctxNode.sourceNodeIds[0]);
+                      const lastEntry = sourceLane.nodes.find((e) => e.node.id === ctxNode.sourceNodeIds[ctxNode.sourceNodeIds.length - 1]);
+                      if (!firstEntry || !lastEntry) return null;
+                      const dir = destLane.centerX >= sourceLane.centerX ? 1 : -1;
+                      const srcX = sourceLane.centerX + dir * 22;
+                      const srcY1 = firstEntry.top + CHAT_HEIGHT / 2;
+                      const srcY2 = lastEntry.top + CHAT_HEIGHT / 2;
+                      const dstX = destLane.centerX;
+                      const dstY = destTop + CHAT_HEIGHT / 2;
+                      const dx = Math.abs(dstX - srcX) * 0.45;
+                      return (
+                        <path
+                          key={ctxNode.id}
+                          d={`M ${srcX} ${srcY1} L ${srcX} ${srcY2} C ${srcX + dir * dx} ${srcY2} ${dstX - dir * dx} ${dstY} ${dstX} ${dstY}`}
+                          className="context-link"
+                          stroke={ctxNode.sourceThreadColor}
+                        />
+                      );
+                    })
+                )}
+                {contextLinkMode && (() => {
+                  const srcLane = lanes.find((l) => l.thread.id === contextLinkMode.sourceThreadId);
+                  if (!srcLane) return null;
+                  const selectedIds = new Set(contextLinkMode.selectedNodes.map((s) => s.nodeId));
+                  const sorted = srcLane.nodes
+                    .filter((e) => selectedIds.has(e.node.id))
+                    .sort((a, b) => a.top - b.top);
+                  if (sorted.length === 0) return null;
+                  const offset = contextLinkMode.side === 'right' ? 22 : -22;
+                  const srcX = srcLane.centerX + offset;
+                  return (
+                    <line
+                      key="ctx-preview"
+                      x1={srcX} y1={sorted[0].top + CHAT_HEIGHT / 2}
+                      x2={srcX} y2={sorted[sorted.length - 1].top + CHAT_HEIGHT / 2}
+                      className="context-link-preview"
+                    />
+                  );
+                })()}
               </svg>
 
               {lanes.map((lane) => {
@@ -749,9 +1158,9 @@ export default function App() {
                   <div
                     key={thread.id}
                     className={`thread-lane ${isActiveLane ? 'active' : ''}`}
-                    style={{ left: lane.centerX - NODE_WIDTH / 2, top: 0, width: NODE_WIDTH, height: lane.height }}
+                    style={{ left: lane.centerX - NODE_WIDTH / 2, top: 0, width: NODE_WIDTH, height: lane.height, zIndex: thread.nodes.some((n) => n.kind === 'context') ? 0 : 1 }}
                   >
-                    {lane.nodes.map(({ node, top }) => {
+                    {lane.nodes.map(({ node, top }, nodeIndex) => {
                       if (node.kind === 'title') {
                         const titleNode = node;
                         return (
@@ -769,39 +1178,286 @@ export default function App() {
                         );
                       }
 
-                      const chatNode = node;
-                      const isSelected = node.id === activeNode?.id;
-                      return (
-                        <button
-                          key={node.id}
-                          className={`chat-node ${isSelected ? 'selected' : ''} ${isSelected ? 'pulse' : ''} ${sending && isSelected ? 'sending' : ''}`}
-                          style={{ top, left: 0 }}
-                          onClick={() => selectNode(thread.id, node.id)}
-                        >
-                          <div className="exchange-head">
-                            <span>AI chat</span>
-                            <span className={`confidence ${chatNode.confidence}`}>{chatNode.confidence}</span>
+                      if (node.kind === 'context') {
+                        const ctxNode = node;
+                        const isSelected = node.id === state.selectedNodeId;
+                        const ctxPart = contextLinkMode?.sourceThreadId === thread.id
+                          ? contextLinkMode.selectedNodes.find((s) => s.nodeId === node.id) ?? null
+                          : null;
+                        const isContextSource = ctxPart !== null;
+                        const isContextTarget = contextLinkMode !== null && thread.id !== contextLinkMode.sourceThreadId;
+                        const showDots = !miniChatOpen && (isSelected || (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id));
+
+                        const handleSideDotCtx = (side: 'left' | 'right') => (e: React.MouseEvent) => {
+                          e.stopPropagation();
+                          if (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id && contextLinkMode.side === side) {
+                            if (contextLinkMode.selectedNodes.length <= 1) setContextLinkMode(null);
+                            else setContextLinkMode({ ...contextLinkMode, selectedNodes: [{ nodeId: node.id, parts: { user: true, assistant: true } }] });
+                          } else {
+                            enterContextLinkMode(thread, node.id, side);
+                          }
+                        };
+
+                        const handleForkDotCtx = (side: 'left' | 'right') => (e: React.MouseEvent) => {
+                          e.stopPropagation();
+                          openForkThreadEditor(thread, node.id, side);
+                        };
+
+                        return (
+                          <div key={node.id} style={{ position: 'absolute', top, left: 0 }}>
+                            <div
+                              className={`context-node ${isSelected ? 'selected' : ''} ${isContextSource ? 'context-source-selected' : ''} ${isContextTarget ? 'context-target' : ''}`}
+                              style={{ position: 'relative', '--ctx-color': ctxNode.sourceThreadColor, '--ctx-bg': hexToRgba(ctxNode.sourceThreadColor, 0.07), '--ctx-border': hexToRgba(ctxNode.sourceThreadColor, 0.35) } as React.CSSProperties}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (contextLinkMode) {
+                                  if (thread.id === contextLinkMode.sourceThreadId) toggleContextNode(node.id);
+                                  else injectContextTo(thread.id);
+                                  return;
+                                }
+                                selectNode(thread.id, node.id);
+                              }}
+                            >
+                              <div className="exchange-head" style={{ color: ctxNode.sourceThreadColor, opacity: 0.75 }}>
+                                <span>Context from</span>
+                              </div>
+                              <strong style={{ color: ctxNode.sourceThreadColor }}>{ctxNode.sourceThreadTitle}</strong>
+                              <small>{ctxNode.messages.length} messages · {ctxNode.createdAt.slice(0, 10)}</small>
+                              <div className="node-footer">
+                                {ctxNode.messages.length > 0 ? (
+                                  <button type="button" className="node-expand-toggle" onClick={(e) => { e.stopPropagation(); setNodePreviewModal({ title: ctxNode.sourceThreadTitle, messages: ctxNode.messages }); }}>
+                                    Read more
+                                  </button>
+                                ) : null}
+                              </div>
+                            </div>
+                            {isContextSource && ctxPart ? (
+                              <div className="context-select-overlay" onClick={(e) => e.stopPropagation()}>
+                                <button type="button" className={`context-select-half user ${ctxPart.parts.user ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(node.id, 'user'); }}>
+                                  <span>User prompt</span>
+                                  <span className="context-select-check">{ctxPart.parts.user ? '✓' : '○'}</span>
+                                </button>
+                                <button type="button" className={`context-select-half assistant ${ctxPart.parts.assistant ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(node.id, 'assistant'); }}>
+                                  <span>Asst response</span>
+                                  <span className="context-select-check">{ctxPart.parts.assistant ? '✓' : '○'}</span>
+                                </button>
+                              </div>
+                            ) : null}
+                            {showDots && (
+                              <>
+                                <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: -36 }} />
+                                <div className="action-dot-group action-left" style={{ top: CHAT_HEIGHT / 2 - 20, left: -128 }}>
+                                  <button type="button" className="action-dot" aria-label="Inject context left" onClick={handleSideDotCtx('left')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M7 9l-1 1a3 3 0 0 1-4.24-4.24l2-2a3 3 0 0 1 4.24 4.24"/><path d="M9 7l1-1a3 3 0 0 1 4.24 4.24l-2 2a3 3 0 0 1-4.24-4.24"/></svg></button>
+                                  <div className="fork-dot-connector" />
+                                  <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDotCtx('left')}>+</button>
+                                </div>
+                                <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: NODE_WIDTH }} />
+                                <div className="action-dot-group action-right" style={{ top: CHAT_HEIGHT / 2 - 20, left: NODE_WIDTH + 36 }}>
+                                  <button type="button" className="action-dot" aria-label="Inject context right" onClick={handleSideDotCtx('right')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M7 9l-1 1a3 3 0 0 1-4.24-4.24l2-2a3 3 0 0 1 4.24 4.24"/><path d="M9 7l1-1a3 3 0 0 1 4.24 4.24l-2 2a3 3 0 0 1-4.24-4.24"/></svg></button>
+                                  <div className="fork-dot-connector" />
+                                  <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDotCtx('right')}>+</button>
+                                </div>
+                                {nodeIndex === lane.nodes.length - 1 && (<>
+                                  <div className="action-line-v" style={{ top: CHAT_HEIGHT, left: NODE_WIDTH / 2 }} />
+                                  <button type="button" className="action-dot bottom" style={{ top: CHAT_HEIGHT + 36, left: NODE_WIDTH / 2 - 12 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setChatModalOpen(false); setMiniChatOpen(true); }}><svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="6.5" y1="1.5" x2="6.5" y2="11.5"/><line x1="1.5" y1="6.5" x2="11.5" y2="6.5"/></svg></button>
+                                </>)}
+                              </>
+                            )}
                           </div>
-                          <strong>{chatNode.summary}</strong>
-                          <small>{chatNode.model}</small>
-                        </button>
+                        );
+                      }
+
+                      const chatNode = node;
+                      const isSelected = node.id === state.selectedNodeId;
+                      const ctxPart = contextLinkMode?.sourceThreadId === thread.id
+                        ? contextLinkMode.selectedNodes.find((s) => s.nodeId === node.id) ?? null
+                        : null;
+                      const isContextSource = ctxPart !== null;
+                      const isContextTarget = contextLinkMode !== null && thread.id !== contextLinkMode.sourceThreadId;
+                      const showDots = !miniChatOpen && (isSelected || (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id));
+
+                      const handleSideDot = (side: 'left' | 'right') => (e: React.MouseEvent) => {
+                        e.stopPropagation();
+                        if (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id && contextLinkMode.side === side) {
+                          if (contextLinkMode.selectedNodes.length <= 1) setContextLinkMode(null);
+                          else setContextLinkMode({ ...contextLinkMode, selectedNodes: [{ nodeId: node.id, parts: { user: true, assistant: true } }] });
+                        } else {
+                          enterContextLinkMode(thread, node.id, side);
+                        }
+                      };
+
+                      const handleForkDot = (side: 'left' | 'right') => (e: React.MouseEvent) => {
+                        e.stopPropagation();
+                        openForkThreadEditor(thread, node.id, side);
+                      };
+
+                      return (
+                        <div key={node.id} style={{ position: 'absolute', top, left: 0 }}>
+                          <div
+                            className={`chat-node ${isSelected ? 'selected' : ''} ${chatNode.status === 'pending' ? 'sending' : ''} ${chatNode.status === 'unread' && !(miniChatOpen && thread.id === state.selectedThreadId) ? 'responded' : ''} ${isContextSource ? 'context-source-selected' : ''} ${isContextTarget ? 'context-target' : ''}`}
+                            style={{ position: 'relative', top: 0, left: 0 }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (contextLinkMode) {
+                                if (thread.id === contextLinkMode.sourceThreadId) toggleContextNode(node.id);
+                                else injectContextTo(thread.id);
+                                return;
+                              }
+                              selectNode(thread.id, node.id);
+                            }}
+                          >
+                            <div className="exchange-head">
+                              <span>AI chat</span>
+                            </div>
+                            <strong>{chatNode.summary}</strong>
+                            <small>{chatNode.model}</small>
+                            <div className="node-footer">
+                              {chatNode.messages.length > 0 ? (
+                                <button type="button" className="node-expand-toggle" onClick={(e) => { e.stopPropagation(); setNodePreviewModal({ title: chatNode.summary, messages: chatNode.messages }); }}>
+                                  Read more
+                                </button>
+                              ) : null}
+                            </div>
+                          </div>
+                          {isContextSource && ctxPart ? (
+                            <div className="context-select-overlay" onClick={(e) => e.stopPropagation()}>
+                              <button type="button" className={`context-select-half user ${ctxPart.parts.user ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(node.id, 'user'); }}>
+                                <span>User prompt</span>
+                                <span className="context-select-check">{ctxPart.parts.user ? '✓' : '○'}</span>
+                              </button>
+                              <button type="button" className={`context-select-half assistant ${ctxPart.parts.assistant ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(node.id, 'assistant'); }}>
+                                <span>Asst response</span>
+                                <span className="context-select-check">{ctxPart.parts.assistant ? '✓' : '○'}</span>
+                              </button>
+                            </div>
+                          ) : null}
+                          {showDots && (
+                            <>
+                              <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: -36 }} />
+                              <div className="action-dot-group action-left" style={{ top: CHAT_HEIGHT / 2 - 20, left: -128 }}>
+                                <button type="button" className="action-dot" aria-label="Inject context left" onClick={handleSideDot('left')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M7 9l-1 1a3 3 0 0 1-4.24-4.24l2-2a3 3 0 0 1 4.24 4.24"/><path d="M9 7l1-1a3 3 0 0 1 4.24 4.24l-2 2a3 3 0 0 1-4.24-4.24"/></svg></button>
+                                <div className="fork-dot-connector" />
+                                <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDot('left')}>+</button>
+                              </div>
+                              <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: NODE_WIDTH }} />
+                              <div className="action-dot-group action-right" style={{ top: CHAT_HEIGHT / 2 - 20, left: NODE_WIDTH + 36 }}>
+                                <button type="button" className="action-dot" aria-label="Inject context right" onClick={handleSideDot('right')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M7 9l-1 1a3 3 0 0 1-4.24-4.24l2-2a3 3 0 0 1 4.24 4.24"/><path d="M9 7l1-1a3 3 0 0 1 4.24 4.24l-2 2a3 3 0 0 1-4.24-4.24"/></svg></button>
+                                <div className="fork-dot-connector" />
+                                <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDot('right')}>+</button>
+                              </div>
+                              {nodeIndex === lane.nodes.length - 1 && (<>
+                                <div className="action-line-v" style={{ top: CHAT_HEIGHT, left: NODE_WIDTH / 2 }} />
+                                <button type="button" className="action-dot bottom" style={{ top: CHAT_HEIGHT + 36, left: NODE_WIDTH / 2 - 12 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setChatModalOpen(false); setMiniChatOpen(true); }}><svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="6.5" y1="1.5" x2="6.5" y2="11.5"/><line x1="1.5" y1="6.5" x2="11.5" y2="6.5"/></svg></button>
+                              </>)}
+                            </>
+                          )}
+                        </div>
                       );
                     })}
                   </div>
                 );
               })}
             </div>
-            {lanes.length === 0 ? (
-              <div className="empty-state">
-                <p className="eyebrow">Canvas idle</p>
-                <h2>Start a thread to begin the weave</h2>
-                <p>The first thread centers itself. New threads line up to the right.</p>
-                <button onClick={() => openThreadEditor('create')}>Create first thread</button>
+          </div>
+          {miniChatOpen && activeThread ? (
+            <div className="mini-chat">
+              <div className="mini-chat-header">
+                <span className="mini-chat-title">{activeThread.title}</span>
+                <button type="button" className="quiet mini-chat-close" onClick={() => setMiniChatOpen(false)} aria-label="Close chat">×</button>
               </div>
-            ) : null}
+              <div className="mini-chat-messages" ref={miniChatMessagesRef}>
+                {activeThread.context.length === 0 ? (
+                  <p className="muted">No messages yet. Send the first one.</p>
+                ) : (
+                  activeThread.context.map((message) => (
+                    <div
+                      key={message.id}
+                      className={`bubble ${message.role} ${message.injectedFromThreadId ? 'injected' : ''}`}
+                      style={message.injectedFromColor ? {
+                        '--inject-bg': hexToRgba(message.injectedFromColor, 0.07),
+                        '--inject-border': hexToRgba(message.injectedFromColor, 0.3),
+                      } as React.CSSProperties : undefined}
+                    >
+                      <strong>{message.role === 'assistant' ? 'ai' : message.role}</strong>
+                      <FormattedMessage text={getMessageText(message) || message.text || ''} />
+                    </div>
+                  ))
+                )}
+              </div>
+              <div className="mini-chat-composer">
+                <textarea
+                  autoFocus
+                  value={composerDraft}
+                  onChange={(e) => setComposerDraft(e.target.value)}
+                  placeholder="Ask the thread something"
+                  rows={3}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape') { e.preventDefault(); setMiniChatOpen(false); return; }
+                    if (e.key !== 'Enter') return;
+                    if (e.shiftKey) return;
+                    e.preventDefault();
+                    if (e.ctrlKey || e.metaKey) { sendMessage(true); } else { sendMessage(); }
+                  }}
+                />
+                {error ? <p className="error">{error}</p> : null}
+                <div className="mini-chat-actions">
+                  {settings.providerConfigs.length === 0 ? (
+                    <button type="button" className="mini-chat-add-profile" onClick={() => setAiSettingsModalOpen(true)}>Add AI profile</button>
+                  ) : (
+                    <select
+                      value={activeProviderConfig?.id ?? ''}
+                      onChange={(e) => changeSettingsProvider(e.target.value)}
+                    >
+                      {settings.providerConfigs.map((config) => (
+                        <option key={config.id} value={config.id}>{config.label}</option>
+                      ))}
+                    </select>
+                  )}
+                  {activeProviderConfig ? (
+                    <select
+                      className="mini-chat-model"
+                      value={activeProviderConfig.model}
+                      onChange={(e) => updateProviderConfig(activeProviderConfig.id, { model: e.target.value })}
+                    >
+                      {settingsModels.map((m) => <option key={m} value={m}>{m}</option>)}
+                    </select>
+                  ) : null}
+                  <button
+                    className="mini-chat-send"
+                    onClick={() => sendMessage()}
+                    disabled={!composerDraft.trim() || sending || !activeProviderConfig?.apiKey.trim()}
+                  >
+                    {sending ? '…' : 'Send'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
           </div>
         </section>
       </main>
+
+      {nodePreviewModal ? (
+        <div className="chat-modal-backdrop" onClick={() => setNodePreviewModal(null)}>
+          <section className="chat-modal node-preview-modal" onClick={(e) => e.stopPropagation()}>
+            <header className="chat-modal-header">
+              <div>
+                <p className="eyebrow">Node preview</p>
+                <h2>{nodePreviewModal.title}</h2>
+              </div>
+              <button type="button" className="quiet" onClick={() => setNodePreviewModal(null)} aria-label="Close">×</button>
+            </header>
+            <div className="node-preview-messages">
+              {nodePreviewModal.messages.map((message) => (
+                <div key={message.id} className={`bubble ${message.role} ${message.injectedFromThreadId ? 'injected' : ''}`}>
+                  <strong>{message.role === 'assistant' ? 'ai' : message.role}</strong>
+                  <FormattedMessage text={getMessageText(message) || message.text || ''} />
+                </div>
+              ))}
+            </div>
+          </section>
+        </div>
+      ) : null}
 
       {chatModalOpen && activeThread ? (
         <div className="chat-modal-backdrop" onClick={() => setChatModalOpen(false)}>
@@ -823,36 +1479,38 @@ export default function App() {
                     <h3>{activeThread.description}</h3>
                     <p>{activeThread.nodes.length} nodes in this lane.</p>
                   </div>
-                  <button className="quiet" onClick={() => openThreadEditor('edit', activeThread)}>
-                    Edit thread
-                  </button>
+                  <button className="quiet icon-btn" onClick={() => openThreadEditor('edit', activeThread)} aria-label="Edit thread"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M11.5 2.5a1.5 1.5 0 0 1 2.12 2.12L5 13.24l-3 .76.76-3 8.74-8.5z"/></svg></button>
                 </div>
                 <div className="thread-meta-row stack">
-                  <label className="field compact">
-                    AI profile
-                    <select
-                      value={activeProviderConfig?.id ?? ''}
-                      onChange={(event) => {
-                        const nextConfigId = event.target.value;
-                        changeSettingsProvider(nextConfigId);
-                        const nextConfig = settings.providerConfigs.find((config) => config.id === nextConfigId);
-                        if (nextConfig?.hasEncryptedApiKey && !nextConfig.apiKey.trim()) {
-                          setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: nextConfigId });
-                        }
-                      }}
-                    >
-                      {settings.providerConfigs.map((config) => (
-                        <option key={config.id} value={config.id}>
-                          {config.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+                  {settings.providerConfigs.length === 0 ? (
+                    <button type="button" onClick={() => setAiSettingsModalOpen(true)}>
+                      Add AI profile to chat
+                    </button>
+                  ) : (
+                    <label className="field compact">
+                      AI profile
+                      <select
+                        value={activeProviderConfig?.id ?? ''}
+                        onChange={(event) => {
+                          const nextConfigId = event.target.value;
+                          changeSettingsProvider(nextConfigId);
+                          const nextConfig = settings.providerConfigs.find((config) => config.id === nextConfigId);
+                          if (nextConfig?.hasEncryptedApiKey && !nextConfig.apiKey.trim()) {
+                            setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: nextConfigId });
+                          }
+                        }}
+                      >
+                        {settings.providerConfigs.map((config) => (
+                          <option key={config.id} value={config.id}>
+                            {config.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
                   <span className="pill">Model: {activeProviderConfig?.model ?? '—'}</span>
                   <span className="pill">Context left: {activeThread ? remainingContext.toLocaleString() : '—'}</span>
-                  <button type="button" className="quiet" onClick={() => setAiSettingsModalOpen(true)}>
-                    Manage AI settings
-                  </button>
+                  <button type="button" className="quiet icon-btn" onClick={() => setAiSettingsModalOpen(true)} aria-label="AI settings"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="8" cy="8" r="2.5"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.05 3.05l1.41 1.41M11.54 11.54l1.41 1.41M3.05 12.95l1.41-1.41M11.54 4.46l1.41-1.41"/></svg></button>
                 </div>
                 {selectedThreadUsage ? (
                   <div className="usage-grid">
@@ -881,9 +1539,16 @@ export default function App() {
                   <p className="muted">No messages yet. Send the first one.</p>
                 ) : (
                   activeThread.context.map((message) => (
-                    <div key={message.id} className={`bubble ${message.role}`}>
-                      <strong>{message.role}</strong>
-                      <FormattedMessage text={getMessageText(message) || ''} />
+<div
+                      key={message.id}
+                      className={`bubble ${message.role} ${message.injectedFromThreadId ? 'injected' : ''}`}
+                      style={message.injectedFromColor ? {
+                        '--inject-bg': hexToRgba(message.injectedFromColor, 0.07),
+                        '--inject-border': hexToRgba(message.injectedFromColor, 0.3),
+                      } as React.CSSProperties : undefined}
+                    >
+                      <strong>{message.role === 'assistant' ? 'ai' : message.role}</strong>
+                      <FormattedMessage text={getMessageText(message) || message.text || ''} />
                       {hasAttachments(message) && (
                         <div className="message-attachments">
                           {getAttachmentsByType(message, 'image').map(att => (
@@ -905,10 +1570,17 @@ export default function App() {
                 <section className="inspector-card send-card">
                   <h4>Send to AI</h4>
                   <textarea
+                    autoFocus
                     value={composerDraft}
                     onChange={(event) => setComposerDraft(event.target.value)}
                     placeholder="Ask the thread something"
                     rows={5}
+                    onKeyDown={(e) => {
+                      if (e.key !== 'Enter') return;
+                      if (e.shiftKey) return;
+                      e.preventDefault();
+                      if (e.ctrlKey || e.metaKey) { sendMessage(true); } else { sendMessage(); }
+                    }}
                   />
                   
                   {/* File attachments display */}
@@ -985,8 +1657,8 @@ export default function App() {
                   
                   {settingsLockState === 'locked' ? <p className="muted">Unlock the active AI profile to send a message.</p> : null}
                   {error ? <p className="error">{error}</p> : null}
-                  <button 
-                    onClick={sendMessage} 
+<button
+                    onClick={() => sendMessage()}
                     disabled={(!composerDraft.trim() && composerAttachments.length === 0) || sending || !activeProviderConfig?.apiKey.trim()}
                   >
                     {sending ? 'Thinking…' : settingsLockState === 'locked' ? 'Unlock to send' : 'Send'}
@@ -1026,47 +1698,49 @@ export default function App() {
             </header>
             <div className="chat-modal-body">
               <section className="inspector-card settings-card">
-                <div className="meta-row">
-                  <h4>Active profile</h4>
-                  <span className={`pill settings-pill ${settingsLockState}`}>
-                    {settingsLockState === 'none' ? 'no saved key' : settingsLockState === 'unlocked' ? 'unlocked for session' : 'saved, locked'}
-                  </span>
-                </div>
-                <label className="field">
-                  Profile
-                  <select
-                    value={activeProviderConfig?.id ?? ''}
-                    onChange={(event) => changeSettingsProvider(event.target.value)}
-                  >
-                    {settings.providerConfigs.map((config) => (
-                      <option key={config.id} value={config.id}>
-                        {config.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <div className="editor-actions left-aligned">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const next = createProviderConfig('openai-compatible-custom', { label: 'New profile' });
-                      setSettings((current) => ({
-                        ...current,
-                        activeProviderConfigId: next.id,
-                        providerConfigs: [...current.providerConfigs, next],
-                      }));
-                    }}
-                  >
-                    New profile
-                  </button>
-                  <button
-                    type="button"
-                    className="quiet"
-                    onClick={() => activeProviderConfig && deleteProfile(activeProviderConfig.id)}
-                    disabled={!activeProviderConfig}
-                  >
-                    Delete profile
-                  </button>
+                <div className="settings-management-header">
+                  <div className="settings-management-row">
+                    <label className="field compact-inline">
+                      <span>Profile</span>
+                      <select
+                        autoFocus
+                        value={activeProviderConfig?.id ?? ''}
+                        onChange={(event) => changeSettingsProvider(event.target.value)}
+                      >
+                        {settings.providerConfigs.map((config) => (
+                          <option key={config.id} value={config.id}>
+                            {config.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <span className={`pill settings-pill ${settingsLockState}`}>
+                      {settingsLockState === 'none' ? 'no saved key' : settingsLockState === 'unlocked' ? 'unlocked' : 'locked'}
+                    </span>
+                  </div>
+                  <div className="editor-actions left-aligned">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const next = createProviderConfig('openai-compatible-custom', { label: 'New profile', model: '' });
+                        setSettings((current) => ({
+                          ...current,
+                          activeProviderConfigId: next.id,
+                          providerConfigs: [...current.providerConfigs, next],
+                        }));
+                      }}
+                    >
+                      New profile
+                    </button>
+                    <button
+                      type="button"
+                      className="quiet btn-danger"
+                      onClick={() => activeProviderConfig && deleteProfile(activeProviderConfig.id)}
+                      disabled={!activeProviderConfig}
+                    >
+                      Delete profile
+                    </button>
+                  </div>
                 </div>
                 {activeProviderConfig ? (
                   <>
@@ -1080,7 +1754,7 @@ export default function App() {
                           updateProviderConfig(activeProviderConfig.id, {
                             kind,
                             label: activeProviderConfig.label || info.label,
-                            model: info.defaultModel,
+                            model: '',
                             baseUrl: info.baseUrl,
                           });
                           setSettings((current) => ({ ...current, activeProviderConfigId: activeProviderConfig.id }));
@@ -1166,7 +1840,7 @@ export default function App() {
                       </button>
                       <button
                         type="button"
-                        className="quiet"
+                        className="quiet btn-danger"
                         onClick={deleteSavedKey}
                         disabled={savingSettings || !activeProviderConfig.hasEncryptedApiKey}
                       >
@@ -1198,6 +1872,7 @@ export default function App() {
               <label className="field">
                 Thread title
                 <input
+                  autoFocus
                   value={threadEditorDraft.title}
                   onChange={(event) => setThreadEditorDraft((current) => ({ ...current, title: event.target.value }))}
                   placeholder="e.g. deployment plan"
@@ -1315,8 +1990,7 @@ export default function App() {
 function modelsForConfig(cache: ModelCache, config: AIProviderConfig | null | undefined, currentModel: string): string[] {
   if (!config) return currentModel ? [currentModel] : [];
   const cached = cache[config.id];
-  const fallback = providerInfo(config.kind).defaultModel;
-  const base = cached && cached.length > 0 ? cached : [fallback];
+  const base = cached && cached.length > 0 ? cached : [];
   if (currentModel && !base.includes(currentModel)) {
     return [currentModel, ...base];
   }
@@ -1650,68 +2324,16 @@ function clamp(value: number, min: number, max: number) {
 }
 
 function FormattedMessage({ text }: { text: string }) {
-  const blocks = formatBlocks(text);
   return (
     <div className="message-copy">
-      {blocks.map((block, index) => {
-        if (block.type === 'list') {
-          return (
-            <ul key={index}>
-              {block.items.map((item, itemIndex) => (
-                <li key={itemIndex}>{item}</li>
-              ))}
-            </ul>
-          );
-        }
-
-        return <p key={index}>{block.text}</p>;
-      })}
+      <Markdown>{text}</Markdown>
     </div>
   );
 }
 
-function formatBlocks(text: string) {
-  const lines = text.replace(/\r/g, '').split('\n');
-  const blocks: Array<{ type: 'paragraph'; text: string } | { type: 'list'; items: string[] }> = [];
-  let paragraph: string[] = [];
-  let list: string[] = [];
-
-  const flushParagraph = () => {
-    const value = paragraph.join(' ').trim();
-    if (value) blocks.push({ type: 'paragraph', text: value });
-    paragraph = [];
-  };
-
-  const flushList = () => {
-    if (list.length) blocks.push({ type: 'list', items: list });
-    list = [];
-  };
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) {
-      flushParagraph();
-      flushList();
-      continue;
-    }
-
-    const bullet = trimmed.match(/^[-*•]\s+(.*)$/) || trimmed.match(/^\d+[.)]\s+(.*)$/);
-    if (bullet) {
-      flushParagraph();
-      list.push(bullet[1]);
-      continue;
-    }
-
-    if (list.length) flushList();
-    paragraph.push(trimmed);
-  }
-
-  flushParagraph();
-  flushList();
-
-  if (!blocks.length) {
-    blocks.push({ type: 'paragraph', text });
-  }
-
-  return blocks;
+function hexToRgba(hex: string, alpha: number): string {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }

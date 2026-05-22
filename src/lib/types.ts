@@ -1,8 +1,7 @@
 export type AIProvider = 'openai' | 'anthropic' | 'openrouter' | 'openai-compatible-custom';
-export type Confidence = 'low' | 'medium' | 'high';
 export type ThreadStatus = 'draft' | 'active' | 'stitch-ready' | 'closed';
 export type MessageRole = 'user' | 'assistant' | 'system';
-export type ThreadNodeKind = 'title' | 'chat';
+export type ThreadNodeKind = 'title' | 'chat' | 'context';
 
 export type MessageContentType = 'text' | 'image' | 'document' | 'mixed';
 
@@ -28,6 +27,8 @@ export interface ChatMessage {
   content: MessageContent; // Enhanced from simple text
   // Keep text field for backward compatibility during migration
   text?: string;
+  injectedFromThreadId?: string;
+  injectedFromColor?: string;
 }
 
 export interface TokenUsage {
@@ -50,12 +51,23 @@ export interface ThreadChatNode {
   summary: string;
   model: string;
   messages: ChatMessage[];
-  confidence: Confidence;
   createdAt: string;
   usage?: TokenUsage;
+  status?: 'pending' | 'unread' | 'error';
 }
 
-export type ThreadNode = ThreadTitleNode | ThreadChatNode;
+export interface ThreadContextNode {
+  id: string;
+  kind: 'context';
+  sourceThreadId: string;
+  sourceThreadTitle: string;
+  sourceThreadColor: string;
+  sourceNodeIds: string[];
+  messages: ChatMessage[];
+  createdAt: string;
+}
+
+export type ThreadNode = ThreadTitleNode | ThreadChatNode | ThreadContextNode;
 
 export interface ThreadLane {
   id: string;
@@ -121,4 +133,11 @@ export interface ProviderInfo {
   label: string;
   defaultModel: string;
   baseUrl?: string;
+}
+
+export interface ForkDraft {
+  sourceThreadId: string;
+  sourceThreadTitle: string;
+  sourceThreadColor: string;
+  selectedNodes: Array<{ nodeId: string; parts: { user: boolean; assistant: boolean } }>;
 }
