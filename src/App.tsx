@@ -33,6 +33,7 @@ import {
   getAttachmentsByType,
   processFile,
   validateFile,
+  verifyImageBytes,
   type MediaAttachment
 } from './lib/mediaUtils';
 import type {
@@ -941,24 +942,39 @@ export default function App() {
                       onChange={async (e) => {
                         if (!e.target.files) return;
                         const newAttachments: MediaAttachment[] = [];
+                        const errors: string[] = [];
                         
                         for (const file of Array.from(e.target.files)) {
                           const validation = validateFile(file);
                           if (!validation.valid) {
-                            setError(`${file.name}: ${validation.error}`);
+                            errors.push(`${file.name}: ${validation.error}`);
                             continue;
+                          }
+                          
+                          // Verify image magic bytes to catch MIME spoofing
+                          if (file.type === 'image/png' || file.type === 'image/jpeg') {
+                            const byteCheck = await verifyImageBytes(file);
+                            if (!byteCheck.valid) {
+                              errors.push(byteCheck.error!);
+                              continue;
+                            }
                           }
                           
                           try {
                             const attachment = await processFile(file);
                             newAttachments.push(attachment);
-                          } catch (err) {
-                            setError(`Failed to process ${file.name}`);
+                          } catch {
+                            errors.push(`Failed to process ${file.name}`);
                           }
                         }
                         
-                        setComposerAttachments(prev => [...prev, ...newAttachments]);
-                        e.target.value = ''; // Reset file input
+                        if (errors.length > 0) {
+                          setError(errors.join('\n'));
+                        }
+                        if (newAttachments.length > 0) {
+                          setComposerAttachments(prev => [...prev, ...newAttachments]);
+                        }
+                        e.target.value = '';
                       }}
                       style={{ display: 'none' }}
                     />
