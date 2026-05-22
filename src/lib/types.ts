@@ -3,10 +3,30 @@ export type ThreadStatus = 'draft' | 'active' | 'stitch-ready' | 'closed';
 export type MessageRole = 'user' | 'assistant' | 'system';
 export type ThreadNodeKind = 'title' | 'chat' | 'context';
 
+export type MessageContentType = 'text' | 'image' | 'document' | 'mixed';
+
+export interface MediaAttachment {
+  id: string;
+  type: 'image' | 'document';
+  filename: string;
+  mimeType: string;
+  size: number;
+  data: string; // base64 encoded content
+  preview?: string; // thumbnail or preview text
+}
+
+export interface MessageContent {
+  type: MessageContentType;
+  text?: string;
+  attachments?: MediaAttachment[];
+}
+
 export interface ChatMessage {
   id: string;
   role: MessageRole;
-  text: string;
+  content: MessageContent; // Enhanced from simple text
+  // Keep text field for backward compatibility during migration
+  text?: string;
   injectedFromThreadId?: string;
   injectedFromColor?: string;
 }

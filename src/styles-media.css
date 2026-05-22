@@ -1,0 +1,92 @@
+/* Media handling styles */
+.file-upload-area {
+  margin: 10px 0;
+}
+
+.file-upload-button {
+  display: inline-block;
+  padding: 8px 12px;
+  background: var(--bg-50);
+  border: 1px solid var(--accent-100);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: background-color 0.2s;
+}
+
+.file-upload-button:hover {
+  background: var(--accent-50);
+}
+
+.composer-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0;
+  padding: 10px;
+  background: var(--bg-25);
+  border-radius: 4px;
+}
+
+.attachment-preview {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: 8px;
+  background: var(--bg-50);
+  border: 1px solid var(--accent-100);
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.attachment-thumbnail {
+  width: 40px;
+  height: 40px;
+  object-fit: cover;
+  border-radius: 3px;
+  margin-right: 8px;
+}
+
+.document-preview {
+  padding: 8px;
+}
+
+.remove-attachment {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 20px;
+  height: 20px;
+  background: var(--error-500);
+  color: white;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.message-attachments {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.message-image {
+  max-width: 200px;
+  max-height: 200px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.message-document {
+  padding: 8px 12px;
+  background: var(--bg-50);
+  border: 1px solid var(--accent-100);
+  border-radius: 4px;
+  font-size: 13px;
+}

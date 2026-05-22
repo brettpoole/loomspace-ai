@@ -28,6 +28,17 @@ import {
   updateThreadDetails,
   updateThreadTitle,
 } from './lib/store';
+import {
+  createTextMessage,
+  createMixedMessage,
+  getMessageText,
+  hasAttachments,
+  getAttachmentsByType,
+  processFile,
+  validateFile,
+  verifyImageBytes,
+  type MediaAttachment
+} from './lib/mediaUtils';
 import type {
   AIProvider,
   AIProviderConfig,
@@ -73,6 +84,7 @@ export default function App() {
   const [state, setState] = useState<LoomspaceState>(() => loadWorkspace());
   const [settings, setSettings] = useState<AISettings>(() => loadSettings());
   const [composerDraft, setComposerDraft] = useState('');
+  const [composerAttachments, setComposerAttachments] = useState<MediaAttachment[]>([]);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
@@ -383,8 +395,8 @@ export default function App() {
     setError(null);
   }
 
-  async function sendMessage(closeAfter = false) {
-    if (!activeThread || !composerDraft.trim() || sending) return;
+async function sendMessage(closeAfter = false) {
+    if (!activeThread || !activeNodeIsChat || (!composerDraft.trim() && composerAttachments.length === 0) || sending) return;
     const activeConfig = activeProviderConfig;
     if (!activeConfig) {
       setError('Pick an AI profile first.');
@@ -397,13 +409,19 @@ export default function App() {
     }
 
     const userText = composerDraft.trim();
-    const userMessage: ChatMessage = { id: `msg-${crypto.randomUUID().slice(0, 8)}`, role: 'user', text: userText };
+const userMessage: ChatMessage = {
+      id: `msg-${crypto.randomUUID()}`,
+      role: 'user',
+      content: createMixedMessage(userText, composerAttachments),
+      text: userText // Keep for backward compatibility
+    };
     const pendingChatNode = createChatNode('Thinking…', [userMessage], activeConfig.model, undefined, 'pending');
 
     setSending(true);
     setError(null);
     setComposerDraft('');
-    if (closeAfter) setMiniChatOpen(false);
+if (closeAfter) setMiniChatOpen(false);
+    setComposerAttachments([]);
     setState((current) => ({
       ...current,
       version: current.version + 1,
@@ -427,7 +445,8 @@ export default function App() {
       const assistantMessage: ChatMessage = {
         id: `msg-${crypto.randomUUID().slice(0, 8)}`,
         role: 'assistant',
-        text: assistantText,
+        content: createTextMessage(assistantText),
+        text: assistantText // Keep for backward compatibility
       };
 
       setState((current) => ({
@@ -1360,7 +1379,7 @@ export default function App() {
                       } as React.CSSProperties : undefined}
                     >
                       <strong>{message.role === 'assistant' ? 'ai' : message.role}</strong>
-                      <FormattedMessage text={message.text} />
+                      <FormattedMessage text={getMessageText(message) || message.text || ''} />
                     </div>
                   ))
                 )}
@@ -1432,7 +1451,7 @@ export default function App() {
               {nodePreviewModal.messages.map((message) => (
                 <div key={message.id} className={`bubble ${message.role} ${message.injectedFromThreadId ? 'injected' : ''}`}>
                   <strong>{message.role === 'assistant' ? 'ai' : message.role}</strong>
-                  <FormattedMessage text={message.text} />
+                  <FormattedMessage text={getMessageText(message) || message.text || ''} />
                 </div>
               ))}
             </div>
@@ -1520,7 +1539,7 @@ export default function App() {
                   <p className="muted">No messages yet. Send the first one.</p>
                 ) : (
                   activeThread.context.map((message) => (
-                    <div
+<div
                       key={message.id}
                       className={`bubble ${message.role} ${message.injectedFromThreadId ? 'injected' : ''}`}
                       style={message.injectedFromColor ? {
@@ -1529,7 +1548,19 @@ export default function App() {
                       } as React.CSSProperties : undefined}
                     >
                       <strong>{message.role === 'assistant' ? 'ai' : message.role}</strong>
-                      <FormattedMessage text={message.text} />
+                      <FormattedMessage text={getMessageText(message) || message.text || ''} />
+                      {hasAttachments(message) && (
+                        <div className="message-attachments">
+                          {getAttachmentsByType(message, 'image').map(att => (
+                            <img key={att.id} src={att.preview} alt={att.filename} className="message-image" />
+                          ))}
+                          {getAttachmentsByType(message, 'document').map(att => (
+                            <div key={att.id} className="message-document">
+                              📄 {att.filename}
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   ))
                 )}
@@ -1551,9 +1582,85 @@ export default function App() {
                       if (e.ctrlKey || e.metaKey) { sendMessage(true); } else { sendMessage(); }
                     }}
                   />
+                  
+                  {/* File attachments display */}
+                  {composerAttachments.length > 0 && (
+                    <div className="composer-attachments">
+                      {composerAttachments.map(att => (
+                        <div key={att.id} className="attachment-preview">
+                          {att.type === 'image' ? (
+                            <img src={att.preview} alt={att.filename} className="attachment-thumbnail" />
+                          ) : (
+                            <div className="document-preview">📄 {att.filename}</div>
+                          )}
+                          <button 
+                            onClick={() => setComposerAttachments(prev => prev.filter(a => a.id !== att.id))}
+                            className="remove-attachment"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  
+                  {/* File upload */}
+                  <div className="file-upload-area">
+                    <input
+                      type="file"
+                      id="file-upload"
+                      multiple
+                      accept="image/*,application/pdf,text/plain,text/markdown"
+                      onChange={async (e) => {
+                        if (!e.target.files) return;
+                        const newAttachments: MediaAttachment[] = [];
+                        const errors: string[] = [];
+                        
+                        for (const file of Array.from(e.target.files)) {
+                          const validation = validateFile(file);
+                          if (!validation.valid) {
+                            errors.push(`${file.name}: ${validation.error}`);
+                            continue;
+                          }
+                          
+                          // Verify image magic bytes to catch MIME spoofing
+                          if (file.type === 'image/png' || file.type === 'image/jpeg') {
+                            const byteCheck = await verifyImageBytes(file);
+                            if (!byteCheck.valid) {
+                              errors.push(byteCheck.error!);
+                              continue;
+                            }
+                          }
+                          
+                          try {
+                            const attachment = await processFile(file);
+                            newAttachments.push(attachment);
+                          } catch {
+                            errors.push(`Failed to process ${file.name}`);
+                          }
+                        }
+                        
+                        if (errors.length > 0) {
+                          setError(errors.join('\n'));
+                        }
+                        if (newAttachments.length > 0) {
+                          setComposerAttachments(prev => [...prev, ...newAttachments]);
+                        }
+                        e.target.value = '';
+                      }}
+                      style={{ display: 'none' }}
+                    />
+                    <label htmlFor="file-upload" className="file-upload-button">
+                      📎 Attach files
+                    </label>
+                  </div>
+                  
                   {settingsLockState === 'locked' ? <p className="muted">Unlock the active AI profile to send a message.</p> : null}
                   {error ? <p className="error">{error}</p> : null}
-                  <button onClick={() => sendMessage()} disabled={!composerDraft.trim() || sending || !activeProviderConfig?.apiKey.trim()}>
+<button
+                    onClick={() => sendMessage()}
+                    disabled={(!composerDraft.trim() && composerAttachments.length === 0) || sending || !activeProviderConfig?.apiKey.trim()}
+                  >
                     {sending ? 'Thinking…' : settingsLockState === 'locked' ? 'Unlock to send' : 'Send'}
                   </button>
                 </section>
@@ -1890,8 +1997,46 @@ function modelsForConfig(cache: ModelCache, config: AIProviderConfig | null | un
   return base;
 }
 
+// Helper function to convert ChatMessage to OpenAI API format
+function formatMessageForOpenAI(message: ChatMessage) {
+  const role = message.role === 'assistant' ? 'assistant' : message.role === 'system' ? 'system' : 'user';
+  
+  // Handle backward compatibility and simple text messages
+  if (!message.content || message.content.type === 'text') {
+    return { role, content: getMessageText(message) };
+  }
+  
+  // Handle mixed content with attachments
+  if (message.content.attachments && message.content.attachments.length > 0) {
+    const content = [];
+    
+    // Add text if present
+    if (message.content.text) {
+      content.push({ type: 'text', text: message.content.text });
+    }
+    
+    // Add images (documents are not supported in vision API)
+    message.content.attachments.forEach(attachment => {
+      if (attachment.type === 'image') {
+        content.push({
+          type: 'image_url',
+          image_url: {
+            url: `data:${attachment.mimeType};base64,${attachment.data}`
+          }
+        });
+      }
+    });
+    
+    return { role, content };
+  }
+  
+  // Fallback to text
+  return { role, content: getMessageText(message) };
+}
+
 async function requestAiReply(config: AIProviderConfig, thread: ThreadLane, messages: ChatMessage[]) {
   if (config.kind === 'anthropic') return requestAnthropic(config, thread, messages);
+  if (config.kind === 'openrouter') return requestOpenRouter(config, thread, messages);
   return requestOpenAiCompatible(config, thread, messages);
 }
 
@@ -1928,6 +2073,64 @@ function resolveBaseUrl(baseUrl: string | undefined, kind: AIProvider) {
   return baseUrl.trim().replace(/\/+$/, '');
 }
 
+async function requestOpenRouter(config: AIProviderConfig, thread: ThreadLane, messages: ChatMessage[]) {
+  const baseUrl = resolveBaseUrl(config.baseUrl, config.kind);
+  const response = await fetch(`${baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${config.apiKey}`,
+      'Content-Type': 'application/json',
+      // CORS-friendly attribution headers for OpenRouter
+      'X-App-Name': 'Loomspace',
+      'X-App-URL': window.location.origin,
+    },
+    body: JSON.stringify({
+      model: config.model,
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT(thread) },
+        ...messages.map(formatMessageForOpenAI),
+      ],
+      temperature: 0.4,
+    }),
+  });
+
+  if (!response.ok) {
+    let errorText = '';
+    try {
+      errorText = await response.text();
+    } catch {
+      // If we can't read the response text, it's likely a network issue
+      errorText = 'Network error - check your internet connection';
+    }
+    
+    // Provide more detailed error messages for common OpenRouter issues
+    if (response.status === 0 || !response.status) {
+      throw new Error('OpenRouter request failed - check your internet connection and try again');
+    } else if (response.status === 401) {
+      throw new Error('OpenRouter API key is invalid - check your API key');
+    } else if (response.status === 429) {
+      throw new Error('OpenRouter rate limit exceeded - wait a moment and try again');
+    } else if (response.status >= 500) {
+      throw new Error('OpenRouter server error - try again in a moment');
+    } else {
+      throw new Error(errorText || `OpenRouter request failed (${response.status})`);
+    }
+  }
+
+  const data = (await response.json()) as {
+    choices?: Array<{ message?: { content?: string } }>;
+    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+  };
+  const assistantText = data.choices?.[0]?.message?.content?.trim();
+  if (!assistantText) throw new Error('OpenRouter returned no assistant text');
+
+  const usage = data.usage
+    ? normalizeUsage(config.model, data.usage.prompt_tokens ?? 0, data.usage.completion_tokens ?? 0, data.usage.total_tokens ?? 0)
+    : undefined;
+
+  return { assistantText, usage };
+}
+
 async function requestOpenAiCompatible(config: AIProviderConfig, thread: ThreadLane, messages: ChatMessage[]) {
   const baseUrl = resolveBaseUrl(config.baseUrl, config.kind);
   const response = await fetch(`${baseUrl}/chat/completions`, {
@@ -1940,10 +2143,7 @@ async function requestOpenAiCompatible(config: AIProviderConfig, thread: ThreadL
       model: config.model,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT(thread) },
-        ...messages.map((message) => ({
-          role: message.role === 'assistant' ? 'assistant' : message.role === 'system' ? 'system' : 'user',
-          content: message.text,
-        })),
+        ...messages.map(formatMessageForOpenAI),
       ],
       temperature: 0.4,
     }),
@@ -1968,6 +2168,45 @@ async function requestOpenAiCompatible(config: AIProviderConfig, thread: ThreadL
   return { assistantText, usage };
 }
 
+// Helper function to convert ChatMessage to Anthropic API format
+function formatMessageForAnthropic(message: ChatMessage) {
+  const role = message.role === 'assistant' ? 'assistant' : 'user';
+  
+  // Handle backward compatibility and simple text messages  
+  if (!message.content || message.content.type === 'text') {
+    return { role, content: getMessageText(message) };
+  }
+  
+  // Handle mixed content with attachments
+  if (message.content.attachments && message.content.attachments.length > 0) {
+    const content = [];
+    
+    // Add text if present
+    if (message.content.text) {
+      content.push({ type: 'text', text: message.content.text });
+    }
+    
+    // Add images in Anthropic format
+    message.content.attachments.forEach(attachment => {
+      if (attachment.type === 'image') {
+        content.push({
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: attachment.mimeType,
+            data: attachment.data
+          }
+        });
+      }
+    });
+    
+    return { role, content };
+  }
+  
+  // Fallback to text
+  return { role, content: getMessageText(message) };
+}
+
 async function requestAnthropic(config: AIProviderConfig, thread: ThreadLane, messages: ChatMessage[]) {
   const baseUrl = resolveBaseUrl(config.baseUrl, config.kind);
   const response = await fetch(`${baseUrl}/messages`, {
@@ -1984,10 +2223,7 @@ async function requestAnthropic(config: AIProviderConfig, thread: ThreadLane, me
       system: SYSTEM_PROMPT(thread),
       messages: messages
         .filter((message) => message.role !== 'system')
-        .map((message) => ({
-          role: message.role === 'assistant' ? 'assistant' : 'user',
-          content: message.text,
-        })),
+        .map(formatMessageForAnthropic),
     }),
   });
 
