@@ -1,4 +1,5 @@
 import { sampleState } from './sample';
+import { migrateMessage } from './mediaUtils';
 import type {
   AIProvider,
   AIProviderConfig,
@@ -495,7 +496,21 @@ function migrateWorkspaceState(state: LoomspaceState): LoomspaceState {
       delete stripped.provider;
       delete stripped.providerConfigId;
       delete stripped.model;
-      return stripped as ThreadLane;
+      
+      // Migrate messages in thread context and chat nodes
+      return {
+        ...stripped,
+        context: stripped.context.map(msg => migrateMessage(msg)),
+        nodes: stripped.nodes.map(node => {
+          if (node.kind === 'chat') {
+            return {
+              ...node,
+              messages: node.messages.map(msg => migrateMessage(msg))
+            };
+          }
+          return node;
+        })
+      } as ThreadLane;
     }),
   };
 }
