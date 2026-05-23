@@ -107,6 +107,7 @@ export default function App() {
   const [threadEditorTargetId, setThreadEditorTargetId] = useState<string | null>(null);
   const [forkDraft, setForkDraft] = useState<ForkDraft | null>(null);
   const [nodePreviewModal, setNodePreviewModal] = useState<{ title: string; messages: ChatMessage[] } | null>(null);
+  const [deleteMode, setDeleteMode] = useState<{ nodeId: string; parts: { user: boolean; assistant: boolean } } | null>(null);
   const [modelCache, setModelCache] = useState<ModelCache>({});
   const [modelsLoading, setModelsLoading] = useState(false);
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -540,6 +541,85 @@ if (closeAfter) setMiniChatOpen(false);
     setState((current) => ({ ...current, selectedThreadId: null, selectedNodeId: null }));
     setContextLinkMode(null);
     setMiniChatOpen(false);
+    setDeleteMode(null);
+  }
+
+  function enterDeleteMode(threadId: string, nodeId: string) {
+    const thread = state.threads.find((t) => t.id === threadId);
+    const node = thread?.nodes.find((n) => n.id === nodeId);
+    if (!node || (node.kind !== 'chat' && node.kind !== 'context')) return;
+    const hasUser = node.messages.some((m) => m.role === 'user');
+    const hasAssistant = node.messages.some((m) => m.role === 'assistant');
+    setDeleteMode({ nodeId, parts: { user: hasUser, assistant: hasAssistant } });
+  }
+
+  function toggleDeletePart(part: 'user' | 'assistant') {
+    if (!deleteMode) return;
+    const newParts = { ...deleteMode.parts, [part]: !deleteMode.parts[part] };
+    if (!newParts.user && !newParts.assistant) return;
+    setDeleteMode({ ...deleteMode, parts: newParts });
+  }
+
+  function confirmDeleteNode(threadId: string) {
+    if (!deleteMode) return;
+    setState((current) => {
+      const targetThread = current.threads.find((t) => t.id === threadId);
+      if (!targetThread) return current;
+      const targetNode = targetThread.nodes.find((n) => n.id === deleteMode.nodeId);
+      if (!targetNode || (targetNode.kind !== 'chat' && targetNode.kind !== 'context')) return current;
+
+      return {
+        ...current,
+        threads: current.threads.map((thread) => {
+          if (thread.id !== threadId) return thread;
+          const node = thread.nodes.find((n) => n.id === deleteMode.nodeId);
+          if (!node) return thread;
+          if (node.kind !== 'chat' && node.kind !== 'context') return thread;
+          const nodeMsgIds = new Set(node.messages.map((m) => m.id));
+
+          if (node.kind === 'chat') {
+            const remaining = node.messages.filter((m) => {
+              if (m.role === 'user' && deleteMode.parts.user) return false;
+              if (m.role === 'assistant' && deleteMode.parts.assistant) return false;
+              return true;
+            });
+            if (remaining.length === 0) {
+              const newNodes = thread.nodes.filter((n) => n.id !== deleteMode.nodeId);
+              return {
+                ...thread,
+                nodes: newNodes,
+                context: thread.context.filter((m) => !nodeMsgIds.has(m.id)),
+                activeNodeId: thread.activeNodeId === deleteMode.nodeId
+                  ? (newNodes.find((n) => n.kind === 'chat')?.id ?? null)
+                  : thread.activeNodeId,
+              };
+            }
+            return {
+              ...thread,
+              nodes: thread.nodes.map((n) =>
+                n.id === deleteMode.nodeId
+                  ? { ...n, messages: remaining, summary: summarize(remaining.map((m) => m.text).join(' ')) }
+                  : n,
+              ),
+            };
+          }
+          if (node.kind === 'context') {
+            const newNodes = thread.nodes.filter((n) => n.id !== deleteMode.nodeId);
+            return {
+              ...thread,
+              nodes: newNodes,
+              context: thread.context.filter((m) => !nodeMsgIds.has(m.id)),
+              activeNodeId: thread.activeNodeId === deleteMode.nodeId
+                ? (newNodes.find((n) => n.kind === 'chat')?.id ?? null)
+                : thread.activeNodeId,
+            };
+          }
+          return thread;
+        }),
+        selectedNodeId: current.selectedNodeId === deleteMode.nodeId ? null : current.selectedNodeId,
+      };
+    });
+    setDeleteMode(null);
   }
 
   function enterContextLinkMode(thread: ThreadLane, nodeId: string, side: 'left' | 'right') {
@@ -1243,6 +1323,26 @@ if (closeAfter) setMiniChatOpen(false);
                                 </button>
                               </div>
                             ) : null}
+                            {deleteMode?.nodeId === node.id && (
+                              <div className="delete-select-overlay" onClick={(e) => e.stopPropagation()}>
+                                {deleteMode.parts.user && (
+                                  <button type="button" className="delete-select-half user active" onClick={(e) => { e.stopPropagation(); toggleDeletePart('user'); }}>
+                                    <span>User prompt</span>
+                                    <span className="delete-select-check">✓</span>
+                                  </button>
+                                )}
+                                {deleteMode.parts.assistant && (
+                                  <button type="button" className="delete-select-half assistant active" onClick={(e) => { e.stopPropagation(); toggleDeletePart('assistant'); }}>
+                                    <span>Asst response</span>
+                                    <span className="delete-select-check">✓</span>
+                                  </button>
+                                )}
+                                <button type="button" className="delete-confirm-btn" onClick={(e) => { e.stopPropagation(); confirmDeleteNode(thread.id); }}>
+                                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 3 14 13 14 13 6"/><line x1="1" y1="3" x2="15" y2="3"/><line x1="7" y1="7" x2="7" y2="11"/></svg>
+                                  Delete
+                                </button>
+                              </div>
+                            )}
                             {showDots && (
                               <>
                                 <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: -36 }} />
@@ -1261,6 +1361,8 @@ if (closeAfter) setMiniChatOpen(false);
                                   <div className="action-line-v" style={{ top: CHAT_HEIGHT, left: NODE_WIDTH / 2 }} />
                                   <button type="button" className="action-dot bottom" style={{ top: CHAT_HEIGHT + 36, left: NODE_WIDTH / 2 - 12 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setChatModalOpen(false); setMiniChatOpen(true); }}><svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="6.5" y1="1.5" x2="6.5" y2="11.5"/><line x1="1.5" y1="6.5" x2="11.5" y2="6.5"/></svg></button>
                                 </>)}
+                                <div className="action-line-v" style={{ top: CHAT_HEIGHT, left: NODE_WIDTH / 2 }} />
+                                <button type="button" className="action-dot delete" style={{ top: CHAT_HEIGHT + 36, left: NODE_WIDTH / 2 - 12 }} aria-label="Delete node" onClick={(e) => { e.stopPropagation(); enterDeleteMode(thread.id, node.id); }}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 3 14 13 14 13 6"/><line x1="1" y1="3" x2="15" y2="3"/><line x1="7" y1="7" x2="7" y2="11"/></svg></button>
                               </>
                             )}
                           </div>
@@ -1331,6 +1433,26 @@ if (closeAfter) setMiniChatOpen(false);
                               </button>
                             </div>
                           ) : null}
+                          {deleteMode?.nodeId === node.id && (
+                            <div className="delete-select-overlay" onClick={(e) => e.stopPropagation()}>
+                              {deleteMode.parts.user && (
+                                <button type="button" className="delete-select-half user active" onClick={(e) => { e.stopPropagation(); toggleDeletePart('user'); }}>
+                                  <span>User prompt</span>
+                                  <span className="delete-select-check">✓</span>
+                                </button>
+                              )}
+                              {deleteMode.parts.assistant && (
+                                <button type="button" className="delete-select-half assistant active" onClick={(e) => { e.stopPropagation(); toggleDeletePart('assistant'); }}>
+                                  <span>Asst response</span>
+                                  <span className="delete-select-check">✓</span>
+                                </button>
+                              )}
+                              <button type="button" className="delete-confirm-btn" onClick={(e) => { e.stopPropagation(); confirmDeleteNode(thread.id); }}>
+                                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 3 14 13 14 13 6"/><line x1="1" y1="3" x2="15" y2="3"/><line x1="7" y1="7" x2="7" y2="11"/></svg>
+                                Delete
+                              </button>
+                            </div>
+                          )}
                           {showDots && (
                             <>
                               <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: -36 }} />
@@ -1349,6 +1471,8 @@ if (closeAfter) setMiniChatOpen(false);
                                 <div className="action-line-v" style={{ top: CHAT_HEIGHT, left: NODE_WIDTH / 2 }} />
                                 <button type="button" className="action-dot bottom" style={{ top: CHAT_HEIGHT + 36, left: NODE_WIDTH / 2 - 12 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setChatModalOpen(false); setMiniChatOpen(true); }}><svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="6.5" y1="1.5" x2="6.5" y2="11.5"/><line x1="1.5" y1="6.5" x2="11.5" y2="6.5"/></svg></button>
                               </>)}
+                              <div className="action-line-v" style={{ top: CHAT_HEIGHT, left: NODE_WIDTH / 2 }} />
+                              <button type="button" className="action-dot delete" style={{ top: CHAT_HEIGHT + 36, left: NODE_WIDTH / 2 - 12 }} aria-label="Delete node" onClick={(e) => { e.stopPropagation(); enterDeleteMode(thread.id, node.id); }}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 3 14 13 14 13 6"/><line x1="1" y1="3" x2="15" y2="3"/><line x1="7" y1="7" x2="7" y2="11"/></svg></button>
                             </>
                           )}
                         </div>
