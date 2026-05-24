@@ -544,6 +544,45 @@ if (closeAfter) setMiniChatOpen(false);
     setDeleteMode(null);
   }
 
+  function deleteThread(threadId: string) {
+    setState((current) => {
+      const remainingThreads = current.threads.filter((thread) => thread.id !== threadId);
+      if (remainingThreads.length === 0) {
+        const fallbackThread = createThread(
+          'New thread',
+          'A new lane for a project idea and its AI chat context.',
+          0,
+          { initialModel: activeProviderConfig?.model ?? '' },
+        );
+        return {
+          ...current,
+          threads: [fallbackThread],
+          selectedThreadId: fallbackThread.id,
+          selectedNodeId: fallbackThread.activeNodeId,
+        };
+      }
+
+      if (current.selectedThreadId === threadId) {
+        const nextThread = remainingThreads[0];
+        return {
+          ...current,
+          threads: remainingThreads,
+          selectedThreadId: nextThread.id,
+          selectedNodeId: nextThread.activeNodeId,
+        };
+      }
+
+      return {
+        ...current,
+        threads: remainingThreads,
+      };
+    });
+
+    setContextLinkMode((mode) => (mode?.sourceThreadId === threadId ? null : mode));
+    setDeleteMode(null);
+    setMiniChatOpen(false);
+  }
+
   function enterDeleteMode(threadId: string, nodeId: string) {
     const thread = state.threads.find((t) => t.id === threadId);
     const node = thread?.nodes.find((n) => n.id === nodeId);
@@ -1248,9 +1287,20 @@ if (closeAfter) setMiniChatOpen(false);
                             <article className="title-node">
                               <div className="title-node-head">
                                 <input value={titleNode.title} onChange={(event) => updateTitle(thread.id, event.target.value)} onFocus={() => selectThread(thread.id, node.id)} />
-                                <button type="button" className="info-button" onClick={() => toggleInfo(thread.id)} aria-label="Thread info">
-                                  ⓘ
-                                </button>
+                                <div className="title-node-actions">
+                                  <button type="button" className="info-button" onClick={() => toggleInfo(thread.id)} aria-label="Thread info">
+                                    ⓘ
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="thread-delete-button"
+                                    onClick={() => deleteThread(thread.id)}
+                                    aria-label="Delete thread"
+                                    title="Delete thread"
+                                  >
+                                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 3 14 13 14 13 6"/><line x1="1" y1="3" x2="15" y2="3"/><line x1="7" y1="7" x2="7" y2="11"/></svg>
+                                  </button>
+                                </div>
                               </div>
                               {thread.infoOpen ? <p className="thread-popout">{titleNode.description}</p> : null}
                             </article>
@@ -1310,6 +1360,17 @@ if (closeAfter) setMiniChatOpen(false);
                                   </button>
                                 ) : null}
                               </div>
+                              {isSelected && !contextLinkMode ? (
+                                <button
+                                  type="button"
+                                  className="node-delete-corner"
+                                  aria-label="Delete node"
+                                  title="Delete node"
+                                  onClick={(e) => { e.stopPropagation(); enterDeleteMode(thread.id, node.id); }}
+                                >
+                                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 3 14 13 14 13 6"/><line x1="1" y1="3" x2="15" y2="3"/><line x1="7" y1="7" x2="7" y2="11"/></svg>
+                                </button>
+                              ) : null}
                             </div>
                             {isContextSource && ctxPart ? (
                               <div className="context-select-overlay" onClick={(e) => e.stopPropagation()}>
@@ -1361,8 +1422,6 @@ if (closeAfter) setMiniChatOpen(false);
                                   <div className="action-line-v" style={{ top: CHAT_HEIGHT, left: NODE_WIDTH / 2 }} />
                                   <button type="button" className="action-dot bottom" style={{ top: CHAT_HEIGHT + 36, left: NODE_WIDTH / 2 - 12 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setChatModalOpen(false); setMiniChatOpen(true); }}><svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="6.5" y1="1.5" x2="6.5" y2="11.5"/><line x1="1.5" y1="6.5" x2="11.5" y2="6.5"/></svg></button>
                                 </>)}
-                                <div className="action-line-v" style={{ top: CHAT_HEIGHT, left: NODE_WIDTH / 2 }} />
-                                <button type="button" className="action-dot delete" style={{ top: CHAT_HEIGHT + 36, left: NODE_WIDTH / 2 - 12 }} aria-label="Delete node" onClick={(e) => { e.stopPropagation(); enterDeleteMode(thread.id, node.id); }}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 3 14 13 14 13 6"/><line x1="1" y1="3" x2="15" y2="3"/><line x1="7" y1="7" x2="7" y2="11"/></svg></button>
                               </>
                             )}
                           </div>
@@ -1420,6 +1479,17 @@ if (closeAfter) setMiniChatOpen(false);
                                 </button>
                               ) : null}
                             </div>
+                            {isSelected && !contextLinkMode ? (
+                              <button
+                                type="button"
+                                className="node-delete-corner"
+                                aria-label="Delete node"
+                                title="Delete node"
+                                onClick={(e) => { e.stopPropagation(); enterDeleteMode(thread.id, node.id); }}
+                              >
+                                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 3 14 13 14 13 6"/><line x1="1" y1="3" x2="15" y2="3"/><line x1="7" y1="7" x2="7" y2="11"/></svg>
+                              </button>
+                            ) : null}
                           </div>
                           {isContextSource && ctxPart ? (
                             <div className="context-select-overlay" onClick={(e) => e.stopPropagation()}>
@@ -1471,8 +1541,6 @@ if (closeAfter) setMiniChatOpen(false);
                                 <div className="action-line-v" style={{ top: CHAT_HEIGHT, left: NODE_WIDTH / 2 }} />
                                 <button type="button" className="action-dot bottom" style={{ top: CHAT_HEIGHT + 36, left: NODE_WIDTH / 2 - 12 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setChatModalOpen(false); setMiniChatOpen(true); }}><svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="6.5" y1="1.5" x2="6.5" y2="11.5"/><line x1="1.5" y1="6.5" x2="11.5" y2="6.5"/></svg></button>
                               </>)}
-                              <div className="action-line-v" style={{ top: CHAT_HEIGHT, left: NODE_WIDTH / 2 }} />
-                              <button type="button" className="action-dot delete" style={{ top: CHAT_HEIGHT + 36, left: NODE_WIDTH / 2 - 12 }} aria-label="Delete node" onClick={(e) => { e.stopPropagation(); enterDeleteMode(thread.id, node.id); }}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 3 14 13 14 13 6"/><line x1="1" y1="3" x2="15" y2="3"/><line x1="7" y1="7" x2="7" y2="11"/></svg></button>
                             </>
                           )}
                         </div>

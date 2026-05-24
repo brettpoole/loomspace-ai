@@ -695,6 +695,12 @@ button.icon-btn {
   box-shadow: none;
 }
 
+.title-node-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .info-button {
   width: 28px;
   height: 28px;
@@ -703,6 +709,23 @@ button.icon-btn {
   display: grid;
   place-items: center;
   background: rgba(255, 255, 255, 0.06);
+}
+
+.thread-delete-button {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(255, 90, 90, 0.12);
+  border: 1px solid rgba(255, 90, 90, 0.5);
+  color: rgba(255, 105, 105, 0.9);
+}
+
+.thread-delete-button:hover {
+  background: rgba(255, 90, 90, 0.26);
+  border-color: rgba(255, 90, 90, 0.8);
 }
 
 .thread-popout {
@@ -1351,6 +1374,28 @@ button.btn-danger:disabled {
   border-color: rgba(255, 90, 90, 0.85);
   box-shadow: 0 0 12px rgba(255, 90, 90, 0.3);
   transform: scale(1.15);
+}
+
+.node-delete-corner {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 90, 90, 0.56);
+  background: rgba(255, 90, 90, 0.16);
+  color: rgba(255, 120, 120, 0.95);
+  display: grid;
+  place-items: center;
+  z-index: 6;
+}
+
+.node-delete-corner:hover {
+  background: rgba(255, 90, 90, 0.3);
+  border-color: rgba(255, 90, 90, 0.85);
+  box-shadow: 0 0 12px rgba(255, 90, 90, 0.35);
 }
 
 .delete-select-overlay {
