@@ -21,6 +21,31 @@ npm run dev
 npm run build
 ```
 
+## Backend (INT-21 Phase 1)
+
+A FastAPI backend now exists under `backend/` with:
+- SQLite-backed encrypted secret manager
+- first AI proxy endpoint (`POST /api/ai/chat`)
+- health check (`GET /healthz`)
+
+### Run backend locally
+
+```bash
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+# set LOOMSPACE_SECRET_MANAGER_KEY in .env
+uvicorn app.main:app --reload --port 8000
+```
+
+### API endpoints
+
+- `POST /api/secrets/upsert` — save/update encrypted API key for a provider profile
+- `GET /api/secrets/{provider_config_id}/exists` — check if a key exists
+- `DELETE /api/secrets/{provider_config_id}` — delete key
+- `POST /api/ai/chat` — proxy model request using stored provider secret
 
 ## Current slice
 
