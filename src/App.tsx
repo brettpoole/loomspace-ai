@@ -82,6 +82,11 @@ const DEFAULT_THREAD_DRAFT: ThreadDraft = {
 
 type ModelCache = Record<string, string[]>;
 
+function providerModelCacheKey(config: AIProviderConfig): string {
+  const baseUrl = config.baseUrl?.trim().toLowerCase() ?? '';
+  return `provider:${config.kind}:${baseUrl}`;
+}
+
 export default function App() {
   const [state, setState] = useState<LoomspaceState>(() => loadWorkspace());
   const [settings, setSettings] = useState<AISettings>(() => loadSettings());
@@ -129,12 +134,16 @@ export default function App() {
     setModelCache((current) => {
       const next: ModelCache = {};
       let changed = false;
-      Object.entries(current).forEach(([configId, models]) => {
-        if (!validConfigIds.has(configId)) {
+      Object.entries(current).forEach(([key, models]) => {
+        if (key.startsWith('provider:')) {
+          next[key] = models;
+          return;
+        }
+        if (!validConfigIds.has(key)) {
           changed = true;
           return;
         }
-        next[configId] = models;
+        next[key] = models;
       });
       return changed ? next : current;
     });
@@ -859,7 +868,7 @@ if (closeAfter) setMiniChatOpen(false);
   function changeSettingsProvider(providerConfigId: string) {
     const config = settings.providerConfigs.find((entry) => entry.id === providerConfigId);
     if (!config) return;
-    const cached = modelCache[providerConfigId];
+    const cached = modelCache[providerConfigId] ?? modelCache[providerModelCacheKey(config)];
     const nextModel = cached?.[0] ?? config.model ?? providerInfo(config.kind).defaultModel;
     setSettings((current) => ({
       ...current,
@@ -898,7 +907,8 @@ if (closeAfter) setMiniChatOpen(false);
     setError(null);
     try {
       const ids = await fetchProviderModels(config);
-      setModelCache((current) => ({ ...current, [providerConfigId]: ids }));
+      const providerKey = providerModelCacheKey(config);
+      setModelCache((current) => ({ ...current, [providerConfigId]: ids, [providerKey]: ids }));
       setSettingsNotice(`Loaded ${ids.length} models for ${config.label}.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : `Failed to list models for ${config.label}`);
@@ -2213,7 +2223,7 @@ if (closeAfter) setMiniChatOpen(false);
 
 function modelsForConfig(cache: ModelCache, config: AIProviderConfig | null | undefined, currentModel: string): string[] {
   if (!config) return currentModel ? [currentModel] : [];
-  const cached = cache[config.id];
+  const cached = cache[config.id] ?? cache[providerModelCacheKey(config)];
   const base = cached && cached.length > 0 ? cached : [];
   if (currentModel && !base.includes(currentModel)) {
     return [currentModel, ...base];
