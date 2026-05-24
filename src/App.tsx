@@ -624,6 +624,19 @@ if (closeAfter) setMiniChatOpen(false);
             });
             if (remaining.length === 0) {
               const newNodes = thread.nodes.filter((n) => n.id !== deleteMode.nodeId);
+              const remainingChatNodes = newNodes.filter((n): n is ThreadChatNode => n.kind === 'chat');
+
+              if (remainingChatNodes.length === 0) {
+                const replacementChatNode = createChatNode('AI chat ready', [], node.model || '');
+                const nodesWithReplacement = [...newNodes, replacementChatNode];
+                return {
+                  ...thread,
+                  nodes: nodesWithReplacement,
+                  context: thread.context.filter((m) => !nodeMsgIds.has(m.id)),
+                  activeNodeId: replacementChatNode.id,
+                };
+              }
+
               return {
                 ...thread,
                 nodes: newNodes,
@@ -2325,36 +2338,58 @@ async function requestOpenRouter(config: AIProviderConfig, thread: ThreadLane, m
 
 async function requestOpenAiCompatible(config: AIProviderConfig, thread: ThreadLane, messages: ChatMessage[]) {
   const baseUrl = resolveBaseUrl(config.baseUrl, config.kind);
-  const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${config.apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: config.model,
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT(thread) },
-        ...messages.map(formatMessageForOpenAI),
-      ],
-      temperature: 0.4,
-    }),
-  });
+  const payloadBase = {
+    model: config.model,
+    messages: [
+      { role: 'system', content: SYSTEM_PROMPT(thread) },
+      ...messages.map(formatMessageForOpenAI),
+    ],
+  };
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || `${config.label} request failed`);
+  const send = async (includeTemperature: boolean) => {
+    const body = includeTemperature
+      ? { ...payloadBase, temperature: 0.4 }
+      : payloadBase;
+
+    const response = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      return { ok: false as const, text };
+    }
+
+    const data = (await response.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+      usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+    };
+    return { ok: true as const, data };
+  };
+
+  let result = await send(config.kind !== 'openai');
+
+  if (!result.ok && config.kind === 'openai') {
+    const maybeTempUnsupported = /temperature/i.test(result.text) && /unsupported|default \(1\)/i.test(result.text);
+    if (maybeTempUnsupported) {
+      result = await send(false);
+    }
   }
 
-  const data = (await response.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
-    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
-  };
-  const assistantText = data.choices?.[0]?.message?.content?.trim();
+  if (!result.ok) {
+    throw new Error(result.text || `${config.label} request failed`);
+  }
+
+  const assistantText = result.data.choices?.[0]?.message?.content?.trim();
   if (!assistantText) throw new Error(`${config.label} returned no assistant text`);
 
-  const usage = data.usage
-    ? normalizeUsage(config.model, data.usage.prompt_tokens ?? 0, data.usage.completion_tokens ?? 0, data.usage.total_tokens ?? 0)
+  const usage = result.data.usage
+    ? normalizeUsage(config.model, result.data.usage.prompt_tokens ?? 0, result.data.usage.completion_tokens ?? 0, result.data.usage.total_tokens ?? 0)
     : undefined;
 
   return { assistantText, usage };
