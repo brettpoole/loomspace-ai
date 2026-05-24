@@ -19,6 +19,7 @@ import type {
 
 const WORKSPACE_KEY = 'loomspace.workspace.v7';
 const SETTINGS_COOKIE = 'loomspace.settings.v4';
+const MODEL_CACHE_KEY = 'loomspace.model-cache.v1';
 const LEGACY_SETTINGS_COOKIE = 'loomspace.settings.v3';
 const LEGACY_SECRET_COOKIE = 'loomspace.settings.secret.v1';
 const SECRET_COOKIE_PREFIX = 'loomspace.settings.secret.';
@@ -94,6 +95,8 @@ interface PersistedSettingsPayload {
   providerConfigs: PersistedProviderConfig[];
 }
 
+type PersistedModelCache = Record<string, string[]>;
+
 interface LegacySettingsPayload {
   provider?: AIProvider;
   model?: string;
@@ -161,6 +164,33 @@ export function saveSettings(settings: AISettings) {
       baseUrl: config.baseUrl,
     })),
   });
+}
+
+export function loadModelCache(): Record<string, string[]> {
+  try {
+    const raw = localStorage.getItem(MODEL_CACHE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as PersistedModelCache;
+    if (!parsed || typeof parsed !== 'object') return {};
+
+    const sanitized: Record<string, string[]> = {};
+    Object.entries(parsed).forEach(([configId, models]) => {
+      if (!Array.isArray(models)) return;
+      const ids = models.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0);
+      if (ids.length > 0) sanitized[configId] = ids;
+    });
+    return sanitized;
+  } catch {
+    return {};
+  }
+}
+
+export function saveModelCache(cache: Record<string, string[]>) {
+  try {
+    localStorage.setItem(MODEL_CACHE_KEY, JSON.stringify(cache));
+  } catch {
+    // Ignore storage write failures; model listing still works without persistence.
+  }
 }
 
 export async function saveProviderSecret(configId: string, apiKey: string, passphrase: string) {
