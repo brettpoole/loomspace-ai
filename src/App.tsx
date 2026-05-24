@@ -14,9 +14,11 @@ import {
   estimateCost,
   fetchProviderModels,
   getModelWindow,
+  loadModelCache,
   loadSettings,
   loadWorkspace,
   providerInfo,
+  saveModelCache,
   saveProviderSecret,
   saveSettings,
   saveWorkspace,
@@ -108,7 +110,7 @@ export default function App() {
   const [forkDraft, setForkDraft] = useState<ForkDraft | null>(null);
   const [nodePreviewModal, setNodePreviewModal] = useState<{ title: string; messages: ChatMessage[] } | null>(null);
   const [deleteMode, setDeleteMode] = useState<{ nodeId: string; parts: { user: boolean; assistant: boolean } } | null>(null);
-  const [modelCache, setModelCache] = useState<ModelCache>({});
+  const [modelCache, setModelCache] = useState<ModelCache>(() => loadModelCache());
   const [modelsLoading, setModelsLoading] = useState(false);
   const viewportRef = useRef<HTMLDivElement>(null);
   const panGesture = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
@@ -120,6 +122,23 @@ export default function App() {
 
   useEffect(() => saveWorkspace(state), [state]);
   useEffect(() => saveSettings(settings), [settings]);
+  useEffect(() => saveModelCache(modelCache), [modelCache]);
+
+  useEffect(() => {
+    const validConfigIds = new Set(settings.providerConfigs.map((config) => config.id));
+    setModelCache((current) => {
+      const next: ModelCache = {};
+      let changed = false;
+      Object.entries(current).forEach(([configId, models]) => {
+        if (!validConfigIds.has(configId)) {
+          changed = true;
+          return;
+        }
+        next[configId] = models;
+      });
+      return changed ? next : current;
+    });
+  }, [settings.providerConfigs]);
 
   useEffect(() => {
     const isNavKey = (code: string) => code === 'Space' || code === 'ControlLeft' || code === 'ControlRight';
