@@ -1498,20 +1498,20 @@ if (closeAfter) setMiniChatOpen(false);
                             {showDots && (
                               <>
                                 <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: -36 }} />
-                                <div className="action-dot-group action-left" style={{ top: CHAT_HEIGHT / 2 - 20, left: -128 }}>
-                                  <button type="button" className="action-dot" aria-label="Inject context left" onClick={handleSideDotCtx('left')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M7 9l-1 1a3 3 0 0 1-4.24-4.24l2-2a3 3 0 0 1 4.24 4.24"/><path d="M9 7l1-1a3 3 0 0 1 4.24 4.24l-2 2a3 3 0 0 1-4.24-4.24"/></svg></button>
-                                  <div className="fork-dot-connector" />
-                                  <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDotCtx('left')}>+</button>
+                                <div className="action-dot-group action-left" style={{ top: 0, left: -52, height: CHAT_HEIGHT }}>
+                                  <button type="button" className="action-dot" aria-label="Inject context left" onClick={handleSideDotCtx('left')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M7 9l-1 1a3 3 0 0 1-4.24-4.24l2-2a3 3 0 0 1 4.24 4.24"/><path d="M9 7l1-1a3 3 0 0 1 4.24 4.24l-2 2a3 3 0 0 1-4.24-4.24"/></svg><span>Link</span></button>
+                                  <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDotCtx('left')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="4" cy="3" r="1.5"/><circle cx="4" cy="13" r="1.5"/><circle cx="12" cy="8" r="1.5"/><path d="M5.5 3h2a2 2 0 0 1 2 2v1.5"/><path d="M5.5 13h2a2 2 0 0 0 2-2V9.5"/></svg><span>Fork</span></button>
                                 </div>
                                 <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: NODE_WIDTH }} />
-                                <div className="action-dot-group action-right" style={{ top: CHAT_HEIGHT / 2 - 20, left: NODE_WIDTH + 36 }}>
-                                  <button type="button" className="action-dot" aria-label="Inject context right" onClick={handleSideDotCtx('right')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M7 9l-1 1a3 3 0 0 1-4.24-4.24l2-2a3 3 0 0 1 4.24 4.24"/><path d="M9 7l1-1a3 3 0 0 1 4.24 4.24l-2 2a3 3 0 0 1-4.24-4.24"/></svg></button>
-                                  <div className="fork-dot-connector" />
-                                  <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDotCtx('right')}>+</button>
+                                <div className="action-dot-group action-right" style={{ top: 0, left: NODE_WIDTH + 10, height: CHAT_HEIGHT }}>
+                                  <button type="button" className="action-dot" aria-label="Inject context right" onClick={handleSideDotCtx('right')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M7 9l-1 1a3 3 0 0 1-4.24-4.24l2-2a3 3 0 0 1 4.24 4.24"/><path d="M9 7l1-1a3 3 0 0 1 4.24 4.24l-2 2a3 3 0 0 1-4.24-4.24"/></svg><span>Link</span></button>
+                                  <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDotCtx('right')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="4" cy="3" r="1.5"/><circle cx="4" cy="13" r="1.5"/><circle cx="12" cy="8" r="1.5"/><path d="M5.5 3h2a2 2 0 0 1 2 2v1.5"/><path d="M5.5 13h2a2 2 0 0 0 2-2V9.5"/></svg><span>Fork</span></button>
                                 </div>
                                 {nodeIndex === lane.nodes.length - 1 && (<>
                                   <div className="action-line-v" style={{ top: CHAT_HEIGHT, left: NODE_WIDTH / 2 }} />
-                                  <button type="button" className="action-dot bottom" style={{ top: CHAT_HEIGHT + 36, left: NODE_WIDTH / 2 - 12 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setChatModalOpen(false); setMiniChatOpen(true); }}><svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="6.5" y1="1.5" x2="6.5" y2="11.5"/><line x1="1.5" y1="6.5" x2="11.5" y2="6.5"/></svg></button>
+                                  <button type="button" className="action-node-ghost" style={{ top: CHAT_HEIGHT + 36, left: 0 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setChatModalOpen(false); setMiniChatOpen(true); }}>
+                                    <span>Open chat</span>
+                                  </button>
                                 </>)}
                               </>
                             )}
@@ -1655,20 +1655,20 @@ if (closeAfter) setMiniChatOpen(false);
                           {showDots && (
                             <>
                               <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: -36 }} />
-                              <div className="action-dot-group action-left" style={{ top: CHAT_HEIGHT / 2 - 20, left: -128 }}>
-                                <button type="button" className="action-dot" aria-label="Inject context left" onClick={handleSideDot('left')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M7 9l-1 1a3 3 0 0 1-4.24-4.24l2-2a3 3 0 0 1 4.24 4.24"/><path d="M9 7l1-1a3 3 0 0 1 4.24 4.24l-2 2a3 3 0 0 1-4.24-4.24"/></svg></button>
-                                <div className="fork-dot-connector" />
-                                <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDot('left')}>+</button>
+                              <div className="action-dot-group action-left" style={{ top: 0, left: -52, height: CHAT_HEIGHT }}>
+                                <button type="button" className="action-dot" aria-label="Inject context left" onClick={handleSideDot('left')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M7 9l-1 1a3 3 0 0 1-4.24-4.24l2-2a3 3 0 0 1 4.24 4.24"/><path d="M9 7l1-1a3 3 0 0 1 4.24 4.24l-2 2a3 3 0 0 1-4.24-4.24"/></svg><span>Link</span></button>
+                                <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDot('left')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="4" cy="3" r="1.5"/><circle cx="4" cy="13" r="1.5"/><circle cx="12" cy="8" r="1.5"/><path d="M5.5 3h2a2 2 0 0 1 2 2v1.5"/><path d="M5.5 13h2a2 2 0 0 0 2-2V9.5"/></svg><span>Fork</span></button>
                               </div>
                               <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: NODE_WIDTH }} />
-                              <div className="action-dot-group action-right" style={{ top: CHAT_HEIGHT / 2 - 20, left: NODE_WIDTH + 36 }}>
-                                <button type="button" className="action-dot" aria-label="Inject context right" onClick={handleSideDot('right')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M7 9l-1 1a3 3 0 0 1-4.24-4.24l2-2a3 3 0 0 1 4.24 4.24"/><path d="M9 7l1-1a3 3 0 0 1 4.24 4.24l-2 2a3 3 0 0 1-4.24-4.24"/></svg></button>
-                                <div className="fork-dot-connector" />
-                                <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDot('right')}>+</button>
+                              <div className="action-dot-group action-right" style={{ top: 0, left: NODE_WIDTH + 10, height: CHAT_HEIGHT }}>
+                                <button type="button" className="action-dot" aria-label="Inject context right" onClick={handleSideDot('right')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M7 9l-1 1a3 3 0 0 1-4.24-4.24l2-2a3 3 0 0 1 4.24 4.24"/><path d="M9 7l1-1a3 3 0 0 1 4.24 4.24l-2 2a3 3 0 0 1-4.24-4.24"/></svg><span>Link</span></button>
+                                <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDot('right')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="4" cy="3" r="1.5"/><circle cx="4" cy="13" r="1.5"/><circle cx="12" cy="8" r="1.5"/><path d="M5.5 3h2a2 2 0 0 1 2 2v1.5"/><path d="M5.5 13h2a2 2 0 0 0 2-2V9.5"/></svg><span>Fork</span></button>
                               </div>
                               {nodeIndex === lane.nodes.length - 1 && (<>
                                 <div className="action-line-v" style={{ top: CHAT_HEIGHT, left: NODE_WIDTH / 2 }} />
-                                <button type="button" className="action-dot bottom" style={{ top: CHAT_HEIGHT + 36, left: NODE_WIDTH / 2 - 12 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setChatModalOpen(false); setMiniChatOpen(true); }}><svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="6.5" y1="1.5" x2="6.5" y2="11.5"/><line x1="1.5" y1="6.5" x2="11.5" y2="6.5"/></svg></button>
+                                <button type="button" className="action-node-ghost" style={{ top: CHAT_HEIGHT + 36, left: 0 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setChatModalOpen(false); setMiniChatOpen(true); }}>
+                                  <span>Open chat</span>
+                                </button>
                               </>)}
                             </>
                           )}

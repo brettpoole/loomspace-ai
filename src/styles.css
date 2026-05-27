@@ -1354,13 +1354,29 @@ button.btn-danger:disabled {
 }
 
 .action-dot.bottom {
-  background: rgba(124, 247, 194, 0.18);
-  border-color: rgba(124, 247, 194, 0.7);
+  background: rgba(124, 247, 194, 0.12);
+  border-color: rgba(124, 247, 194, 0.5);
+  color: rgba(124, 247, 194, 0.7);
+  opacity: 0.55;
+}
+
+.action-dot.bottom::after {
+  content: '';
+  position: absolute;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 1.5px;
+  height: 34px;
+  background: linear-gradient(to bottom, rgba(124, 247, 194, 0.35), rgba(124, 247, 194, 0));
+  pointer-events: none;
 }
 
 .action-dot.bottom:hover {
-  background: rgba(124, 247, 194, 0.32);
+  background: rgba(124, 247, 194, 0.24);
+  border-color: rgba(124, 247, 194, 0.75);
   box-shadow: 0 0 14px rgba(124, 247, 194, 0.35);
+  opacity: 0.92;
 }
 
 .action-dot.delete {
@@ -1555,78 +1571,71 @@ button.btn-danger:disabled {
   background: rgba(124, 247, 194, 0.06);
 }
 
-/* Action dot group — contains action-dot + fork-dot, fork only appears on side-dot hover */
+/* Side action buttons */
 
 .action-dot-group {
   position: absolute;
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   gap: 6px;
-}
-
-.action-dot-group.action-left {
-  flex-direction: row-reverse;
+  width: 42px;
 }
 
 .action-dot-group .action-dot {
   position: relative;
-  flex-shrink: 0;
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  font-size: 10px;
+  border-color: rgba(255, 213, 102, 0.62);
+  background: rgba(255, 213, 102, 0.14);
+  color: rgba(255, 213, 102, 0.95);
+}
+
+.action-dot-group .action-dot span,
+.fork-dot span {
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .fork-dot {
   position: relative;
-  width: 40px;
-  height: 40px;
+  width: 100%;
+  flex: 1;
+  min-height: 0;
   padding: 0;
-  flex-shrink: 0;
-  border-radius: 50%;
-  border: 1.5px solid rgba(255, 213, 102, 0.58);
-  background: rgba(255, 213, 102, 0.14);
-  display: grid;
-  place-items: center;
-  color: rgba(255, 213, 102, 0.9);
-  font-size: 18px;
+  border-radius: 10px;
+  border: 1.5px solid rgba(124, 247, 194, 0.62);
+  background: rgba(124, 247, 194, 0.14);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  color: rgba(124, 247, 194, 0.95);
+  font-size: 14px;
   line-height: 1;
-  opacity: 0;
-  pointer-events: none;
   cursor: pointer;
-  transition: opacity 200ms ease, transform 200ms ease, box-shadow 200ms ease, background 200ms ease;
+  opacity: 0.9;
+  transition: opacity 160ms ease, box-shadow 160ms ease, background 160ms ease;
 }
 
 .fork-dot-connector {
-  width: 16px;
-  height: 1.5px;
-  flex-shrink: 0;
-  background: rgba(255, 213, 102, 0.38);
-  opacity: 0;
-  transition: opacity 200ms ease;
-}
-
-/* Left group: fork-dot is leftmost, slides out leftward from near action dot */
-.action-dot-group.action-left .fork-dot {
-  transform: translateX(34px);
-}
-
-/* Right group: fork-dot is rightmost, slides out rightward from near action dot */
-.action-dot-group.action-right .fork-dot {
-  transform: translateX(-34px);
-}
-
-.action-dot-group:hover .fork-dot-connector,
-.action-dot-group:focus-within .fork-dot-connector,
-.action-dot-group .action-dot:hover + .fork-dot-connector,
-.action-dot-group .action-dot:focus-visible + .fork-dot-connector {
-  opacity: 1;
+  display: none;
 }
 
 .action-dot-group:hover .fork-dot,
-.action-dot-group:focus-within .fork-dot,
-.action-dot-group .action-dot:hover + .fork-dot-connector + .fork-dot,
-.action-dot-group .action-dot:focus-visible + .fork-dot-connector + .fork-dot {
+.action-dot-group:focus-within .fork-dot {
   opacity: 1;
-  pointer-events: auto;
-  transform: translateX(0);
-  box-shadow: 0 0 12px rgba(255, 213, 102, 0.18);
+  box-shadow: 0 0 10px rgba(124, 247, 194, 0.2);
 }
 
 .action-line-h {
@@ -1641,8 +1650,32 @@ button.btn-danger:disabled {
   position: absolute;
   width: 1.5px;
   height: 36px;
-  background: rgba(124, 247, 194, 0.32);
+  background: linear-gradient(to bottom, rgba(124, 247, 194, 0.36), rgba(124, 247, 194, 0.08));
   pointer-events: none;
+}
+
+.action-node-ghost {
+  position: absolute;
+  width: 232px;
+  height: 148px;
+  border-radius: 16px;
+  border: 1px solid rgba(124, 247, 194, 0.28);
+  background: linear-gradient(to bottom, rgba(124, 247, 194, 0.14), rgba(124, 247, 194, 0));
+  color: rgba(193, 250, 225, 0.78);
+  display: grid;
+  place-items: start center;
+  padding-top: 14px;
+  font-size: 12px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  opacity: 0.7;
+  transition: opacity 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.action-node-ghost:hover {
+  opacity: 0.95;
+  border-color: rgba(124, 247, 194, 0.5);
+  background: linear-gradient(to bottom, rgba(124, 247, 194, 0.2), rgba(124, 247, 194, 0));
 }
 
 /* Mini chat panel */
