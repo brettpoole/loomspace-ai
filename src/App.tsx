@@ -1397,6 +1397,14 @@ if (closeAfter) setMiniChatOpen(false);
                                 }
                                 selectNode(thread.id, node.id);
                               }}
+                              onDoubleClick={(e) => {
+                                e.stopPropagation();
+                                if (contextLinkMode) return;
+                                if (nodeIndex !== lane.nodes.length - 1) return;
+                                selectNode(thread.id, node.id);
+                                setChatModalOpen(false);
+                                setMiniChatOpen(true);
+                              }}
                             >
                               <div className="exchange-head" style={{ color: ctxNode.sourceThreadColor, opacity: 0.75 }}>
                                 <span>Context from</span>
@@ -1515,6 +1523,14 @@ if (closeAfter) setMiniChatOpen(false);
                                 return;
                               }
                               selectNode(thread.id, node.id);
+                            }}
+                            onDoubleClick={(e) => {
+                              e.stopPropagation();
+                              if (contextLinkMode) return;
+                              if (nodeIndex !== lane.nodes.length - 1) return;
+                              selectNode(thread.id, node.id);
+                              setChatModalOpen(false);
+                              setMiniChatOpen(true);
                             }}
                           >
                             <div className="exchange-head">
