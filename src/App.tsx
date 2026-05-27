@@ -1360,7 +1360,7 @@ if (closeAfter) setMiniChatOpen(false);
 
                       if (node.kind === 'context') {
                         const ctxNode = node;
-                        const isSelected = node.id === state.selectedNodeId;
+                        const isSelected = thread.id === state.selectedThreadId && node.id === state.selectedNodeId;
                         const ctxPart = contextLinkMode?.sourceThreadId === thread.id
                           ? contextLinkMode.selectedNodes.find((s) => s.nodeId === node.id) ?? null
                           : null;
@@ -1479,7 +1479,7 @@ if (closeAfter) setMiniChatOpen(false);
                       }
 
                       const chatNode = node;
-                      const isSelected = node.id === state.selectedNodeId;
+                      const isSelected = thread.id === state.selectedThreadId && node.id === state.selectedNodeId;
                       const ctxPart = contextLinkMode?.sourceThreadId === thread.id
                         ? contextLinkMode.selectedNodes.find((s) => s.nodeId === node.id) ?? null
                         : null;
