@@ -122,6 +122,8 @@ export default function App() {
   const panGesture = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
   const pointerMap = useRef<Map<number, { x: number; y: number }>>(new Map());
   const pinchState = useRef<{ dist: number; zoom: number } | null>(null);
+  const suppressReadMoreUntil = useRef(0);
+  const readMoreTimerRef = useRef<number | null>(null);
   const spaceHeld = useRef(false);
   const ctrlHeld = useRef(false);
   const [panMode, setPanMode] = useState<'idle' | 'ready' | 'panning'>('idle');
@@ -1400,11 +1402,18 @@ if (closeAfter) setMiniChatOpen(false);
                               }}
                               onDoubleClick={(e) => {
                                 e.stopPropagation();
+                                e.preventDefault();
+                                suppressReadMoreUntil.current = Date.now() + 350;
                                 if (contextLinkMode) return;
-                                if (nodeIndex !== lane.nodes.length - 1) return;
                                 selectNode(thread.id, node.id);
-                                setChatModalOpen(false);
-                                setMiniChatOpen(true);
+                                if (nodeIndex === lane.nodes.length - 1) {
+                                  setChatModalOpen(false);
+                                  setMiniChatOpen(true);
+                                  return;
+                                }
+                                if (ctxNode.messages.length > 0) {
+                                  setNodePreviewModal({ title: ctxNode.sourceThreadTitle, messages: ctxNode.messages });
+                                }
                               }}
                             >
                               <div className="exchange-head" style={{ color: ctxNode.sourceThreadColor, opacity: 0.75 }}>
@@ -1414,7 +1423,30 @@ if (closeAfter) setMiniChatOpen(false);
                               <small>{ctxNode.messages.length} messages · {ctxNode.createdAt.slice(0, 10)}</small>
                               <div className="node-footer">
                                 {ctxNode.messages.length > 0 ? (
-                                  <button type="button" className="node-expand-toggle" onClick={(e) => { e.stopPropagation(); setNodePreviewModal({ title: ctxNode.sourceThreadTitle, messages: ctxNode.messages }); }}>
+                                  <button
+                                    type="button"
+                                    className="node-expand-toggle"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (e.detail > 1) return;
+                                      if (readMoreTimerRef.current) window.clearTimeout(readMoreTimerRef.current);
+                                      const openedAt = Date.now();
+                                      readMoreTimerRef.current = window.setTimeout(() => {
+                                        readMoreTimerRef.current = null;
+                                        if (Date.now() < suppressReadMoreUntil.current || suppressReadMoreUntil.current > openedAt) return;
+                                        setNodePreviewModal({ title: ctxNode.sourceThreadTitle, messages: ctxNode.messages });
+                                      }, 320);
+                                    }}
+                                    onDoubleClick={(e) => {
+                                      e.stopPropagation();
+                                      e.preventDefault();
+                                      suppressReadMoreUntil.current = Date.now() + 400;
+                                      if (readMoreTimerRef.current) {
+                                        window.clearTimeout(readMoreTimerRef.current);
+                                        readMoreTimerRef.current = null;
+                                      }
+                                    }}
+                                  >
                                     Read more
                                   </button>
                                 ) : null}
@@ -1527,11 +1559,18 @@ if (closeAfter) setMiniChatOpen(false);
                             }}
                             onDoubleClick={(e) => {
                               e.stopPropagation();
+                              e.preventDefault();
+                              suppressReadMoreUntil.current = Date.now() + 350;
                               if (contextLinkMode) return;
-                              if (nodeIndex !== lane.nodes.length - 1) return;
                               selectNode(thread.id, node.id);
-                              setChatModalOpen(false);
-                              setMiniChatOpen(true);
+                              if (nodeIndex === lane.nodes.length - 1) {
+                                setChatModalOpen(false);
+                                setMiniChatOpen(true);
+                                return;
+                              }
+                              if (chatNode.messages.length > 0) {
+                                setNodePreviewModal({ title: chatNode.summary, messages: chatNode.messages });
+                              }
                             }}
                           >
                             <div className="exchange-head">
@@ -1541,7 +1580,30 @@ if (closeAfter) setMiniChatOpen(false);
                             <small>{chatNode.model}</small>
                             <div className="node-footer">
                               {chatNode.messages.length > 0 ? (
-                                <button type="button" className="node-expand-toggle" onClick={(e) => { e.stopPropagation(); setNodePreviewModal({ title: chatNode.summary, messages: chatNode.messages }); }}>
+                                <button
+                                  type="button"
+                                  className="node-expand-toggle"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (e.detail > 1) return;
+                                    if (readMoreTimerRef.current) window.clearTimeout(readMoreTimerRef.current);
+                                    const openedAt = Date.now();
+                                    readMoreTimerRef.current = window.setTimeout(() => {
+                                      readMoreTimerRef.current = null;
+                                      if (Date.now() < suppressReadMoreUntil.current || suppressReadMoreUntil.current > openedAt) return;
+                                      setNodePreviewModal({ title: chatNode.summary, messages: chatNode.messages });
+                                    }, 320);
+                                  }}
+                                  onDoubleClick={(e) => {
+                                    e.stopPropagation();
+                                    e.preventDefault();
+                                    suppressReadMoreUntil.current = Date.now() + 400;
+                                    if (readMoreTimerRef.current) {
+                                      window.clearTimeout(readMoreTimerRef.current);
+                                      readMoreTimerRef.current = null;
+                                    }
+                                  }}
+                                >
                                   Read more
                                 </button>
                               ) : null}
