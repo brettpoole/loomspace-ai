@@ -254,18 +254,26 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
+      const isEscape = e.key === 'Escape' || e.key === 'Esc' || e.code === 'Escape';
+      if (!isEscape) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (passphraseModal && !passphraseModal.busy) { closePassphraseModal(); return; }
+      if (aiSettingsModalOpen) { setAiSettingsModalOpen(false); return; }
+      if (threadEditorOpen) { closeThreadEditor(); return; }
       if (nodePreviewModal) { setNodePreviewModal(null); return; }
       if (chatModalOpen) { setChatModalOpen(false); return; }
-      if (threadEditorOpen) { closeThreadEditor(); return; }
-      if (aiSettingsModalOpen) { setAiSettingsModalOpen(false); return; }
-      if (passphraseModal && !passphraseModal.busy) { closePassphraseModal(); return; }
+      if (miniChatOpen) { setMiniChatOpen(false); return; }
       if (contextLinkMode) { setContextLinkMode(null); return; }
       if (state.selectedThreadId) { deselectNode(); }
     };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [nodePreviewModal, chatModalOpen, threadEditorOpen, aiSettingsModalOpen, passphraseModal, contextLinkMode, state.selectedThreadId]);
+    window.addEventListener('keydown', onKeyDown, true);
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true);
+      document.removeEventListener('keydown', onKeyDown, true);
+    };
+  }, [passphraseModal, aiSettingsModalOpen, threadEditorOpen, nodePreviewModal, chatModalOpen, miniChatOpen, contextLinkMode, state.selectedThreadId]);
 
   function clampViewport(next?: Partial<Pick<LoomspaceState, 'panX' | 'panY' | 'zoom'>>) {
     const viewport = viewportRef.current;
