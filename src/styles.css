@@ -1687,6 +1687,13 @@ button.btn-danger:disabled {
   text-overflow: ellipsis;
 }
 
+.mini-chat-header-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.mini-chat-maximize,
 .mini-chat-close {
   width: 28px;
   height: 28px;
@@ -1697,6 +1704,11 @@ button.btn-danger:disabled {
   flex-shrink: 0;
   display: grid;
   place-items: center;
+}
+
+.mini-chat-maximize {
+  font-size: 14px;
+  font-weight: 700;
 }
 
 .mini-chat-messages {
@@ -1760,12 +1772,29 @@ button.btn-danger:disabled {
   padding: 6px 12px;
 }
 
+.mini-chat.maximized {
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  width: auto;
+  border-radius: 0;
+}
+
 @media (max-width: 950px) {
   .mini-chat {
     width: calc(100vw - 24px);
     right: 12px;
     top: 12px;
     bottom: 12px;
+  }
+
+  .mini-chat.maximized {
+    width: 100vw;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    left: 0;
   }
 }
 

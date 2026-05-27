@@ -99,6 +99,7 @@ export default function App() {
   const [savingSettings, setSavingSettings] = useState(false);
   const [chatModalOpen, setChatModalOpen] = useState(false);
   const [miniChatOpen, setMiniChatOpen] = useState(false);
+  const [miniChatMaximized, setMiniChatMaximized] = useState(false);
   const [contextLinkMode, setContextLinkMode] = useState<{
     sourceThreadId: string;
     dotNodeId: string;
@@ -1618,10 +1619,21 @@ if (closeAfter) setMiniChatOpen(false);
             </div>
           </div>
           {miniChatOpen && activeThread ? (
-            <div className="mini-chat">
+            <div className={`mini-chat ${miniChatMaximized ? 'maximized' : ''}`}>
               <div className="mini-chat-header">
                 <span className="mini-chat-title">{activeThread.title}</span>
-                <button type="button" className="quiet mini-chat-close" onClick={() => setMiniChatOpen(false)} aria-label="Close chat">×</button>
+                <div className="mini-chat-header-actions">
+                  <button
+                    type="button"
+                    className="quiet mini-chat-maximize"
+                    onClick={() => setMiniChatMaximized((current) => !current)}
+                    aria-label={miniChatMaximized ? 'Restore mini chat size' : 'Maximize mini chat'}
+                    title={miniChatMaximized ? 'Restore' : 'Maximize'}
+                  >
+                    {miniChatMaximized ? '▢' : '□'}
+                  </button>
+                  <button type="button" className="quiet mini-chat-close" onClick={() => setMiniChatOpen(false)} aria-label="Close chat">×</button>
+                </div>
               </div>
               <div className="mini-chat-messages" ref={miniChatMessagesRef}>
                 {activeThread.context.length === 0 ? (
