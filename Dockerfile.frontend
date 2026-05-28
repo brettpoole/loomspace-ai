@@ -1,0 +1,15 @@
+FROM node:22-alpine
+
+WORKDIR /app
+
+# Install deps first — separate layer for cache
+COPY package.json package-lock.json ./
+RUN npm ci
+
+# Source is bind-mounted at runtime; this COPY makes the image
+# self-contained for production use but is overridden by the volume in dev.
+COPY . .
+
+EXPOSE 5174
+
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "5174"]

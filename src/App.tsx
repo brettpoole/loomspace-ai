@@ -3,8 +3,6 @@ import Markdown from 'react-markdown';
 import {
   PROVIDERS,
   appendContextInjection,
-  clearProviderSecret,
-  clearSettingsCookies,
   computeMetrics,
   createChatNode,
   createContextNode,
@@ -12,24 +10,32 @@ import {
   createThread,
   deleteProviderConfig,
   estimateCost,
-  fetchProviderModels,
   getModelWindow,
   loadModelCache,
   loadSettings,
   loadWorkspace,
   providerInfo,
   saveModelCache,
-  saveProviderSecret,
-  saveSettings,
   saveWorkspace,
   summarize,
   summarizeThreadUsage,
   threadWithActiveNode,
   threadWithInfo,
-  unlockProviderSecret,
   updateThreadDetails,
   updateThreadTitle,
 } from './lib/store';
+import {
+  apiChat,
+  apiFetchModels,
+  apiLoadWorkspace,
+  apiSaveWorkspace,
+  apiUpsertProfile,
+  apiDeleteProfile,
+  apiStoreKey,
+  apiClearKey,
+  apiListProfiles,
+  type ServerProfile,
+} from './lib/api';
 import {
   createTextMessage,
   createMixedMessage,
@@ -95,7 +101,7 @@ export default function App() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
-  const [passphraseModal, setPassphraseModal] = useState<{ mode: 'encrypt' | 'unlock'; passphrase: string; busy: boolean; pendingKey?: string; targetConfigId?: string } | null>(null);
+  const [saveKeyModal, setSaveKeyModal] = useState<{ apiKey: string; busy: boolean; targetConfigId: string } | null>(null);
   const [savingSettings, setSavingSettings] = useState(false);
   const [chatModalOpen, setChatModalOpen] = useState(false);
   const [miniChatOpen, setMiniChatOpen] = useState(false);
@@ -128,9 +134,44 @@ export default function App() {
   const ctrlHeld = useRef(false);
   const [panMode, setPanMode] = useState<'idle' | 'ready' | 'panning'>('idle');
 
-  useEffect(() => saveWorkspace(state), [state]);
-  useEffect(() => saveSettings(settings), [settings]);
+  useEffect(() => { saveWorkspace(state); void apiSaveWorkspace(state.workspaceId, { state }); }, [state]);
+  useEffect(() => { /* profiles are saved to server on each mutation, not batch */ }, [settings]);
   useEffect(() => saveModelCache(modelCache), [modelCache]);
+
+  // On mount: load profiles from server and merge into settings state.
+  // Also try to load workspace from server (server is source of truth).
+  useEffect(() => {
+    apiListProfiles().then((profiles) => {
+      setSettings((current) => ({
+        ...current,
+        providerConfigs: profiles.map((p) => ({
+          id: p.id,
+          kind: p.kind,
+          label: p.label,
+          model: p.model,
+          baseUrl: p.baseUrl,
+          apiKey: '',
+          hasEncryptedApiKey: p.hasKey,
+        })),
+        activeProviderConfigId:
+          profiles.find((p) => p.id === current.activeProviderConfigId)
+            ? current.activeProviderConfigId
+            : (profiles[0]?.id ?? current.activeProviderConfigId),
+      }));
+    }).catch(() => { /* server not reachable; continue with local settings */ });
+
+    apiLoadWorkspace(loadWorkspace().workspaceId).then((serverWs) => {
+      if (serverWs && typeof serverWs === 'object' && 'state' in serverWs) {
+        setState((current) => {
+          const ws = serverWs as { state: LoomspaceState };
+          // Only replace if server version is newer
+          if ((ws.state?.version ?? 0) > current.version) return ws.state;
+          return current;
+        });
+      }
+    }).catch(() => { /* ignore */ });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     const validConfigIds = new Set(settings.providerConfigs.map((config) => config.id));
@@ -197,11 +238,7 @@ export default function App() {
     settings.providerConfigs.find((config) => config.id === settings.activeProviderConfigId) ?? settings.providerConfigs[0] ?? null;
   const settingsLockState = activeProviderConfig ? (activeProviderConfig.hasEncryptedApiKey ? (activeProviderConfig.apiKey.trim() ? 'unlocked' : 'locked') : 'none') : 'none';
 
-  useEffect(() => {
-    if (activeProviderConfig?.hasEncryptedApiKey && !activeProviderConfig.apiKey.trim() && !passphraseModal) {
-      setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: activeProviderConfig.id });
-    }
-  }, [activeProviderConfig, passphraseModal]);
+  // No auto-prompt for key unlock needed — keys live on the server
 
   const settingsModels = useMemo(
     () => modelsForConfig(modelCache, activeProviderConfig, activeProviderConfig?.model ?? ''),
@@ -261,7 +298,6 @@ export default function App() {
       if (!isEscape) return;
       e.preventDefault();
       e.stopPropagation();
-      if (passphraseModal && !passphraseModal.busy) { closePassphraseModal(); return; }
       if (aiSettingsModalOpen) { setAiSettingsModalOpen(false); return; }
       if (threadEditorOpen) { closeThreadEditor(); return; }
       if (nodePreviewModal) { setNodePreviewModal(null); return; }
@@ -276,7 +312,7 @@ export default function App() {
       window.removeEventListener('keydown', onKeyDown, true);
       document.removeEventListener('keydown', onKeyDown, true);
     };
-  }, [passphraseModal, aiSettingsModalOpen, threadEditorOpen, nodePreviewModal, chatModalOpen, miniChatOpen, contextLinkMode, state.selectedThreadId]);
+  }, [aiSettingsModalOpen, threadEditorOpen, nodePreviewModal, chatModalOpen, miniChatOpen, contextLinkMode, state.selectedThreadId]);
 
   function clampViewport(next?: Partial<Pick<LoomspaceState, 'panX' | 'panY' | 'zoom'>>) {
     const viewport = viewportRef.current;
@@ -442,9 +478,9 @@ async function sendMessage(closeAfter = false) {
       setError('Pick an AI profile first.');
       return;
     }
-    if (!activeConfig.apiKey.trim()) {
-      setError(activeConfig.hasEncryptedApiKey ? 'Unlock this AI profile, or save a new encrypted key.' : 'Add your API key to this profile first.');
-      setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: activeConfig.id });
+    if (!activeConfig.hasEncryptedApiKey) {
+      setError('No API key saved for this profile. Open AI Settings and save your key.');
+      setSaveKeyModal({ apiKey: '', busy: false, targetConfigId: activeConfig.id });
       return;
     }
 
@@ -481,7 +517,17 @@ if (closeAfter) setMiniChatOpen(false);
     }));
 
     try {
-      const { assistantText, usage } = await requestAiReply(activeConfig, activeThread, [...activeThread.context, userMessage]);
+      const formattedMessages = [...activeThread.context, userMessage].map((m) =>
+        activeConfig.kind === 'anthropic' ? formatMessageForAnthropic(m) : formatMessageForOpenAI(m),
+      );
+      const { assistantText, usage: rawUsage } = await apiChat({
+        profileId: activeConfig.id,
+        messages: formattedMessages,
+        systemPrompt: SYSTEM_PROMPT(activeThread),
+      });
+      const usage: TokenUsage | undefined = rawUsage
+        ? { ...rawUsage, estimatedCostUsd: estimateCost(activeConfig.model, rawUsage) }
+        : undefined;
       const assistantMessage: ChatMessage = {
         id: `msg-${crypto.randomUUID().slice(0, 8)}`,
         role: 'assistant',
@@ -795,80 +841,59 @@ if (closeAfter) setMiniChatOpen(false);
   }
 
   function requestSaveKey() {
-    const candidate = activeProviderConfig?.apiKey.trim() ?? '';
-    if (!candidate) {
-      if (activeProviderConfig?.hasEncryptedApiKey) {
-        setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: activeProviderConfig.id });
-      } else {
-        setError('Enter your API key first.');
-      }
-      return;
-    }
-    setError(null);
-    setPassphraseModal({ mode: 'encrypt', passphrase: '', busy: false, pendingKey: candidate, targetConfigId: activeProviderConfig.id });
-  }
-
-  function deleteSavedKey() {
     if (!activeProviderConfig) return;
-    const confirmed = activeProviderConfig.hasEncryptedApiKey ? window.confirm('Delete the saved encrypted key from this browser?') : true;
-    if (!confirmed) return;
-    clearProviderSecret(activeProviderConfig.id);
-    updateProviderConfig(activeProviderConfig.id, { apiKey: '', hasEncryptedApiKey: false });
-    setSettingsNotice('Saved key deleted from this browser.');
+    setSaveKeyModal({ apiKey: '', busy: false, targetConfigId: activeProviderConfig.id });
     setError(null);
   }
 
-  async function submitPassphraseModal() {
-    if (!passphraseModal) return;
-    const passphrase = passphraseModal.passphrase;
-    if (!passphrase.trim()) {
-      setError('Enter a passphrase.');
+  async function deleteSavedKey() {
+    if (!activeProviderConfig) return;
+    const confirmed = window.confirm('Delete the saved API key from the server?');
+    if (!confirmed) return;
+    try {
+      await apiClearKey(activeProviderConfig.id);
+      updateProviderConfig(activeProviderConfig.id, { hasEncryptedApiKey: false });
+      setSettingsNotice('API key deleted from server.');
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete key.');
+    }
+  }
+
+  async function submitSaveKeyModal() {
+    if (!saveKeyModal) return;
+    const { apiKey, targetConfigId } = saveKeyModal;
+    if (!apiKey.trim()) {
+      setError('Enter your API key.');
       return;
     }
-    const configId = passphraseModal.targetConfigId ?? activeProviderConfig?.id;
-    if (!configId) return;
-    setPassphraseModal({ ...passphraseModal, busy: true });
+    setSaveKeyModal({ ...saveKeyModal, busy: true });
     setError(null);
     setSavingSettings(true);
     try {
-      if (passphraseModal.mode === 'unlock') {
-        const apiKey = await unlockProviderSecret(configId, passphrase);
-        updateProviderConfig(configId, { apiKey, hasEncryptedApiKey: true });
-        setSettings((current) => ({ ...current, activeProviderConfigId: configId }));
-        setSettingsNotice('Key unlocked — loaded in memory for this session.');
-      } else {
-        const keyToSave = passphraseModal.pendingKey?.trim() ?? settings.providerConfigs.find((config) => config.id === configId)?.apiKey.trim() ?? '';
-        if (!keyToSave) throw new Error('No key to save.');
-        await saveProviderSecret(configId, keyToSave, passphrase);
-        updateProviderConfig(configId, { apiKey: keyToSave, hasEncryptedApiKey: true });
-        setSettings((current) => ({ ...current, activeProviderConfigId: configId }));
-        setSettingsNotice('Key encrypted and saved. Loaded in memory for this session.');
-      }
-      setPassphraseModal(null);
+      await apiStoreKey(targetConfigId, apiKey.trim());
+      updateProviderConfig(targetConfigId, { hasEncryptedApiKey: true });
+      setSettings((current) => ({ ...current, activeProviderConfigId: targetConfigId }));
+      setSettingsNotice('API key saved to server.');
+      setSaveKeyModal(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Passphrase action failed.');
-      setPassphraseModal((current) => (current ? { ...current, busy: false } : current));
+      setError(err instanceof Error ? err.message : 'Failed to save key.');
+      setSaveKeyModal((current) => (current ? { ...current, busy: false } : current));
     } finally {
       setSavingSettings(false);
     }
   }
 
-  function closePassphraseModal() {
-    setPassphraseModal(null);
+  function closeSaveKeyModal() {
+    setSaveKeyModal(null);
   }
 
   function resetWorkspace() {
     localStorage.removeItem('loomspace.workspace.v7');
-    clearSettingsCookies();
-    settings.providerConfigs.forEach((config) => clearProviderSecret(config.id));
-    clearProviderSecret('openai');
-    clearProviderSecret('anthropic');
-    clearProviderSecret('openrouter');
-    clearProviderSecret('openai-compatible-custom');
     setState(loadWorkspace());
     setSettings(loadSettings());
     setComposerDraft('');
-    setPassphraseModal(null);
+    setSaveKeyModal(null);
     setSettingsNotice(null);
     setError(null);
     setModelCache({});
@@ -890,11 +915,14 @@ if (closeAfter) setMiniChatOpen(false);
     }));
   }
 
-  function deleteProfile(configId: string) {
+  async function deleteProfile(configId: string) {
     const target = settings.providerConfigs.find((config) => config.id === configId);
     if (!target) return;
-    const confirmed = window.confirm(`Delete AI profile "${target.label}"? Its saved key will be removed from this browser.`);
+    const confirmed = window.confirm(`Delete AI profile "${target.label}"? Its saved key will also be removed from the server.`);
     if (!confirmed) return;
+    try {
+      await apiDeleteProfile(configId);
+    } catch { /* best-effort */ }
     const next = deleteProviderConfig(settings, configId);
     setSettings(next);
     setModelCache((current) => {
@@ -909,15 +937,15 @@ if (closeAfter) setMiniChatOpen(false);
   async function refreshModels(providerConfigId: string) {
     const config = settings.providerConfigs.find((entry) => entry.id === providerConfigId);
     if (!config) return;
-    if (!config.apiKey.trim()) {
-      setError(config.hasEncryptedApiKey ? 'Unlock this provider config first so we can list models.' : 'Add and unlock your API key to list models.');
-      setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: config.id });
+    if (!config.hasEncryptedApiKey) {
+      setError('Save an API key for this profile first.');
+      setSaveKeyModal({ apiKey: '', busy: false, targetConfigId: config.id });
       return;
     }
     setModelsLoading(true);
     setError(null);
     try {
-      const ids = await fetchProviderModels(config);
+      const ids = await apiFetchModels(providerConfigId);
       const providerKey = providerModelCacheKey(config);
       setModelCache((current) => ({ ...current, [providerConfigId]: ids, [providerKey]: ids }));
       setSettingsNotice(`Loaded ${ids.length} models for ${config.label}.`);
@@ -1826,10 +1854,6 @@ if (closeAfter) setMiniChatOpen(false);
                         onChange={(event) => {
                           const nextConfigId = event.target.value;
                           changeSettingsProvider(nextConfigId);
-                          const nextConfig = settings.providerConfigs.find((config) => config.id === nextConfigId);
-                          if (nextConfig?.hasEncryptedApiKey && !nextConfig.apiKey.trim()) {
-                            setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: nextConfigId });
-                          }
                         }}
                       >
                         {settings.providerConfigs.map((config) => (
@@ -2230,91 +2254,6 @@ if (closeAfter) setMiniChatOpen(false);
           </section>
         </div>
       ) : null}
-
-      {passphraseModal ? (
-        <div className="chat-modal-backdrop" onClick={passphraseModal.busy ? undefined : closePassphraseModal}>
-          <section className="passphrase-modal" onClick={(event) => event.stopPropagation()}>
-            <header className="chat-modal-header">
-              <div>
-                <p className="eyebrow">{passphraseModal.mode === 'encrypt' ? 'Encrypt your key' : 'Unlock your saved key'}</p>
-                <h2>{passphraseModal.mode === 'encrypt' ? 'Choose a passphrase' : 'Enter your passphrase'}</h2>
-              </div>
-              <button type="button" className="quiet" onClick={closePassphraseModal} aria-label="Close" disabled={passphraseModal.busy}>
-                ×
-              </button>
-            </header>
-            <div className="chat-modal-body">
-              <p className="muted">
-                {passphraseModal.mode === 'encrypt'
-                  ? 'Your key is encrypted in this browser using this passphrase. Anyone with access to this browser also needs the passphrase to load it. There is no recovery — write it down.'
-                  : 'Decrypts the key saved in this browser. It stays in memory until you refresh or close the tab.'}
-              </p>
-              <form
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  submitPassphraseModal();
-                }}
-              >
-                <label className="field">
-                  Passphrase
-                  <input
-                    autoFocus
-                    type="password"
-                    value={passphraseModal.passphrase}
-                    onChange={(event) =>
-                      setPassphraseModal((current) => (current ? { ...current, passphrase: event.target.value } : current))
-                    }
-                    autoComplete="off"
-                    spellCheck={false}
-                    disabled={passphraseModal.busy}
-                  />
-                </label>
-                {error ? <p className="error">{error}</p> : null}
-                <div className="editor-actions">
-                  <button type="submit" disabled={passphraseModal.busy || !passphraseModal.passphrase.trim()}>
-                    {passphraseModal.busy
-                      ? 'Working…'
-                      : passphraseModal.mode === 'encrypt' ? 'Encrypt and save' : 'Unlock'}
-                  </button>
-                  <button type="button" className="quiet" onClick={closePassphraseModal} disabled={passphraseModal.busy}>
-                    Cancel
-                  </button>
-                </div>
-              </form>
-              {passphraseModal.mode === 'unlock' && passphraseModal.targetConfigId ? (
-                <div className="passphrase-escape">
-                  <p className="muted">
-                    Forgot your passphrase? You can delete this profile to escape this prompt. The encrypted key will be wiped from this browser.
-                  </p>
-                  <button
-                    type="button"
-                    className="quiet"
-                    disabled={passphraseModal.busy}
-                    onClick={() => {
-                      const target = settings.providerConfigs.find((config) => config.id === passphraseModal.targetConfigId);
-                      if (!target) return;
-                      const confirmed = window.confirm(`Delete AI profile "${target.label}" and the saved key you can no longer unlock?`);
-                      if (!confirmed) return;
-                      const next = deleteProviderConfig(settings, target.id);
-                      setSettings(next);
-                      setModelCache((current) => {
-                        const copy = { ...current };
-                        delete copy[target.id];
-                        return copy;
-                      });
-                      setSettingsNotice(`Deleted AI profile "${target.label}".`);
-                      setError(null);
-                      setPassphraseModal(null);
-                    }}
-                  >
-                    Delete this profile and exit
-                  </button>
-                </div>
-              ) : null}
-            </div>
-          </section>
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -2366,27 +2305,6 @@ function formatMessageForOpenAI(message: ChatMessage) {
   return { role, content: getMessageText(message) };
 }
 
-async function requestAiReply(config: AIProviderConfig, thread: ThreadLane, messages: ChatMessage[]) {
-  if (config.kind === 'anthropic') return requestAnthropic(config, thread, messages);
-  if (config.kind === 'openrouter') return requestOpenRouter(config, thread, messages);
-  return requestOpenAiCompatible(config, thread, messages);
-}
-
-function apiKeyPlaceholder(provider: AIProvider) {
-  if (provider === 'openai') return 'sk-...';
-  if (provider === 'anthropic') return 'sk-ant-...';
-  if (provider === 'openrouter') return 'sk-or-...';
-  if (provider === 'openai-compatible-custom') return 'sk-...';
-  return '';
-}
-
-function providerKeyLink(provider: AIProvider): { label: string; href: string } | null {
-  if (provider === 'openrouter') return { label: 'Get a free OpenRouter key', href: 'https://openrouter.ai/keys' };
-  if (provider === 'openai') return { label: 'Get an OpenAI key', href: 'https://platform.openai.com/api-keys' };
-  if (provider === 'anthropic') return { label: 'Get an Anthropic key', href: 'https://console.anthropic.com/settings/keys' };
-  return null;
-}
-
 const SYSTEM_PROMPT = (thread: ThreadLane) =>
   [
     `Thread title: ${thread.title}`,
@@ -2397,129 +2315,18 @@ const SYSTEM_PROMPT = (thread: ThreadLane) =>
     'Do not mention internal tools or policies.',
   ].join(' ');
 
-function resolveBaseUrl(baseUrl: string | undefined, kind: AIProvider) {
-  if (kind === 'anthropic') return baseUrl?.trim().replace(/\/+$/, '') || 'https://api.anthropic.com/v1';
-  if (kind === 'openrouter') return baseUrl?.trim().replace(/\/+$/, '') || 'https://openrouter.ai/api/v1';
-  if (kind === 'openai') return baseUrl?.trim().replace(/\/+$/, '') || 'https://api.openai.com/v1';
-  if (!baseUrl?.trim()) throw new Error('Enter a Base URL for the custom OpenAI-compatible provider.');
-  return baseUrl.trim().replace(/\/+$/, '');
+function apiKeyPlaceholder(provider: AIProvider) {
+  if (provider === 'openai') return 'sk-...';
+  if (provider === 'anthropic') return 'sk-ant-...';
+  if (provider === 'openrouter') return 'sk-or-...';
+  return 'API key';
 }
 
-async function requestOpenRouter(config: AIProviderConfig, thread: ThreadLane, messages: ChatMessage[]) {
-  const baseUrl = resolveBaseUrl(config.baseUrl, config.kind);
-  const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${config.apiKey}`,
-      'Content-Type': 'application/json',
-      // CORS-friendly attribution headers for OpenRouter
-      'X-App-Name': 'Loomspace',
-      'X-App-URL': window.location.origin,
-    },
-    body: JSON.stringify({
-      model: config.model,
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT(thread) },
-        ...messages.map(formatMessageForOpenAI),
-      ],
-      temperature: 0.4,
-    }),
-  });
-
-  if (!response.ok) {
-    let errorText = '';
-    try {
-      errorText = await response.text();
-    } catch {
-      // If we can't read the response text, it's likely a network issue
-      errorText = 'Network error - check your internet connection';
-    }
-    
-    // Provide more detailed error messages for common OpenRouter issues
-    if (response.status === 0 || !response.status) {
-      throw new Error('OpenRouter request failed - check your internet connection and try again');
-    } else if (response.status === 401) {
-      throw new Error('OpenRouter API key is invalid - check your API key');
-    } else if (response.status === 429) {
-      throw new Error('OpenRouter rate limit exceeded - wait a moment and try again');
-    } else if (response.status >= 500) {
-      throw new Error('OpenRouter server error - try again in a moment');
-    } else {
-      throw new Error(errorText || `OpenRouter request failed (${response.status})`);
-    }
-  }
-
-  const data = (await response.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
-    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
-  };
-  const assistantText = data.choices?.[0]?.message?.content?.trim();
-  if (!assistantText) throw new Error('OpenRouter returned no assistant text');
-
-  const usage = data.usage
-    ? normalizeUsage(config.model, data.usage.prompt_tokens ?? 0, data.usage.completion_tokens ?? 0, data.usage.total_tokens ?? 0)
-    : undefined;
-
-  return { assistantText, usage };
-}
-
-async function requestOpenAiCompatible(config: AIProviderConfig, thread: ThreadLane, messages: ChatMessage[]) {
-  const baseUrl = resolveBaseUrl(config.baseUrl, config.kind);
-  const payloadBase = {
-    model: config.model,
-    messages: [
-      { role: 'system', content: SYSTEM_PROMPT(thread) },
-      ...messages.map(formatMessageForOpenAI),
-    ],
-  };
-
-  const send = async (includeTemperature: boolean) => {
-    const body = includeTemperature
-      ? { ...payloadBase, temperature: 0.4 }
-      : payloadBase;
-
-    const response = await fetch(`${baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${config.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      return { ok: false as const, text };
-    }
-
-    const data = (await response.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
-      usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
-    };
-    return { ok: true as const, data };
-  };
-
-  let result = await send(config.kind !== 'openai');
-
-  if (!result.ok && config.kind === 'openai') {
-    const maybeTempUnsupported = /temperature/i.test(result.text) && /unsupported|default \(1\)/i.test(result.text);
-    if (maybeTempUnsupported) {
-      result = await send(false);
-    }
-  }
-
-  if (!result.ok) {
-    throw new Error(result.text || `${config.label} request failed`);
-  }
-
-  const assistantText = result.data.choices?.[0]?.message?.content?.trim();
-  if (!assistantText) throw new Error(`${config.label} returned no assistant text`);
-
-  const usage = result.data.usage
-    ? normalizeUsage(config.model, result.data.usage.prompt_tokens ?? 0, result.data.usage.completion_tokens ?? 0, result.data.usage.total_tokens ?? 0)
-    : undefined;
-
-  return { assistantText, usage };
+function providerKeyLink(provider: AIProvider): { label: string; href: string } | null {
+  if (provider === 'openrouter') return { label: 'Get a free OpenRouter key', href: 'https://openrouter.ai/keys' };
+  if (provider === 'openai') return { label: 'Get an OpenAI key', href: 'https://platform.openai.com/api-keys' };
+  if (provider === 'anthropic') return { label: 'Get an Anthropic key', href: 'https://console.anthropic.com/settings/keys' };
+  return null;
 }
 
 // Helper function to convert ChatMessage to Anthropic API format
@@ -2559,59 +2366,6 @@ function formatMessageForAnthropic(message: ChatMessage) {
   
   // Fallback to text
   return { role, content: getMessageText(message) };
-}
-
-async function requestAnthropic(config: AIProviderConfig, thread: ThreadLane, messages: ChatMessage[]) {
-  const baseUrl = resolveBaseUrl(config.baseUrl, config.kind);
-  const response = await fetch(`${baseUrl}/messages`, {
-    method: 'POST',
-    headers: {
-      'x-api-key': config.apiKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: config.model,
-      max_tokens: 1024,
-      system: SYSTEM_PROMPT(thread),
-      messages: messages
-        .filter((message) => message.role !== 'system')
-        .map(formatMessageForAnthropic),
-    }),
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || 'Anthropic request failed');
-  }
-
-  const data = (await response.json()) as {
-    content?: Array<{ type?: string; text?: string }>;
-    usage?: { input_tokens?: number; output_tokens?: number };
-  };
-  const assistantText = (data.content ?? [])
-    .filter((block) => block.type === 'text')
-    .map((block) => block.text ?? '')
-    .join('\n')
-    .trim();
-  if (!assistantText) throw new Error('Anthropic returned no assistant text');
-
-  const inputTokens = data.usage?.input_tokens ?? 0;
-  const outputTokens = data.usage?.output_tokens ?? 0;
-  const usage = data.usage ? normalizeUsage(config.model, inputTokens, outputTokens, inputTokens + outputTokens) : undefined;
-
-  return { assistantText, usage };
-}
-
-function normalizeUsage(model: string, inputTokens: number, outputTokens: number, totalTokens: number): TokenUsage {
-  const total = totalTokens || inputTokens + outputTokens;
-  return {
-    inputTokens,
-    outputTokens,
-    totalTokens: total,
-    estimatedCostUsd: estimateCost(model, { inputTokens, outputTokens }),
-  };
 }
 
 function nodeHeight(thread: ThreadLane, node: ThreadNode) {
