@@ -1,8 +1,10 @@
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 
 from app.database import get_db
 from app.models import Workspace, User
@@ -37,17 +39,22 @@ async def save_workspace(
     db: AsyncSession = Depends(get_db),
 ):
     body: Any = await request.json()
-    result = await db.execute(
-        select(Workspace).where(
-            Workspace.id == workspace_id,
-            Workspace.user_id == current_user.id,
+    now = datetime.now(timezone.utc)
+
+    stmt = (
+        insert(Workspace)
+        .values(
+            id=workspace_id,
+            user_id=current_user.id,
+            data=body,
+            updated_at=now,
+        )
+        .on_conflict_do_update(
+            index_elements=["id"],
+            where=Workspace.user_id == current_user.id,
+            set_={"data": body, "updated_at": now},
         )
     )
-    ws = result.scalar_one_or_none()
-    if ws is None:
-        ws = Workspace(id=workspace_id, user_id=current_user.id, data=body)
-        db.add(ws)
-    else:
-        ws.data = body
+    await db.execute(stmt)
     await db.commit()
     return {"ok": True}

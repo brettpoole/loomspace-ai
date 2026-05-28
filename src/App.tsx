@@ -12,11 +12,8 @@ import {
   estimateCost,
   getModelWindow,
   loadModelCache,
-  loadSettings,
-  loadWorkspace,
   providerInfo,
   saveModelCache,
-  saveWorkspace,
   summarize,
   summarizeThreadUsage,
   threadWithActiveNode,
@@ -24,6 +21,7 @@ import {
   updateThreadDetails,
   updateThreadTitle,
 } from './lib/store';
+import { sampleState } from './lib/sample';
 import {
   apiChat,
   apiFetchModels,
@@ -93,15 +91,14 @@ function providerModelCacheKey(config: AIProviderConfig): string {
   return `provider:${config.kind}:${baseUrl}`;
 }
 
-export default function App() {
-  const [state, setState] = useState<LoomspaceState>(() => loadWorkspace());
-  const [settings, setSettings] = useState<AISettings>(() => loadSettings());
+export default function App({ userId, onLogout }: { userId: string; onLogout: () => void }) {
+  const [state, setState] = useState<LoomspaceState>(() => ({ ...structuredClone(sampleState), workspaceId: userId }));
+  const [settings, setSettings] = useState<AISettings>(() => ({ activeProviderConfigId: '', providerConfigs: [] }));
   const [composerDraft, setComposerDraft] = useState('');
   const [composerAttachments, setComposerAttachments] = useState<MediaAttachment[]>([]);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
-  const [saveKeyModal, setSaveKeyModal] = useState<{ apiKey: string; busy: boolean; targetConfigId: string } | null>(null);
   const [savingSettings, setSavingSettings] = useState(false);
   const [chatModalOpen, setChatModalOpen] = useState(false);
   const [miniChatOpen, setMiniChatOpen] = useState(false);
@@ -133,15 +130,24 @@ export default function App() {
   const spaceHeld = useRef(false);
   const ctrlHeld = useRef(false);
   const [panMode, setPanMode] = useState<'idle' | 'ready' | 'panning'>('idle');
+  // Guards against saving blank sampleState before the server workspace loads.
+  const workspaceReadyRef = useRef(false);
 
-  useEffect(() => { saveWorkspace(state); void apiSaveWorkspace(state.workspaceId, { state }); }, [state]);
+  useEffect(() => {
+    if (!workspaceReadyRef.current) return;
+    // Never write the blank initial state — only persist real user data.
+    if (state.threads.length === 0 && state.version <= 1) return;
+    void apiSaveWorkspace(state.workspaceId, { state });
+  }, [state]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { /* profiles are saved to server on each mutation, not batch */ }, [settings]);
   useEffect(() => saveModelCache(modelCache), [modelCache]);
 
-  // On mount: load profiles from server and merge into settings state.
-  // Also try to load workspace from server (server is source of truth).
+  // On mount: load workspace and profiles from server.
   useEffect(() => {
+    const controller = new AbortController();
+
     apiListProfiles().then((profiles) => {
+      if (controller.signal.aborted) return;
       setSettings((current) => ({
         ...current,
         providerConfigs: profiles.map((p) => ({
@@ -158,18 +164,21 @@ export default function App() {
             ? current.activeProviderConfigId
             : (profiles[0]?.id ?? current.activeProviderConfigId),
       }));
-    }).catch(() => { /* server not reachable; continue with local settings */ });
+    }).catch(() => { /* server not reachable; fall through */ });
 
-    apiLoadWorkspace(loadWorkspace().workspaceId).then((serverWs) => {
+    apiLoadWorkspace(userId).then((serverWs) => {
+      if (controller.signal.aborted) return;
       if (serverWs && typeof serverWs === 'object' && 'state' in serverWs) {
-        setState((current) => {
-          const ws = serverWs as { state: LoomspaceState };
-          // Only replace if server version is newer
-          if ((ws.state?.version ?? 0) > current.version) return ws.state;
-          return current;
-        });
+        const ws = serverWs as { state: LoomspaceState };
+        setState(ws.state);
       }
-    }).catch(() => { /* ignore */ });
+      workspaceReadyRef.current = true;
+    }).catch(() => {
+      if (controller.signal.aborted) return;
+      workspaceReadyRef.current = true;
+    });
+
+    return () => controller.abort();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -236,7 +245,7 @@ export default function App() {
   const activeNodeIsChat = activeNode?.kind === 'chat';
   const activeProviderConfig =
     settings.providerConfigs.find((config) => config.id === settings.activeProviderConfigId) ?? settings.providerConfigs[0] ?? null;
-  const settingsLockState = activeProviderConfig ? (activeProviderConfig.hasEncryptedApiKey ? (activeProviderConfig.apiKey.trim() ? 'unlocked' : 'locked') : 'none') : 'none';
+  const settingsLockState = activeProviderConfig ? (activeProviderConfig.hasEncryptedApiKey ? 'unlocked' : 'none') : 'none';
 
   // No auto-prompt for key unlock needed — keys live on the server
 
@@ -480,7 +489,6 @@ async function sendMessage(closeAfter = false) {
     }
     if (!activeConfig.hasEncryptedApiKey) {
       setError('No API key saved for this profile. Open AI Settings and save your key.');
-      setSaveKeyModal({ apiKey: '', busy: false, targetConfigId: activeConfig.id });
       return;
     }
 
@@ -840,10 +848,74 @@ if (closeAfter) setMiniChatOpen(false);
     }));
   }
 
-  function requestSaveKey() {
+  async function saveProfile() {
     if (!activeProviderConfig) return;
-    setSaveKeyModal({ apiKey: '', busy: false, targetConfigId: activeProviderConfig.id });
+    setSavingSettings(true);
     setError(null);
+    try {
+      const saved = await apiUpsertProfile({
+        id: activeProviderConfig.id,
+        kind: activeProviderConfig.kind,
+        label: activeProviderConfig.label,
+        model: activeProviderConfig.model,
+        baseUrl: activeProviderConfig.baseUrl,
+      });
+      // Update local ID in case the server assigned a different one
+      if (saved.id !== activeProviderConfig.id) {
+        setSettings((current) => ({
+          ...current,
+          activeProviderConfigId: saved.id,
+          providerConfigs: current.providerConfigs.map((c) =>
+            c.id === activeProviderConfig.id ? { ...c, id: saved.id } : c
+          ),
+        }));
+      }
+      setSettingsNotice('Profile saved.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save profile.');
+    } finally {
+      setSavingSettings(false);
+    }
+  }
+
+  async function saveKey() {
+    if (!activeProviderConfig) return;
+    const apiKey = activeProviderConfig.apiKey.trim();
+    if (!apiKey) {
+      setError('Enter your API key.');
+      return;
+    }
+    setSavingSettings(true);
+    setError(null);
+    try {
+      // Ensure the profile exists on the server before storing the key.
+      // A locally-created profile may not have been persisted yet.
+      const saved = await apiUpsertProfile({
+        id: activeProviderConfig.id,
+        kind: activeProviderConfig.kind,
+        label: activeProviderConfig.label,
+        model: activeProviderConfig.model,
+        baseUrl: activeProviderConfig.baseUrl,
+      });
+      const profileId = saved.id;
+      if (saved.id !== activeProviderConfig.id) {
+        setSettings((current) => ({
+          ...current,
+          activeProviderConfigId: saved.id,
+          providerConfigs: current.providerConfigs.map((c) =>
+            c.id === activeProviderConfig.id ? { ...c, id: saved.id } : c
+          ),
+        }));
+      }
+      await apiStoreKey(profileId, apiKey);
+      updateProviderConfig(activeProviderConfig.id, { hasEncryptedApiKey: true });
+      setSettings((current) => ({ ...current, activeProviderConfigId: activeProviderConfig.id }));
+      setSettingsNotice('API key saved to server.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save key.');
+    } finally {
+      setSavingSettings(false);
+    }
   }
 
   async function deleteSavedKey() {
@@ -860,40 +932,11 @@ if (closeAfter) setMiniChatOpen(false);
     }
   }
 
-  async function submitSaveKeyModal() {
-    if (!saveKeyModal) return;
-    const { apiKey, targetConfigId } = saveKeyModal;
-    if (!apiKey.trim()) {
-      setError('Enter your API key.');
-      return;
-    }
-    setSaveKeyModal({ ...saveKeyModal, busy: true });
-    setError(null);
-    setSavingSettings(true);
-    try {
-      await apiStoreKey(targetConfigId, apiKey.trim());
-      updateProviderConfig(targetConfigId, { hasEncryptedApiKey: true });
-      setSettings((current) => ({ ...current, activeProviderConfigId: targetConfigId }));
-      setSettingsNotice('API key saved to server.');
-      setSaveKeyModal(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save key.');
-      setSaveKeyModal((current) => (current ? { ...current, busy: false } : current));
-    } finally {
-      setSavingSettings(false);
-    }
-  }
-
-  function closeSaveKeyModal() {
-    setSaveKeyModal(null);
-  }
 
   function resetWorkspace() {
-    localStorage.removeItem('loomspace.workspace.v7');
-    setState(loadWorkspace());
-    setSettings(loadSettings());
+    setState({ ...structuredClone(sampleState), workspaceId: userId });
+    setSettings({ activeProviderConfigId: '', providerConfigs: [] });
     setComposerDraft('');
-    setSaveKeyModal(null);
     setSettingsNotice(null);
     setError(null);
     setModelCache({});
@@ -939,7 +982,6 @@ if (closeAfter) setMiniChatOpen(false);
     if (!config) return;
     if (!config.hasEncryptedApiKey) {
       setError('Save an API key for this profile first.');
-      setSaveKeyModal({ apiKey: '', busy: false, targetConfigId: config.id });
       return;
     }
     setModelsLoading(true);
@@ -1124,6 +1166,7 @@ if (closeAfter) setMiniChatOpen(false);
             onChange={(event) => setZoom(Number(event.target.value) / 100)}
           />
           <button onClick={() => { if (window.confirm('Reset the fabric?\n\nThis will permanently delete all threads and AI profiles from this browser. This cannot be undone.')) resetWorkspace(); }} className="quiet topbar-reset-fabric icon-btn" aria-label="Reset fabric"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 3 14 13 14 13 6"/><line x1="1" y1="3" x2="15" y2="3"/><line x1="6" y1="3" x2="6" y2="1"/><line x1="10" y1="3" x2="10" y2="1"/></svg></button>
+          <button onClick={onLogout} className="quiet icon-btn" aria-label="Sign out" title="Sign out"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M6 3H3a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h3"/><polyline points="11 11 14 8 11 5"/><line x1="14" y1="8" x2="6" y2="8"/></svg></button>
         </div>
       </header>
 
@@ -1194,11 +1237,7 @@ if (closeAfter) setMiniChatOpen(false);
                 <div className="profile-list">
                   {settings.providerConfigs.map((config) => {
                     const isActive = config.id === activeProviderConfig?.id;
-                    const lock = config.hasEncryptedApiKey
-                      ? config.apiKey.trim()
-                        ? 'unlocked'
-                        : 'locked'
-                      : 'none';
+                    const lock = config.hasEncryptedApiKey ? 'unlocked' : 'none';
                     return (
                       <button
                         key={config.id}
@@ -1211,7 +1250,7 @@ if (closeAfter) setMiniChatOpen(false);
                           <small>{providerInfo(config.kind).label} · {config.model}</small>
                         </span>
                         <span className={`pill profile-lock ${lock}`}>
-                          {lock === 'none' ? 'no key' : lock === 'unlocked' ? 'unlocked' : 'locked'}
+                          {lock === 'none' ? 'no key' : 'saved'}
                         </span>
                       </button>
                     );
@@ -2011,13 +2050,13 @@ if (closeAfter) setMiniChatOpen(false);
                     </label>
                   </div>
                   
-                  {settingsLockState === 'locked' ? <p className="muted">Unlock the active AI profile to send a message.</p> : null}
+
                   {error ? <p className="error">{error}</p> : null}
-<button
+                  <button
                     onClick={() => sendMessage()}
-                    disabled={(!composerDraft.trim() && composerAttachments.length === 0) || sending || !activeProviderConfig?.apiKey.trim()}
+                    disabled={(!composerDraft.trim() && composerAttachments.length === 0) || sending || (!activeProviderConfig?.hasEncryptedApiKey && !activeProviderConfig?.apiKey.trim())}
                   >
-                    {sending ? 'Thinking…' : settingsLockState === 'locked' ? 'Unlock to send' : 'Send'}
+                    {sending ? 'Thinking…' : 'Send'}
                   </button>
                 </section>
               ) : null}
@@ -2071,7 +2110,7 @@ if (closeAfter) setMiniChatOpen(false);
                       </select>
                     </label>
                     <span className={`pill settings-pill ${settingsLockState}`}>
-                      {settingsLockState === 'none' ? 'no saved key' : settingsLockState === 'unlocked' ? 'unlocked' : 'locked'}
+                      {settingsLockState === 'none' ? 'no saved key' : 'saved'}
                     </span>
                   </div>
                   <div className="editor-actions left-aligned">
@@ -2087,6 +2126,13 @@ if (closeAfter) setMiniChatOpen(false);
                       }}
                     >
                       New profile
+                    </button>
+                    <button
+                      type="button"
+                      onClick={saveProfile}
+                      disabled={savingSettings || !activeProviderConfig}
+                    >
+                      {savingSettings ? 'Saving…' : 'Save profile'}
                     </button>
                     <button
                       type="button"
@@ -2169,9 +2215,21 @@ if (closeAfter) setMiniChatOpen(false);
                       {providerInfo(activeProviderConfig.kind).label} API key
                       <input
                         type="password"
-                        value={activeProviderConfig.apiKey}
-                        onChange={(event) => updateProviderConfig(activeProviderConfig.id, { apiKey: event.target.value })}
-                        placeholder={activeProviderConfig.hasEncryptedApiKey && !activeProviderConfig.apiKey ? 'saved key — tap Unlock to load' : apiKeyPlaceholder(activeProviderConfig.kind)}
+                        value={activeProviderConfig.hasEncryptedApiKey && !activeProviderConfig.apiKey ? '••••••••••••••••' : activeProviderConfig.apiKey}
+                        onChange={(event) => {
+                          const val = event.target.value;
+                          // If user clears the masked sentinel, clear the field so they can type a new key
+                          updateProviderConfig(activeProviderConfig.id, {
+                            apiKey: val === '••••••••••••••••' ? '' : val,
+                          });
+                        }}
+                        onFocus={(event) => {
+                          // Select all on focus so typing replaces the sentinel cleanly
+                          if (activeProviderConfig.hasEncryptedApiKey && !activeProviderConfig.apiKey) {
+                            event.target.select();
+                          }
+                        }}
+                        placeholder={apiKeyPlaceholder(activeProviderConfig.kind)}
                         autoComplete="off"
                         spellCheck={false}
                       />
@@ -2187,12 +2245,10 @@ if (closeAfter) setMiniChatOpen(false);
                       ) : null}
                     </label>
                     <div className="editor-actions left-aligned">
-                      <button type="button" onClick={requestSaveKey} disabled={savingSettings}>
+                      <button type="button" onClick={saveKey} disabled={savingSettings || !activeProviderConfig.apiKey.trim()}>
                         {savingSettings
                           ? 'Working…'
-                          : activeProviderConfig.apiKey.trim()
-                            ? activeProviderConfig.hasEncryptedApiKey ? 'Update saved key' : 'Save key'
-                            : activeProviderConfig.hasEncryptedApiKey ? 'Unlock saved key' : 'Save key'}
+                          : activeProviderConfig.hasEncryptedApiKey ? 'Update saved key' : 'Save key'}
                       </button>
                       <button
                         type="button"

@@ -19,6 +19,12 @@ import type {
 const WORKSPACE_KEY = 'loomspace.workspace.v7';
 const MODEL_CACHE_KEY = 'loomspace.model-cache.v1';
 
+/** Wipe all loomspace keys from localStorage. Call on logout before clearing the auth token. */
+export function clearLocalData(): void {
+  localStorage.removeItem(WORKSPACE_KEY);
+  localStorage.removeItem(MODEL_CACHE_KEY);
+}
+
 export const PROVIDERS: ProviderInfo[] = [
   { id: 'openai', label: 'OpenAI', defaultModel: 'gpt-4o-mini', baseUrl: 'https://api.openai.com/v1' },
   { id: 'anthropic', label: 'Anthropic', defaultModel: 'claude-3-5-sonnet-latest', baseUrl: 'https://api.anthropic.com/v1' },
