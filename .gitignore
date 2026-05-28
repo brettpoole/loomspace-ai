@@ -4,3 +4,7 @@ dist/
 vite.config.js
 vite.config.d.ts
 .env
+
+# MemPalace per-project files (issue #185)
+mempalace.yaml
+entities.json
