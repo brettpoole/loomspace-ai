@@ -5,7 +5,9 @@
  * The server holds API keys and proxies requests to AI providers.
  */
 
-export const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000';
+// Empty string = same-origin (frontend served by backend).
+// For standalone Vite dev: set VITE_API_BASE=http://localhost:8000
+export const API_BASE = import.meta.env.VITE_API_BASE ?? '';
 
 // ---------------------------------------------------------------------------
 // Types mirrored from server

@@ -15,6 +15,7 @@ Each thread is an independent lane with its own AI context. Threads can be forke
 - [Configuration](#configuration)
 - [API Reference](#api-reference)
 - [Development](#development)
+- [Deploying to DigitalOcean](#deploying-to-digitalocean)
 - [Project Structure](#project-structure)
 - [Security](#security)
 - [License](#license)
@@ -285,6 +286,62 @@ loomspace-ai/
 - **No secrets in source** — `.env` is gitignored; `.env.example` contains only placeholder values.
 
 > **Note:** This is a development-oriented setup. For production deployment, use a strong randomly-generated `DATA_SECRET` and `JWT_SECRET`, put the stack behind TLS, and restrict `CORS_ORIGINS`.
+
+---
+
+## Deploying to DigitalOcean
+
+The repo includes a complete `app.yaml` for [DigitalOcean App Platform](https://docs.digitalocean.com/products/app-platform/).
+
+### What gets deployed
+
+| Component | Type | Notes |
+|---|---|---|
+| `backend` | Python service | FastAPI + Gunicorn/Uvicorn, port 8080 |
+| `frontend` | Static site | Vite build, served from CDN |
+| `db` | Dev database | PostgreSQL 16, free tier |
+
+### Steps
+
+**1. Fork or push the repo to GitHub.**
+
+Update the `github.repo` field in `app.yaml` to match your repository (`owner/repo`).
+
+**2. Generate secrets.**
+
+```bash
+python -c "import secrets; print(secrets.token_hex(32))"  # run twice
+```
+
+Replace the two `REPLACE_WITH_GENERATED_SECRET` placeholders in `app.yaml` with the generated values, or set them as encrypted environment variables in the DO dashboard after first deploy.
+
+**3. Deploy.**
+
+```bash
+# Install the doctl CLI, then:
+doctl apps create --spec app.yaml
+
+# Or import app.yaml via the App Platform web UI:
+# https://cloud.digitalocean.com/apps/new → "Edit Your App Spec"
+```
+
+**4. After first deploy**, verify migrations ran by checking the backend's runtime logs in the DO dashboard. If they didn't, trigger a manual re-deploy — the health check at `/api/health` will fail until they complete.
+
+### Upgrading the database for production
+
+The default `app.yaml` provisions a free **dev database** (single-node, limited storage, no backups). For production:
+
+1. In `app.yaml`, change `production: false` → `production: true` under `databases`.
+2. Re-apply the spec. DO will provision a managed PostgreSQL cluster (~$15/month for the smallest size).
+3. The `run_command` picks up the new credentials automatically via the `${db.*}` bindings — no code changes needed.
+
+### Environment variables reference
+
+| Variable | Where to set | Description |
+|---|---|---|
+| `DATA_SECRET` | DO dashboard → backend → Environment (encrypted) | Fernet key material — never change after first deploy or saved keys become unreadable |
+| `JWT_SECRET` | DO dashboard → backend → Environment (encrypted) | JWT signing secret |
+| `VITE_API_BASE` | Set automatically from `${backend.PUBLIC_URL}` | Backend URL injected at frontend build time |
 
 ---
 
