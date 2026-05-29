@@ -436,6 +436,46 @@ button.icon-btn {
   overflow: hidden;
 }
 
+.fork-selection-banner {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  right: 12px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid var(--fork-accent, #7cf7c2);
+  background: rgba(8, 10, 18, 0.92);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.32);
+  backdrop-filter: blur(10px);
+}
+
+.fork-selection-copy {
+  min-width: 0;
+}
+
+.fork-selection-copy h2 {
+  margin: 2px 0 4px;
+  font-size: 18px;
+}
+
+.fork-selection-copy p {
+  margin: 0;
+  color: #9cadcf;
+}
+
+.fork-selection-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .canvas-viewport {
   position: relative;
   overflow: hidden;
@@ -1286,6 +1326,17 @@ button.btn-danger:disabled {
     inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
+.context-node.context-source-selected,
+.chat-node.fork-source-selected,
+.context-node.fork-source-selected {
+  border-color: rgba(124, 247, 194, 0.6);
+  box-shadow:
+    0 0 0 2px rgba(124, 247, 194, 0.14),
+    0 0 18px rgba(124, 247, 194, 0.16),
+    0 18px 50px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
 /* Context target hint — nodes on other threads while in context link mode */
 
 .chat-node.context-target,
@@ -1298,6 +1349,17 @@ button.btn-danger:disabled {
   cursor: crosshair;
 }
 
+.chat-node.context-link-snap-target,
+.context-node.context-link-snap-target {
+  border-color: rgba(255, 213, 102, 0.8);
+  box-shadow:
+    0 0 0 2px rgba(255, 213, 102, 0.16),
+    0 0 22px rgba(255, 213, 102, 0.22),
+    0 18px 50px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  transform: translateY(-1px);
+}
+
 /* Cross-thread context link lines */
 
 .context-link {
@@ -1308,12 +1370,24 @@ button.btn-danger:disabled {
   opacity: 0.7;
 }
 
+
 .context-link-preview {
   fill: none;
-  stroke: rgba(255, 213, 102, 0.55);
+  stroke: rgba(255, 213, 102, 0.75);
   stroke-width: 2;
-  stroke-dasharray: 4 6;
+  stroke-dasharray: 8 8;
   stroke-linecap: round;
+  animation: linkDash 1.1s linear infinite;
+}
+
+.context-link-preview.snapped {
+  stroke: rgba(255, 245, 191, 0.96);
+}
+
+@keyframes linkDash {
+  to {
+    stroke-dashoffset: -32;
+  }
 }
 
 /* Injected message bubbles */
@@ -1492,6 +1566,24 @@ button.btn-danger:disabled {
   margin-top: 8px;
 }
 
+.fork-select-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 6;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(124, 247, 194, 0.42);
+  background: rgba(124, 247, 194, 0.14);
+  color: rgba(196, 255, 230, 0.95);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .context-select-overlay {
   position: absolute;
   bottom: 0;
@@ -1531,6 +1623,11 @@ button.btn-danger:disabled {
 .context-select-half.active {
   border-color: rgba(255, 213, 102, 0.45);
   background: rgba(255, 213, 102, 0.14);
+}
+
+.fork-select-overlay .context-select-half.active {
+  border-color: rgba(124, 247, 194, 0.45);
+  background: rgba(124, 247, 194, 0.14);
 }
 
 .context-select-check {

@@ -101,12 +101,16 @@ export default function App() {
   const [miniChatOpen, setMiniChatOpen] = useState(false);
   const [miniChatMaximized, setMiniChatMaximized] = useState(false);
   const [contextLinkMode, setContextLinkMode] = useState<{
+    intent: 'link' | 'fork';
     sourceThreadId: string;
     dotNodeId: string;
     selectedNodes: Array<{ nodeId: string; parts: { user: boolean; assistant: boolean } }>;
     side: 'left' | 'right';
   } | null>(null);
+  const [contextLinkPointer, setContextLinkPointer] = useState<{ x: number; y: number } | null>(null);
+  const [contextLinkSnapTarget, setContextLinkSnapTarget] = useState<{ threadId: string; nodeId: string } | null>(null);
   const [aiSettingsModalOpen, setAiSettingsModalOpen] = useState(false);
+  const [settingsEditorConfigId, setSettingsEditorConfigId] = useState<string | null>(null);
   const miniChatMessagesRef = useRef<HTMLDivElement>(null);
   const [threadEditorOpen, setThreadEditorOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -197,6 +201,16 @@ export default function App() {
     settings.providerConfigs.find((config) => config.id === settings.activeProviderConfigId) ?? settings.providerConfigs[0] ?? null;
   const settingsLockState = activeProviderConfig ? (activeProviderConfig.hasEncryptedApiKey ? (activeProviderConfig.apiKey.trim() ? 'unlocked' : 'locked') : 'none') : 'none';
 
+  const settingsEditorConfig =
+    settings.providerConfigs.find((config) => config.id === settingsEditorConfigId) ?? activeProviderConfig;
+  const settingsEditorLockState = settingsEditorConfig
+    ? settingsEditorConfig.hasEncryptedApiKey
+      ? settingsEditorConfig.apiKey.trim()
+        ? 'unlocked'
+        : 'locked'
+      : 'none'
+    : 'none';
+
   useEffect(() => {
     if (activeProviderConfig?.hasEncryptedApiKey && !activeProviderConfig.apiKey.trim() && !passphraseModal) {
       setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: activeProviderConfig.id });
@@ -207,6 +221,41 @@ export default function App() {
     () => modelsForConfig(modelCache, activeProviderConfig, activeProviderConfig?.model ?? ''),
     [modelCache, activeProviderConfig],
   );
+  const settingsEditorModels = useMemo(
+    () => modelsForConfig(modelCache, settingsEditorConfig, settingsEditorConfig?.model ?? ''),
+    [modelCache, settingsEditorConfig],
+  );
+
+  useEffect(() => {
+    if (!forkDraft) return;
+    if (contextLinkMode?.intent !== 'fork' || contextLinkMode.sourceThreadId !== forkDraft.sourceThreadId) {
+      setForkDraft(null);
+      return;
+    }
+    if (forkDraft.selectedNodes !== contextLinkMode.selectedNodes) {
+      setForkDraft({ ...forkDraft, selectedNodes: contextLinkMode.selectedNodes });
+    }
+  }, [contextLinkMode, forkDraft]);
+
+  useEffect(() => {
+    if (contextLinkMode?.intent === 'link') return;
+    if (contextLinkPointer !== null) setContextLinkPointer(null);
+    if (contextLinkSnapTarget !== null) setContextLinkSnapTarget(null);
+  }, [contextLinkMode?.intent, contextLinkPointer, contextLinkSnapTarget]);
+
+  const forkSourceThread = forkDraft ? state.threads.find((thread) => thread.id === forkDraft.sourceThreadId) ?? null : null;
+  const forkSelectionMessageCount = forkSourceThread && forkDraft ? countSelectedMessages(forkSourceThread, forkDraft.selectedNodes) : 0;
+  const forkSelectionPieceCount = forkDraft?.selectedNodes.length ?? 0;
+
+  function clientToCanvasPoint(clientX: number, clientY: number) {
+    const viewport = viewportRef.current;
+    if (!viewport) return null;
+    const rect = viewport.getBoundingClientRect();
+    return {
+      x: (clientX - rect.left - state.panX) / state.zoom,
+      y: (clientY - rect.top - state.panY) / state.zoom,
+    };
+  }
 
   const canvasWidth = Math.max(
     CANVAS_MIN_WIDTH,
@@ -234,6 +283,29 @@ export default function App() {
   }, [canvasWidth, state.threads]);
 
   const canvasHeight = Math.max(CANVAS_MIN_HEIGHT, ...lanes.map((lane) => lane.height));
+
+  const contextLinkPreview = useMemo(() => {
+    if (contextLinkMode?.intent !== 'link') return null;
+    const sourceLane = lanes.find((lane) => lane.thread.id === contextLinkMode.sourceThreadId);
+    if (!sourceLane) return null;
+    const sourceEntry = sourceLane.nodes.find((entry) => entry.node.id === contextLinkMode.dotNodeId);
+    if (!sourceEntry) return null;
+    const sourceX = sourceLane.centerX + (contextLinkMode.side === 'right' ? 22 : -22);
+    const sourceY = sourceEntry.top + nodeHeight(sourceLane.thread, sourceEntry.node) / 2;
+    const target = contextLinkSnapTarget
+      ? (() => {
+          const lane = lanes.find((entry) => entry.thread.id === contextLinkSnapTarget.threadId);
+          const entry = lane?.nodes.find((item) => item.node.id === contextLinkSnapTarget.nodeId);
+          if (!lane || !entry) return null;
+          return {
+            x: lane.centerX,
+            y: entry.top + nodeHeight(lane.thread, entry.node) / 2,
+          };
+        })()
+      : contextLinkPointer;
+    if (!target) return null;
+    return { sourceX, sourceY, targetX: target.x, targetY: target.y, snapped: contextLinkSnapTarget !== null };
+  }, [contextLinkMode, contextLinkPointer, contextLinkSnapTarget, lanes]);
 
   useEffect(() => {
     clampViewport();
@@ -267,6 +339,7 @@ export default function App() {
       if (nodePreviewModal) { setNodePreviewModal(null); return; }
       if (chatModalOpen) { setChatModalOpen(false); return; }
       if (miniChatOpen) { setMiniChatOpen(false); return; }
+      if (forkDraft) { cancelForkSelection(); return; }
       if (contextLinkMode) { setContextLinkMode(null); return; }
       if (state.selectedThreadId) { deselectNode(); }
     };
@@ -276,7 +349,7 @@ export default function App() {
       window.removeEventListener('keydown', onKeyDown, true);
       document.removeEventListener('keydown', onKeyDown, true);
     };
-  }, [passphraseModal, aiSettingsModalOpen, threadEditorOpen, nodePreviewModal, chatModalOpen, miniChatOpen, contextLinkMode, state.selectedThreadId]);
+  }, [passphraseModal, aiSettingsModalOpen, threadEditorOpen, nodePreviewModal, chatModalOpen, miniChatOpen, contextLinkMode, forkDraft, state.selectedThreadId]);
 
   function clampViewport(next?: Partial<Pick<LoomspaceState, 'panX' | 'panY' | 'zoom'>>) {
     const viewport = viewportRef.current;
@@ -290,6 +363,33 @@ export default function App() {
       return;
     }
     setState((current) => ({ ...current, ...nextBounds, zoom }));
+  }
+
+  function threadLaneHeight(thread: ThreadLane) {
+    let cursorTop = TOP_PAD;
+    for (const node of thread.nodes) {
+      cursorTop += nodeHeight(thread, node) + NODE_GAP;
+    }
+    return cursorTop + 72;
+  }
+
+  function focusCanvasOnThread(threads: ThreadLane[], thread: ThreadLane, threadIndex: number, zoom: number) {
+    const viewport = viewportRef.current;
+    const width = viewport?.clientWidth ?? window.innerWidth;
+    const height = viewport?.clientHeight ?? window.innerHeight;
+    const threadCount = threads.length;
+    const nextCanvasWidth = Math.max(
+      CANVAS_MIN_WIDTH,
+      LEFT_PAD * 2 + Math.max(0, threadCount - 1) * (LANE_WIDTH + LANE_GAP) + LANE_WIDTH,
+    );
+    const nextCanvasHeight = Math.max(CANVAS_MIN_HEIGHT, ...threads.map(threadLaneHeight));
+    const threadGroupWidth = threadCount * LANE_WIDTH + Math.max(0, threadCount - 1) * LANE_GAP;
+    const groupLeft = nextCanvasWidth / 2 - threadGroupWidth / 2;
+    const centerX = groupLeft + threadIndex * (LANE_WIDTH + LANE_GAP) + LANE_WIDTH / 2;
+    const centerY = threadLaneHeight(thread) / 2;
+    const panX = width / 2 - centerX * zoom;
+    const panY = height / 2 - centerY * zoom;
+    return boundedPan(panX, panY, zoom, width, height, nextCanvasWidth, nextCanvasHeight);
   }
 
   function selectThread(threadId: string, nodeId?: string | null) {
@@ -338,16 +438,9 @@ export default function App() {
       sourceThreadColor: thread.color,
       selectedNodes: forkSelection,
     });
-    setContextLinkMode({ sourceThreadId: thread.id, dotNodeId: nodeId, selectedNodes: forkSelection, side });
-    setThreadEditorMode('create');
-    setThreadEditorTargetId(null);
-    setThreadEditorDraft({
-      title: `Fork of ${thread.title}`,
-      description: thread.description,
-    });
+    setContextLinkMode({ intent: 'fork', sourceThreadId: thread.id, dotNodeId: nodeId, selectedNodes: forkSelection, side });
     setChatModalOpen(false);
     setMiniChatOpen(false);
-    setThreadEditorOpen(true);
   }
 
   function closeThreadEditor() {
@@ -385,6 +478,62 @@ export default function App() {
     return injectedMessages;
   }
 
+  function countSelectedMessages(sourceThread: ThreadLane, selectedNodes: ForkDraft['selectedNodes']) {
+    let count = 0;
+    for (const node of sourceThread.nodes) {
+      if (node.kind !== 'chat' && node.kind !== 'context') continue;
+      const selection = selectedNodes.find((s) => s.nodeId === node.id);
+      if (!selection) continue;
+      for (const msg of node.messages) {
+        if (msg.role === 'user' && selection.parts.user) count += 1;
+        if (msg.role === 'assistant' && selection.parts.assistant) count += 1;
+      }
+    }
+    return count;
+  }
+
+  function buildForkThread(baseThread: ThreadLane, sourceThread: ThreadLane, selectedNodes: ForkDraft['selectedNodes']) {
+    const injectedMessages = collectSelectedMessages(sourceThread, selectedNodes);
+    if (injectedMessages.length === 0) return baseThread;
+    const contextNode = createContextNode(sourceThread, selectedNodes.map((entry) => entry.nodeId), injectedMessages);
+    return appendContextInjection(baseThread, contextNode, injectedMessages);
+  }
+
+  function cancelForkSelection() {
+    setForkDraft(null);
+    setContextLinkMode(null);
+  }
+
+  function commitForkSelection() {
+    if (!forkDraft) return;
+    const sourceThread = state.threads.find((entry) => entry.id === forkDraft.sourceThreadId);
+    if (!sourceThread) {
+      cancelForkSelection();
+      return;
+    }
+    const selectedCount = countSelectedMessages(sourceThread, forkDraft.selectedNodes);
+    if (selectedCount === 0) return;
+    const baseThread = createThread(`Fork of ${forkDraft.sourceThreadTitle}`, sourceThread.description, state.threads.length, {
+      initialModel: activeProviderConfig?.model,
+    });
+    const thread = buildForkThread(baseThread, sourceThread, forkDraft.selectedNodes);
+    setState((current) => {
+      const nextThreads = [...current.threads, thread];
+      return {
+        ...current,
+        version: current.version + 1,
+        threads: nextThreads,
+        selectedThreadId: thread.id,
+        selectedNodeId: thread.activeNodeId,
+        ...focusCanvasOnThread(nextThreads, thread, current.threads.length, current.zoom),
+      };
+    });
+    setChatModalOpen(false);
+    setMiniChatOpen(true);
+    cancelForkSelection();
+    setError(null);
+  }
+
   function submitThreadEditor() {
     const title = threadEditorDraft.title.trim() || 'Untitled thread';
     const description = threadEditorDraft.description.trim() || 'A new lane for a project idea and its AI chat context.';
@@ -398,29 +547,24 @@ export default function App() {
         ? (() => {
             const sourceThread = state.threads.find((entry) => entry.id === forkDraft.sourceThreadId);
             if (!sourceThread) return baseThread;
-            const injectedMessages = collectSelectedMessages(sourceThread, forkDraft.selectedNodes);
-            if (injectedMessages.length === 0) return baseThread;
-            const contextNode = createContextNode(sourceThread, forkDraft.selectedNodes.map((entry) => entry.nodeId), injectedMessages);
-            return {
-              ...baseThread,
-              context: [...injectedMessages],
-              nodes: [baseThread.nodes[0], contextNode],
-              activeNodeId: baseThread.activeNodeId,
-            };
+            return buildForkThread(baseThread, sourceThread, forkDraft.selectedNodes);
           })()
         : baseThread;
 
-      setState((current) => ({
-        ...current,
-        version: current.version + 1,
-        threads: [...current.threads, thread],
-        selectedThreadId: thread.id,
-        selectedNodeId: thread.activeNodeId,
-        panX: current.threads.length === 0 ? current.panX : current.panX - 40,
-      }));
+      setState((current) => {
+        const nextThreads = [...current.threads, thread];
+        return {
+          ...current,
+          version: current.version + 1,
+          threads: nextThreads,
+          selectedThreadId: thread.id,
+          selectedNodeId: thread.activeNodeId,
+          ...focusCanvasOnThread(nextThreads, thread, current.threads.length, current.zoom),
+        };
+      });
       setChatModalOpen(false);
       setMiniChatOpen(true);
-      setContextLinkMode(null);
+      cancelForkSelection();
     } else if (threadEditorTargetId) {
       setState((current) => ({
         ...current,
@@ -434,6 +578,7 @@ export default function App() {
     closeThreadEditor();
     setError(null);
   }
+
 
 async function sendMessage(closeAfter = false) {
     if (!activeThread || !activeNodeIsChat || (!composerDraft.trim() && composerAttachments.length === 0) || sending) return;
@@ -598,6 +743,7 @@ if (closeAfter) setMiniChatOpen(false);
           threads: [fallbackThread],
           selectedThreadId: fallbackThread.id,
           selectedNodeId: fallbackThread.activeNodeId,
+          ...focusCanvasOnThread([fallbackThread], fallbackThread, 0, current.zoom),
         };
       }
 
@@ -713,7 +859,7 @@ if (closeAfter) setMiniChatOpen(false);
     setDeleteMode(null);
   }
 
-  function enterContextLinkMode(thread: ThreadLane, nodeId: string, side: 'left' | 'right') {
+  function enterContextLinkMode(thread: ThreadLane, nodeId: string, side: 'left' | 'right', anchor?: { clientX: number; clientY: number }) {
     const selectableNodes = thread.nodes.filter((n) => (n.kind === 'chat' && n.messages.length > 0) || n.kind === 'context');
     const idx = selectableNodes.findIndex((n) => n.id === nodeId);
     if (idx < 0) return;
@@ -721,7 +867,9 @@ if (closeAfter) setMiniChatOpen(false);
       nodeId: n.id,
       parts: { user: true, assistant: true },
     }));
-    setContextLinkMode({ sourceThreadId: thread.id, dotNodeId: nodeId, selectedNodes, side });
+    setContextLinkPointer(anchor ? clientToCanvasPoint(anchor.clientX, anchor.clientY) : null);
+    setContextLinkSnapTarget(null);
+    setContextLinkMode({ intent: 'link', sourceThreadId: thread.id, dotNodeId: nodeId, selectedNodes, side });
   }
 
   function toggleContextNode(nodeId: string) {
@@ -746,7 +894,7 @@ if (closeAfter) setMiniChatOpen(false);
   }
 
   function injectContextTo(destThreadId: string) {
-    if (!contextLinkMode) return;
+    if (!contextLinkMode || contextLinkMode.intent !== 'link') return;
     const sourceThread = state.threads.find((t) => t.id === contextLinkMode.sourceThreadId);
     if (!sourceThread) return;
 
@@ -769,6 +917,8 @@ if (closeAfter) setMiniChatOpen(false);
 
     if (injectedMessages.length === 0) {
       setContextLinkMode(null);
+      setContextLinkPointer(null);
+      setContextLinkSnapTarget(null);
       return;
     }
 
@@ -785,6 +935,8 @@ if (closeAfter) setMiniChatOpen(false);
     }));
 
     setContextLinkMode(null);
+    setContextLinkPointer(null);
+    setContextLinkSnapTarget(null);
   }
 
   function updateProviderConfig(configId: string, patch: Partial<AIProviderConfig>) {
@@ -794,26 +946,29 @@ if (closeAfter) setMiniChatOpen(false);
     }));
   }
 
-  function requestSaveKey() {
-    const candidate = activeProviderConfig?.apiKey.trim() ?? '';
+  function requestSaveKey(configId: string) {
+    const targetConfig = settings.providerConfigs.find((config) => config.id === configId) ?? null;
+    const targetConfigId = targetConfig?.id ?? configId;
+    const candidate = targetConfig?.apiKey.trim() ?? '';
     if (!candidate) {
-      if (activeProviderConfig?.hasEncryptedApiKey) {
-        setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: activeProviderConfig.id });
+      if (targetConfig?.hasEncryptedApiKey) {
+        setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId });
       } else {
         setError('Enter your API key first.');
       }
       return;
     }
     setError(null);
-    setPassphraseModal({ mode: 'encrypt', passphrase: '', busy: false, pendingKey: candidate, targetConfigId: activeProviderConfig.id });
+    setPassphraseModal({ mode: 'encrypt', passphrase: '', busy: false, pendingKey: candidate, targetConfigId });
   }
 
-  function deleteSavedKey() {
-    if (!activeProviderConfig) return;
-    const confirmed = activeProviderConfig.hasEncryptedApiKey ? window.confirm('Delete the saved encrypted key from this browser?') : true;
+  function deleteSavedKey(configId: string) {
+    const targetConfig = settings.providerConfigs.find((config) => config.id === configId) ?? null;
+    if (!targetConfig) return;
+    const confirmed = targetConfig.hasEncryptedApiKey ? window.confirm('Delete the saved encrypted key from this browser?') : true;
     if (!confirmed) return;
-    clearProviderSecret(activeProviderConfig.id);
-    updateProviderConfig(activeProviderConfig.id, { apiKey: '', hasEncryptedApiKey: false });
+    clearProviderSecret(targetConfig.id);
+    updateProviderConfig(targetConfig.id, { apiKey: '', hasEncryptedApiKey: false });
     setSettingsNotice('Saved key deleted from this browser.');
     setError(null);
   }
@@ -834,14 +989,12 @@ if (closeAfter) setMiniChatOpen(false);
       if (passphraseModal.mode === 'unlock') {
         const apiKey = await unlockProviderSecret(configId, passphrase);
         updateProviderConfig(configId, { apiKey, hasEncryptedApiKey: true });
-        setSettings((current) => ({ ...current, activeProviderConfigId: configId }));
         setSettingsNotice('Key unlocked — loaded in memory for this session.');
       } else {
         const keyToSave = passphraseModal.pendingKey?.trim() ?? settings.providerConfigs.find((config) => config.id === configId)?.apiKey.trim() ?? '';
         if (!keyToSave) throw new Error('No key to save.');
         await saveProviderSecret(configId, keyToSave, passphrase);
         updateProviderConfig(configId, { apiKey: keyToSave, hasEncryptedApiKey: true });
-        setSettings((current) => ({ ...current, activeProviderConfigId: configId }));
         setSettingsNotice('Key encrypted and saved. Loaded in memory for this session.');
       }
       setPassphraseModal(null);
@@ -956,6 +1109,20 @@ if (closeAfter) setMiniChatOpen(false);
 
   function movePan(event: PointerEvent<HTMLDivElement>) {
     pointerMap.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+
+    if (contextLinkMode?.intent === 'link') {
+      const pointer = clientToCanvasPoint(event.clientX, event.clientY);
+      if (pointer) setContextLinkPointer(pointer);
+      const target = event.target instanceof Element ? event.target.closest('[data-thread-id][data-node-id]') : null;
+      if (target instanceof HTMLElement) {
+        const threadId = target.dataset.threadId;
+        const nodeId = target.dataset.nodeId;
+        if (threadId && nodeId && threadId !== contextLinkMode.sourceThreadId) setContextLinkSnapTarget({ threadId, nodeId });
+        else setContextLinkSnapTarget(null);
+      } else {
+        setContextLinkSnapTarget(null);
+      }
+    }
 
     if (pinchState.current && pointerMap.current.size === 2) {
       const [p1, p2] = [...pointerMap.current.values()];
@@ -1135,6 +1302,7 @@ if (closeAfter) setMiniChatOpen(false);
                 className="quiet"
                 onClick={() => {
                   setSidebarOpen(false);
+                  setSettingsEditorConfigId(activeProviderConfig?.id ?? settings.providerConfigs[0]?.id ?? null);
                   setAiSettingsModalOpen(true);
                 }}
               >
@@ -1151,9 +1319,9 @@ if (closeAfter) setMiniChatOpen(false);
                     const next = createProviderConfig('openai-compatible-custom', { label: 'New profile', model: '' });
                     setSettings((current) => ({
                       ...current,
-                      activeProviderConfigId: next.id,
                       providerConfigs: [...current.providerConfigs, next],
                     }));
+                    setSettingsEditorConfigId(next.id);
                     setSidebarOpen(false);
                     setAiSettingsModalOpen(true);
                   }}
@@ -1176,7 +1344,11 @@ if (closeAfter) setMiniChatOpen(false);
                         key={config.id}
                         type="button"
                         className={`profile-chip ${isActive ? 'selected' : ''}`}
-                        onClick={() => changeSettingsProvider(config.id)}
+                        onClick={() => {
+                          setSettingsEditorConfigId(config.id);
+                          setSidebarOpen(false);
+                          setAiSettingsModalOpen(true);
+                        }}
                       >
                         <span className="profile-chip-copy">
                           <strong>{config.label}</strong>
@@ -1196,9 +1368,9 @@ if (closeAfter) setMiniChatOpen(false);
                       const next = createProviderConfig('openai-compatible-custom', { label: 'New profile', model: '' });
                       setSettings((current) => ({
                         ...current,
-                        activeProviderConfigId: next.id,
                         providerConfigs: [...current.providerConfigs, next],
                       }));
+                      setSettingsEditorConfigId(next.id);
                       setSidebarOpen(false);
                       setAiSettingsModalOpen(true);
                     }}
@@ -1242,26 +1414,41 @@ if (closeAfter) setMiniChatOpen(false);
             <span>{metrics.saturation * 100 < 50 ? 'light weave' : 'dense weave'}</span>
           </div>
 
+          {forkDraft && forkSourceThread ? (
+            <div className="fork-selection-banner">
+              <div className="fork-selection-copy">
+                <p className="eyebrow">Fork selection</p>
+                <h2>{forkSelectionMessageCount > 0 ? `${forkSelectionMessageCount} message${forkSelectionMessageCount === 1 ? '' : 's'} selected` : 'Select conversation pieces to fork'}</h2>
+                <p>{forkSelectionPieceCount} piece{forkSelectionPieceCount === 1 ? '' : 's'} selected. Use the user / assistant toggles to trim what carries over.</p>
+              </div>
+              <div className="fork-selection-actions">
+                <button type="button" onClick={cancelForkSelection}>Cancel</button>
+                <button type="button" disabled={forkSelectionMessageCount === 0} onClick={commitForkSelection}>Fork selected</button>
+              </div>
+            </div>
+          ) : null}
+
           <div className="canvas-area">
-          <div ref={viewportRef} className={`canvas-viewport ${state.densityOverlay ? 'overlay' : ''} pan-${panMode}`} onWheel={onWheel}>
-            <div
-              className="canvas-stage"
-              style={{
-                width: canvasWidth,
-                height: canvasHeight,
-                transform: `translate(${state.panX}px, ${state.panY}px) scale(${state.zoom})`,
-              }}
-              onPointerDown={beginPan}
-              onPointerMove={movePan}
-              onPointerUp={endPan}
-              onPointerLeave={endPan}
-              onPointerCancel={endPan}
-              onContextMenu={(e) => { if (e.button === 1) e.preventDefault(); }}
-              onClick={(e) => {
-                if (e.target !== e.currentTarget) return;
-                deselectNode();
-              }}
-            >
+            <div ref={viewportRef} className={`canvas-viewport ${state.densityOverlay ? 'overlay' : ''} pan-${panMode}`} onWheel={onWheel}>
+              <div
+                className="canvas-stage"
+                style={{
+                  width: canvasWidth,
+                  height: canvasHeight,
+                  transform: `translate(${state.panX}px, ${state.panY}px) scale(${state.zoom})`,
+                }}
+                onPointerDown={beginPan}
+                onPointerMove={movePan}
+                onPointerUp={endPan}
+                onPointerLeave={endPan}
+                onPointerCancel={endPan}
+                onContextMenu={(e) => { if (e.button === 1) e.preventDefault(); }}
+                onClick={(e) => {
+                  if (forkDraft) return;
+                  if (e.target !== e.currentTarget) return;
+                  deselectNode();
+                }}
+              >
               <svg className="edges-layer" viewBox={`0 0 ${canvasWidth} ${canvasHeight}`} preserveAspectRatio="none">
                 {lanes.map((lane) => {
                   const path = buildThreadPath(lane.centerX, lane.nodes.map((entry) => entry.node), lane.thread);
@@ -1302,25 +1489,17 @@ if (closeAfter) setMiniChatOpen(false);
                       );
                     })
                 )}
-                {contextLinkMode && (() => {
-                  const srcLane = lanes.find((l) => l.thread.id === contextLinkMode.sourceThreadId);
-                  if (!srcLane) return null;
-                  const selectedIds = new Set(contextLinkMode.selectedNodes.map((s) => s.nodeId));
-                  const sorted = srcLane.nodes
-                    .filter((e) => selectedIds.has(e.node.id))
-                    .sort((a, b) => a.top - b.top);
-                  if (sorted.length === 0) return null;
-                  const offset = contextLinkMode.side === 'right' ? 22 : -22;
-                  const srcX = srcLane.centerX + offset;
-                  return (
-                    <line
-                      key="ctx-preview"
-                      x1={srcX} y1={sorted[0].top + CHAT_HEIGHT / 2}
-                      x2={srcX} y2={sorted[sorted.length - 1].top + CHAT_HEIGHT / 2}
-                      className="context-link-preview"
-                    />
-                  );
-                })()}
+                {contextLinkPreview ? (
+                  <line
+                    key="ctx-preview"
+                    x1={contextLinkPreview.sourceX}
+                    y1={contextLinkPreview.sourceY}
+                    x2={contextLinkPreview.targetX}
+                    y2={contextLinkPreview.targetY}
+                    className={`context-link-preview${contextLinkPreview.snapped ? ' snapped' : ''}`}
+                  />
+                ) : null}
+
               </svg>
 
               {lanes.map((lane) => {
@@ -1369,15 +1548,15 @@ if (closeAfter) setMiniChatOpen(false);
                           : null;
                         const isContextSource = ctxPart !== null;
                         const isContextTarget = contextLinkMode !== null && thread.id !== contextLinkMode.sourceThreadId;
+                        const isContextSnapTarget = contextLinkSnapTarget?.threadId === thread.id && contextLinkSnapTarget.nodeId === node.id;
                         const showDots = !miniChatOpen && (isSelected || (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id));
-
                         const handleSideDotCtx = (side: 'left' | 'right') => (e: React.MouseEvent) => {
                           e.stopPropagation();
                           if (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id && contextLinkMode.side === side) {
                             if (contextLinkMode.selectedNodes.length <= 1) setContextLinkMode(null);
                             else setContextLinkMode({ ...contextLinkMode, selectedNodes: [{ nodeId: node.id, parts: { user: true, assistant: true } }] });
                           } else {
-                            enterContextLinkMode(thread, node.id, side);
+                            enterContextLinkMode(thread, node.id, side, { clientX: e.clientX, clientY: e.clientY });
                           }
                         };
 
@@ -1387,9 +1566,14 @@ if (closeAfter) setMiniChatOpen(false);
                         };
 
                         return (
-                          <div key={node.id} style={{ position: 'absolute', top, left: 0 }}>
+                          <div
+                            key={node.id}
+                            style={{ position: 'absolute', top, left: 0 }}
+                            data-thread-id={thread.id}
+                            data-node-id={node.id}
+                          >
                             <div
-                              className={`context-node ${isSelected ? 'selected' : ''} ${isContextSource ? 'context-source-selected' : ''} ${isContextTarget ? 'context-target' : ''}`}
+                              className={`context-node ${isSelected ? 'selected' : ''} ${isContextSource ? 'context-source-selected' : ''} ${isContextTarget ? 'context-target' : ''} ${isContextSnapTarget ? 'context-link-snap-target' : ''}`}
                               style={{ position: 'relative', '--ctx-color': ctxNode.sourceThreadColor, '--ctx-bg': hexToRgba(ctxNode.sourceThreadColor, 0.07), '--ctx-border': hexToRgba(ctxNode.sourceThreadColor, 0.35) } as React.CSSProperties}
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -1525,7 +1709,9 @@ if (closeAfter) setMiniChatOpen(false);
                         ? contextLinkMode.selectedNodes.find((s) => s.nodeId === node.id) ?? null
                         : null;
                       const isContextSource = ctxPart !== null;
-                      const isContextTarget = contextLinkMode !== null && thread.id !== contextLinkMode.sourceThreadId;
+                      const isContextTarget = contextLinkMode?.intent === 'link' && thread.id !== contextLinkMode.sourceThreadId;
+                      const isForkSelection = forkDraft?.sourceThreadId === thread.id && contextLinkMode?.intent === 'fork';
+                      const isContextSnapTarget = contextLinkSnapTarget?.threadId === thread.id && contextLinkSnapTarget.nodeId === node.id;
                       const showDots = !miniChatOpen && (isSelected || (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id));
 
                       const handleSideDot = (side: 'left' | 'right') => (e: React.MouseEvent) => {
@@ -1544,9 +1730,14 @@ if (closeAfter) setMiniChatOpen(false);
                       };
 
                       return (
-                        <div key={node.id} style={{ position: 'absolute', top, left: 0 }}>
+                        <div
+                          key={node.id}
+                          style={{ position: 'absolute', top, left: 0 }}
+                          data-thread-id={thread.id}
+                          data-node-id={node.id}
+                        >
                           <div
-                            className={`chat-node ${isSelected ? 'selected' : ''} ${chatNode.status === 'pending' ? 'sending' : ''} ${chatNode.status === 'unread' && !(miniChatOpen && thread.id === state.selectedThreadId) ? 'responded' : ''} ${isContextSource ? 'context-source-selected' : ''} ${isContextTarget ? 'context-target' : ''}`}
+                            className={`chat-node ${isSelected ? 'selected' : ''} ${chatNode.status === 'pending' ? 'sending' : ''} ${chatNode.status === 'unread' && !(miniChatOpen && thread.id === state.selectedThreadId) ? 'responded' : ''} ${isContextSource ? 'context-source-selected' : ''} ${isContextTarget ? 'context-target' : ''} ${isContextSnapTarget ? 'context-link-snap-target' : ''}`}
                             style={{ position: 'relative', top: 0, left: 0 }}
                             onClick={(e) => {
                               e.stopPropagation();
@@ -2017,14 +2208,14 @@ if (closeAfter) setMiniChatOpen(false);
       ) : null}
 
       {aiSettingsModalOpen ? (
-        <div className="chat-modal-backdrop" onClick={() => setAiSettingsModalOpen(false)}>
+        <div className="chat-modal-backdrop" onClick={() => { setAiSettingsModalOpen(false); setSettingsEditorConfigId(null); }}>
           <section className="ai-settings-modal" onClick={(event) => event.stopPropagation()}>
             <header className="chat-modal-header">
               <div>
                 <p className="eyebrow">AI settings</p>
                 <h2>Manage AI profiles</h2>
               </div>
-              <button type="button" className="quiet" onClick={() => setAiSettingsModalOpen(false)} aria-label="Close AI settings">
+              <button type="button" className="quiet" onClick={() => { setAiSettingsModalOpen(false); setSettingsEditorConfigId(null); }} aria-label="Close AI settings">
                 ×
               </button>
             </header>
@@ -2036,8 +2227,8 @@ if (closeAfter) setMiniChatOpen(false);
                       <span>Profile</span>
                       <select
                         autoFocus
-                        value={activeProviderConfig?.id ?? ''}
-                        onChange={(event) => changeSettingsProvider(event.target.value)}
+                        value={settingsEditorConfig?.id ?? ''}
+                        onChange={(event) => setSettingsEditorConfigId(event.target.value)}
                       >
                         {settings.providerConfigs.map((config) => (
                           <option key={config.id} value={config.id}>
@@ -2046,8 +2237,8 @@ if (closeAfter) setMiniChatOpen(false);
                         ))}
                       </select>
                     </label>
-                    <span className={`pill settings-pill ${settingsLockState}`}>
-                      {settingsLockState === 'none' ? 'no saved key' : settingsLockState === 'unlocked' ? 'unlocked' : 'locked'}
+                    <span className={`pill settings-pill ${settingsEditorLockState}`}>
+                      {settingsEditorLockState === 'none' ? 'no saved key' : settingsEditorLockState === 'unlocked' ? 'unlocked' : 'locked'}
                     </span>
                   </div>
                   <div className="editor-actions left-aligned">
@@ -2057,9 +2248,9 @@ if (closeAfter) setMiniChatOpen(false);
                         const next = createProviderConfig('openai-compatible-custom', { label: 'New profile', model: '' });
                         setSettings((current) => ({
                           ...current,
-                          activeProviderConfigId: next.id,
                           providerConfigs: [...current.providerConfigs, next],
                         }));
+                        setSettingsEditorConfigId(next.id);
                       }}
                     >
                       New profile
@@ -2067,29 +2258,28 @@ if (closeAfter) setMiniChatOpen(false);
                     <button
                       type="button"
                       className="quiet btn-danger"
-                      onClick={() => activeProviderConfig && deleteProfile(activeProviderConfig.id)}
-                      disabled={!activeProviderConfig}
+                      onClick={() => settingsEditorConfig && deleteProfile(settingsEditorConfig.id)}
+                      disabled={!settingsEditorConfig}
                     >
                       Delete profile
                     </button>
                   </div>
                 </div>
-                {activeProviderConfig ? (
+                {settingsEditorConfig ? (
                   <>
                     <label className="field">
                       Provider type
                       <select
-                        value={activeProviderConfig.kind}
+                        value={settingsEditorConfig.kind}
                         onChange={(event) => {
                           const kind = event.target.value as AIProvider;
                           const info = providerInfo(kind);
-                          updateProviderConfig(activeProviderConfig.id, {
+                          updateProviderConfig(settingsEditorConfig.id, {
                             kind,
-                            label: activeProviderConfig.label || info.label,
+                            label: settingsEditorConfig.label || info.label,
                             model: '',
                             baseUrl: info.baseUrl,
                           });
-                          setSettings((current) => ({ ...current, activeProviderConfigId: activeProviderConfig.id }));
                         }}
                       >
                         {PROVIDERS.map((entry) => (
@@ -2102,17 +2292,17 @@ if (closeAfter) setMiniChatOpen(false);
                     <label className="field">
                       Label
                       <input
-                        value={activeProviderConfig.label}
-                        onChange={(event) => updateProviderConfig(activeProviderConfig.id, { label: event.target.value })}
+                        value={settingsEditorConfig.label}
+                        onChange={(event) => updateProviderConfig(settingsEditorConfig.id, { label: event.target.value })}
                         placeholder="Profile name"
                       />
                     </label>
-                    {activeProviderConfig.kind === 'openai-compatible-custom' ? (
+                    {settingsEditorConfig.kind === 'openai-compatible-custom' ? (
                       <label className="field">
                         Base URL
                         <input
-                          value={activeProviderConfig.baseUrl ?? ''}
-                          onChange={(event) => updateProviderConfig(activeProviderConfig.id, { baseUrl: event.target.value })}
+                          value={settingsEditorConfig.baseUrl ?? ''}
+                          onChange={(event) => updateProviderConfig(settingsEditorConfig.id, { baseUrl: event.target.value })}
                           placeholder="https://api.example.com/v1"
                           autoComplete="off"
                           spellCheck={false}
@@ -2122,10 +2312,10 @@ if (closeAfter) setMiniChatOpen(false);
                     <label className="field">
                       Model
                       <select
-                        value={activeProviderConfig.model}
-                        onChange={(event) => updateProviderConfig(activeProviderConfig.id, { model: event.target.value })}
+                        value={settingsEditorConfig.model}
+                        onChange={(event) => updateProviderConfig(settingsEditorConfig.id, { model: event.target.value })}
                       >
-                        {settingsModels.map((model) => (
+                        {settingsEditorModels.map((model) => (
                           <option key={model} value={model}>
                             {model}
                           </option>
@@ -2135,46 +2325,46 @@ if (closeAfter) setMiniChatOpen(false);
                     <div className="editor-actions left-aligned">
                       <button
                         type="button"
-                        onClick={() => refreshModels(activeProviderConfig.id)}
-                        disabled={modelsLoading || !activeProviderConfig.apiKey.trim()}
+                        onClick={() => refreshModels(settingsEditorConfig.id)}
+                        disabled={modelsLoading || !settingsEditorConfig.apiKey.trim()}
                       >
-                        {modelsLoading ? 'Loading models…' : modelCache[activeProviderConfig.id] ? 'Refresh models' : 'List models'}
+                        {modelsLoading ? 'Loading models…' : modelCache[settingsEditorConfig.id] ? 'Refresh models' : 'List models'}
                       </button>
                     </div>
                     <label className="field">
-                      {providerInfo(activeProviderConfig.kind).label} API key
+                      {providerInfo(settingsEditorConfig.kind).label} API key
                       <input
                         type="password"
-                        value={activeProviderConfig.apiKey}
-                        onChange={(event) => updateProviderConfig(activeProviderConfig.id, { apiKey: event.target.value })}
-                        placeholder={activeProviderConfig.hasEncryptedApiKey && !activeProviderConfig.apiKey ? 'saved key — tap Unlock to load' : apiKeyPlaceholder(activeProviderConfig.kind)}
+                        value={settingsEditorConfig.apiKey}
+                        onChange={(event) => updateProviderConfig(settingsEditorConfig.id, { apiKey: event.target.value })}
+                        placeholder={settingsEditorConfig.hasEncryptedApiKey && !settingsEditorConfig.apiKey ? 'saved key — tap Unlock to load' : apiKeyPlaceholder(settingsEditorConfig.kind)}
                         autoComplete="off"
                         spellCheck={false}
                       />
-                      {providerKeyLink(activeProviderConfig.kind) ? (
+                      {providerKeyLink(settingsEditorConfig.kind) ? (
                         <a
                           className="key-signup-link"
-                          href={providerKeyLink(activeProviderConfig.kind)!.href}
+                          href={providerKeyLink(settingsEditorConfig.kind)!.href}
                           target="_blank"
                           rel="noopener noreferrer"
                         >
-                          {providerKeyLink(activeProviderConfig.kind)!.label} →
+                          {providerKeyLink(settingsEditorConfig.kind)!.label} →
                         </a>
                       ) : null}
                     </label>
                     <div className="editor-actions left-aligned">
-                      <button type="button" onClick={requestSaveKey} disabled={savingSettings}>
+                      <button type="button" onClick={() => requestSaveKey(settingsEditorConfig.id)} disabled={savingSettings}>
                         {savingSettings
                           ? 'Working…'
-                          : activeProviderConfig.apiKey.trim()
-                            ? activeProviderConfig.hasEncryptedApiKey ? 'Update saved key' : 'Save key'
-                            : activeProviderConfig.hasEncryptedApiKey ? 'Unlock saved key' : 'Save key'}
+                          : settingsEditorConfig.apiKey.trim()
+                            ? settingsEditorConfig.hasEncryptedApiKey ? 'Update saved key' : 'Save key'
+                            : settingsEditorConfig.hasEncryptedApiKey ? 'Unlock saved key' : 'Save key'}
                       </button>
                       <button
                         type="button"
                         className="quiet btn-danger"
-                        onClick={deleteSavedKey}
-                        disabled={savingSettings || !activeProviderConfig.hasEncryptedApiKey}
+                        onClick={() => deleteSavedKey(settingsEditorConfig.id)}
+                        disabled={savingSettings || !settingsEditorConfig.hasEncryptedApiKey}
                       >
                         Delete saved key
                       </button>
@@ -2200,7 +2390,7 @@ if (closeAfter) setMiniChatOpen(false);
                 ×
               </button>
             </header>
-            <div className="chat-modal-body">
+            <form className="chat-modal-body" onSubmit={(event) => { event.preventDefault(); submitThreadEditor(); }}>
               <label className="field">
                 Thread title
                 <input
@@ -2221,12 +2411,12 @@ if (closeAfter) setMiniChatOpen(false);
               </label>
               <p className="muted">Threads are provider-agnostic now. The active AI profile (set in the sidebar) decides which model answers when you send.</p>
               <div className="editor-actions">
-                <button onClick={submitThreadEditor}>{threadEditorMode === 'create' ? 'Create thread' : 'Save changes'}</button>
-                <button className="quiet" onClick={closeThreadEditor}>
+                <button type="submit">{threadEditorMode === 'create' ? 'Create thread' : 'Save changes'}</button>
+                <button type="button" className="quiet" onClick={closeThreadEditor}>
                   Cancel
                 </button>
               </div>
-            </div>
+            </form>
           </section>
         </div>
       ) : null}
