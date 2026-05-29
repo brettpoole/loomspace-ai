@@ -127,6 +127,8 @@ export default function App() {
   const [rightPanelOpen, setRightPanelOpen] = useState(false);
   const [rightPanelMaximized, setRightPanelMaximized] = useState(false);
   const [providerMenuOpen, setProviderMenuOpen] = useState(false);
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
   const [panelSizes, setPanelSizes] = useState(loadPanelSizes);
   const [panelResizing, setPanelResizing] = useState(false);
   const panelDragRef = useRef<{ kind: 'left' | 'right' | 'bottom'; origin: number; size: number } | null>(null);
@@ -142,6 +144,7 @@ export default function App() {
   const [aiSettingsModalOpen, setAiSettingsModalOpen] = useState(false);
   const [settingsEditorConfigId, setSettingsEditorConfigId] = useState<string | null>(null);
   const rightPanelMessagesRef = useRef<HTMLDivElement>(null);
+  const rightPanelEndRef = useRef<HTMLDivElement>(null);
   const [threadEditorOpen, setThreadEditorOpen] = useState(false);
   const [leftPanelOpen, setLeftPanelOpen] = useState(false);
   const [bottomPanelOpen, setBottomPanelOpen] = useState(false);
@@ -220,6 +223,10 @@ export default function App() {
     const block = (e: Event) => e.preventDefault();
     el.addEventListener('wheel', block, { passive: false });
     return () => el.removeEventListener('wheel', block);
+  }, []);
+
+  useEffect(() => {
+    return () => window.speechSynthesis?.cancel();
   }, []);
 
   const metrics = useMemo(() => computeMetrics(state), [state]);
@@ -368,11 +375,34 @@ export default function App() {
     resetView();
   }, []);
 
+  function scrollChatToBottom(behavior: ScrollBehavior = 'auto') {
+    if (!rightPanelOpen) return;
+    const messages = rightPanelMessagesRef.current;
+    const anchor = rightPanelEndRef.current;
+    if (!messages || !anchor) return;
+    const scroll = () => {
+      anchor.scrollIntoView({ block: 'end', behavior });
+      messages.scrollTop = messages.scrollHeight;
+    };
+    scroll();
+    requestAnimationFrame(() => {
+      scroll();
+      requestAnimationFrame(scroll);
+    });
+  }
+
   useEffect(() => {
-    if (rightPanelOpen && rightPanelMessagesRef.current) {
-      rightPanelMessagesRef.current.scrollTop = rightPanelMessagesRef.current.scrollHeight;
-    }
+    scrollChatToBottom('smooth');
   }, [activeThread?.context.length, rightPanelOpen]);
+
+  useEffect(() => {
+    if (!rightPanelOpen) return;
+    const messages = rightPanelMessagesRef.current;
+    if (!messages || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => scrollChatToBottom());
+    for (const child of Array.from(messages.children)) observer.observe(child);
+    return () => observer.disconnect();
+  }, [activeThread?.id, activeThread?.context.length, rightPanelOpen]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -622,7 +652,7 @@ export default function App() {
   }
 
 
-async function sendMessage(closeAfter = false) {
+  async function sendMessage(closeAfter = false) {
     if (!activeThread || !activeNodeIsChat || (!composerDraft.trim() && composerAttachments.length === 0) || sending) return;
     const activeConfig = activeProviderConfig;
     if (!activeConfig) {
@@ -636,18 +666,18 @@ async function sendMessage(closeAfter = false) {
     }
 
     const userText = composerDraft.trim();
-const userMessage: ChatMessage = {
+    const userMessage: ChatMessage = {
       id: `msg-${crypto.randomUUID()}`,
       role: 'user',
       content: createMixedMessage(userText, composerAttachments),
-      text: userText // Keep for backward compatibility
+      text: userText,
     };
     const pendingChatNode = createChatNode('Thinking…', [userMessage], activeConfig.model, undefined, 'pending');
 
     setSending(true);
     setError(null);
     setComposerDraft('');
-if (closeAfter) setRightPanelOpen(false);
+    if (closeAfter) setRightPanelOpen(false);
     setComposerAttachments([]);
     setState((current) => ({
       ...current,
@@ -673,7 +703,7 @@ if (closeAfter) setRightPanelOpen(false);
         id: `msg-${crypto.randomUUID().slice(0, 8)}`,
         role: 'assistant',
         content: createTextMessage(assistantText),
-        text: assistantText // Keep for backward compatibility
+        text: assistantText,
       };
 
       setState((current) => ({
@@ -701,7 +731,6 @@ if (closeAfter) setRightPanelOpen(false);
         selectedThreadId: activeThread.id,
         selectedNodeId: pendingChatNode.id,
       }));
-      // mini chat already closed if closeAfter was set
     } catch (err) {
       setState((current) => ({
         ...current,
@@ -720,6 +749,140 @@ if (closeAfter) setRightPanelOpen(false);
       }));
       setError(err instanceof Error ? err.message : 'AI request failed');
       setComposerDraft(userText);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function copyText(value: string, messageId: string) {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopiedMessageId(messageId);
+      window.setTimeout(() => setCopiedMessageId((current) => (current === messageId ? null : current)), 1400);
+    } catch {
+      setError('Clipboard access was blocked by the browser.');
+    }
+  }
+
+  function listenToMessage(messageId: string, value: string) {
+    const synth = window.speechSynthesis;
+    if (!synth) {
+      setError('Speech playback is not available in this browser.');
+      return;
+    }
+    if (speakingMessageId === messageId) {
+      synth.cancel();
+      setSpeakingMessageId(null);
+      return;
+    }
+    synth.cancel();
+    const utterance = new SpeechSynthesisUtterance(value);
+    utterance.onend = () => setSpeakingMessageId((current) => (current === messageId ? null : current));
+    utterance.onerror = () => setSpeakingMessageId((current) => (current === messageId ? null : current));
+    setSpeakingMessageId(messageId);
+    synth.speak(utterance);
+  }
+
+  async function retryAssistantMessage(messageId: string) {
+    if (!activeThread || sending) return;
+    const activeConfig = activeProviderConfig;
+    if (!activeConfig) {
+      setError('Pick an AI profile first.');
+      return;
+    }
+    if (!activeConfig.apiKey.trim()) {
+      setError(activeConfig.hasEncryptedApiKey ? 'Unlock this AI profile, or save a new encrypted key.' : 'Add your API key to this profile first.');
+      setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: activeConfig.id });
+      return;
+    }
+
+    const assistantIndex = activeThread.context.findIndex((message) => message.id === messageId && message.role === 'assistant');
+    if (assistantIndex !== activeThread.context.length - 1) {
+      setError('Only the latest assistant response can be retried safely.');
+      return;
+    }
+    const sourceNode = activeThread.nodes.find((node): node is ThreadChatNode => node.kind === 'chat' && node.messages.some((message) => message.id === messageId));
+    const userMessage = sourceNode?.messages.find((message) => message.role === 'user') ?? [...activeThread.context.slice(0, assistantIndex)].reverse().find((message) => message.role === 'user');
+    if (!sourceNode || !userMessage) {
+      setError('Could not find the prompt for this response.');
+      return;
+    }
+
+    const requestMessages = activeThread.context.slice(0, assistantIndex);
+    setSending(true);
+    setError(null);
+    setState((current) => ({
+      ...current,
+      version: current.version + 1,
+      threads: current.threads.map((thread) =>
+        thread.id === activeThread.id
+          ? {
+              ...thread,
+              context: requestMessages,
+              nodes: thread.nodes.map((node) =>
+                node.id === sourceNode.id && node.kind === 'chat'
+                  ? { ...node, summary: 'Thinking…', messages: [userMessage], usage: undefined, status: 'pending' }
+                  : node,
+              ),
+              activeNodeId: sourceNode.id,
+            }
+          : thread,
+      ),
+      selectedThreadId: activeThread.id,
+      selectedNodeId: sourceNode.id,
+    }));
+
+    try {
+      const { assistantText, usage } = await requestAiReply(activeConfig, activeThread, requestMessages);
+      const assistantMessage: ChatMessage = {
+        id: messageId,
+        role: 'assistant',
+        content: createTextMessage(assistantText),
+        text: assistantText,
+      };
+      setState((current) => ({
+        ...current,
+        version: current.version + 1,
+        threads: current.threads.map((thread) =>
+          thread.id === activeThread.id
+            ? {
+                ...thread,
+                context: [...requestMessages, assistantMessage],
+                nodes: thread.nodes.map((node) =>
+                  node.id === sourceNode.id && node.kind === 'chat'
+                    ? {
+                        ...node,
+                        summary: summarize(`${getMessageText(userMessage) || userMessage.text || ''} → ${assistantText}`, 52),
+                        messages: [userMessage, assistantMessage],
+                        usage,
+                        status: 'unread',
+                      }
+                    : node,
+                ),
+                activeNodeId: sourceNode.id,
+              }
+            : thread,
+        ),
+        selectedThreadId: activeThread.id,
+        selectedNodeId: sourceNode.id,
+      }));
+    } catch (err) {
+      setState((current) => ({
+        ...current,
+        version: current.version + 1,
+        threads: current.threads.map((thread) =>
+          thread.id === activeThread.id
+            ? {
+                ...thread,
+                context: activeThread.context,
+                nodes: thread.nodes.map((node) =>
+                  node.id === sourceNode.id && node.kind === 'chat' ? { ...sourceNode, status: 'error' } : node,
+                ),
+              }
+            : thread,
+        ),
+      }));
+      setError(err instanceof Error ? err.message : 'AI retry failed');
     } finally {
       setSending(false);
     }
@@ -2046,38 +2209,48 @@ if (closeAfter) setRightPanelOpen(false);
                   ) : (
                     activeThread.context.map((message) => {
                       const usage = messageUsage.get(message.id);
+                      const messageText = getMessageText(message) || message.text || '';
+                      const isLatestAssistant = message.role === 'assistant' && activeThread.context[activeThread.context.length - 1]?.id === message.id;
                       return (
-                      <div
-                        key={message.id}
-                        className={`bubble ${message.role} ${message.injectedFromThreadId ? 'injected' : ''}`}
-                        style={message.injectedFromColor ? {
-                          '--inject-bg': hexToRgba(message.injectedFromColor, 0.07),
-                          '--inject-border': hexToRgba(message.injectedFromColor, 0.3),
-                        } as React.CSSProperties : undefined}
-                      >
-                        <strong>{message.role === 'assistant' ? 'ai' : message.role}</strong>
-                        <FormattedMessage text={getMessageText(message) || message.text || ''} />
-                        {hasAttachments(message) && (
-                          <div className="message-attachments">
-                            {getAttachmentsByType(message, 'image').map(att => (
-                              <img key={att.id} src={att.preview} alt={att.filename} className="message-image" />
-                            ))}
-                            {getAttachmentsByType(message, 'document').map(att => (
-                              <div key={att.id} className="message-document">📄 {att.filename}</div>
-                            ))}
+                        <article
+                          key={message.id}
+                          className={`bubble chat-message ${message.role} ${message.injectedFromThreadId ? 'injected' : ''}`}
+                          style={message.injectedFromColor ? {
+                            '--inject-bg': hexToRgba(message.injectedFromColor, 0.07),
+                            '--inject-border': hexToRgba(message.injectedFromColor, 0.3),
+                          } as React.CSSProperties : undefined}
+                        >
+                          <div className="chat-message-topline">
+                            <strong>{message.role === 'assistant' ? 'AI' : message.role}</strong>
+                            <div className="chat-message-actions">
+                              <button type="button" onClick={() => copyText(messageText, message.id)} aria-label="Copy message">{copiedMessageId === message.id ? 'Copied' : 'Copy'}</button>
+                              <button type="button" onClick={() => listenToMessage(message.id, messageText)} aria-label={speakingMessageId === message.id ? 'Stop reading message' : 'Read message aloud'}>{speakingMessageId === message.id ? 'Stop' : 'Listen'}</button>
+                              {isLatestAssistant ? <button type="button" onClick={() => retryAssistantMessage(message.id)} disabled={sending} aria-label="Retry response">Retry</button> : null}
+                            </div>
                           </div>
-                        )}
-                        {usage ? (
-                          <div className="bubble-meta">
-                            {message.role === 'assistant'
-                              ? `${usage.output.toLocaleString()} tokens out · ${usage.model}${usage.cost ? ` · $${usage.cost.toFixed(4)}` : ''}`
-                              : `${usage.input.toLocaleString()} tokens in`}
-                          </div>
-                        ) : null}
-                      </div>
+                          <FormattedMessage text={messageText} rich={message.role === 'assistant'} />
+                          {hasAttachments(message) && (
+                            <div className="message-attachments">
+                              {getAttachmentsByType(message, 'image').map(att => (
+                                <img key={att.id} src={att.preview} alt={att.filename} className="message-image" />
+                              ))}
+                              {getAttachmentsByType(message, 'document').map(att => (
+                                <div key={att.id} className="message-document">📄 {att.filename}</div>
+                              ))}
+                            </div>
+                          )}
+                          {usage ? (
+                            <div className="bubble-meta">
+                              {message.role === 'assistant'
+                                ? `${usage.output.toLocaleString()} tokens out · ${usage.model}${usage.cost ? ` · $${usage.cost.toFixed(4)}` : ''}`
+                                : `${usage.input.toLocaleString()} tokens in`}
+                            </div>
+                          ) : null}
+                        </article>
                       );
                     })
                   )}
+                  <div ref={rightPanelEndRef} className="chat-scroll-anchor" aria-hidden="true" />
                 </div>
                 <div className="mini-chat-composer">
                   <textarea
@@ -2706,21 +2879,21 @@ async function requestOpenAiCompatible(config: AIProviderConfig, thread: ThreadL
 // Helper function to convert ChatMessage to Anthropic API format
 function formatMessageForAnthropic(message: ChatMessage) {
   const role = message.role === 'assistant' ? 'assistant' : 'user';
-  
-  // Handle backward compatibility and simple text messages  
+
+  // Handle backward compatibility and simple text messages
   if (!message.content || message.content.type === 'text') {
     return { role, content: getMessageText(message) };
   }
-  
+
   // Handle mixed content with attachments
   if (message.content.attachments && message.content.attachments.length > 0) {
     const content = [];
-    
+
     // Add text if present
     if (message.content.text) {
       content.push({ type: 'text', text: message.content.text });
     }
-    
+
     // Add images in Anthropic format
     message.content.attachments.forEach(attachment => {
       if (attachment.type === 'image') {
@@ -2734,10 +2907,10 @@ function formatMessageForAnthropic(message: ChatMessage) {
         });
       }
     });
-    
+
     return { role, content };
   }
-  
+
   // Fallback to text
   return { role, content: getMessageText(message) };
 }
@@ -2858,10 +3031,36 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
-function FormattedMessage({ text }: { text: string }) {
+function FormattedMessage({ text, rich = false }: { text: string; rich?: boolean }) {
   return (
     <div className="message-copy">
-      <Markdown>{text}</Markdown>
+      <Markdown components={rich ? { code: CodeBlock } : undefined}>{text}</Markdown>
+    </div>
+  );
+}
+
+function CodeBlock({ inline, className, children, ...props }: any) {
+  const [copied, setCopied] = useState(false);
+  const value = String(children ?? '').replace(/\n$/, '');
+  const language = /language-(\w+)/.exec(className ?? '')?.[1];
+
+  if (inline) {
+    return <code className={className} {...props}>{children}</code>;
+  }
+
+  async function copyCode() {
+    await navigator.clipboard.writeText(value);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1400);
+  }
+
+  return (
+    <div className="code-block-shell">
+      <div className="code-block-header">
+        <span>{language ?? 'code'}</span>
+        <button type="button" onClick={copyCode}>{copied ? 'Copied' : 'Copy code'}</button>
+      </div>
+      <pre className={className}><code {...props}>{value}</code></pre>
     </div>
   );
 }
