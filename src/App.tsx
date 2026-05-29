@@ -70,6 +70,33 @@ const EDGE_PADDING = 80;
 const CANVAS_MIN_WIDTH = 4000;
 const CANVAS_MIN_HEIGHT = 2400;
 
+const PANEL_SIZE_KEY = 'loomspace.panels.v1';
+const MIN_PANEL_W = 220;
+const MIN_CANVAS_W = 320;
+const MIN_BOTTOM_H = 120;
+const MAX_BOTTOM_H = 600;
+
+function maxSideWidth(reserved = 0) {
+  const viewport = typeof window === 'undefined' ? 1280 : window.innerWidth;
+  return Math.max(MIN_PANEL_W, Math.round(viewport - MIN_CANVAS_W - reserved));
+}
+
+function loadPanelSizes(): { left: number; right: number; bottom: number } {
+  const fallback = { left: 300, right: 400, bottom: 260 };
+  try {
+    const raw = localStorage.getItem(PANEL_SIZE_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw) as Partial<{ left: number; right: number; bottom: number }>;
+    return {
+      left: clamp(Number(parsed.left) || fallback.left, MIN_PANEL_W, maxSideWidth()),
+      right: clamp(Number(parsed.right) || fallback.right, MIN_PANEL_W, maxSideWidth()),
+      bottom: clamp(Number(parsed.bottom) || fallback.bottom, MIN_BOTTOM_H, MAX_BOTTOM_H),
+    };
+  } catch {
+    return fallback;
+  }
+}
+
 interface ThreadDraft {
   title: string;
   description: string;
@@ -97,9 +124,12 @@ export default function App() {
   const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
   const [passphraseModal, setPassphraseModal] = useState<{ mode: 'encrypt' | 'unlock'; passphrase: string; busy: boolean; pendingKey?: string; targetConfigId?: string } | null>(null);
   const [savingSettings, setSavingSettings] = useState(false);
-  const [chatModalOpen, setChatModalOpen] = useState(false);
-  const [miniChatOpen, setMiniChatOpen] = useState(false);
-  const [miniChatMaximized, setMiniChatMaximized] = useState(false);
+  const [rightPanelOpen, setRightPanelOpen] = useState(false);
+  const [rightPanelMaximized, setRightPanelMaximized] = useState(false);
+  const [providerMenuOpen, setProviderMenuOpen] = useState(false);
+  const [panelSizes, setPanelSizes] = useState(loadPanelSizes);
+  const [panelResizing, setPanelResizing] = useState(false);
+  const panelDragRef = useRef<{ kind: 'left' | 'right' | 'bottom'; origin: number; size: number } | null>(null);
   const [contextLinkMode, setContextLinkMode] = useState<{
     intent: 'link' | 'fork';
     sourceThreadId: string;
@@ -111,9 +141,10 @@ export default function App() {
   const [contextLinkSnapTarget, setContextLinkSnapTarget] = useState<{ threadId: string; nodeId: string } | null>(null);
   const [aiSettingsModalOpen, setAiSettingsModalOpen] = useState(false);
   const [settingsEditorConfigId, setSettingsEditorConfigId] = useState<string | null>(null);
-  const miniChatMessagesRef = useRef<HTMLDivElement>(null);
+  const rightPanelMessagesRef = useRef<HTMLDivElement>(null);
   const [threadEditorOpen, setThreadEditorOpen] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [leftPanelOpen, setLeftPanelOpen] = useState(false);
+  const [bottomPanelOpen, setBottomPanelOpen] = useState(false);
   const [threadEditorMode, setThreadEditorMode] = useState<'create' | 'edit'>('create');
   const [threadEditorDraft, setThreadEditorDraft] = useState<ThreadDraft>(DEFAULT_THREAD_DRAFT);
   const [threadEditorTargetId, setThreadEditorTargetId] = useState<string | null>(null);
@@ -221,6 +252,22 @@ export default function App() {
     () => modelsForConfig(modelCache, activeProviderConfig, activeProviderConfig?.model ?? ''),
     [modelCache, activeProviderConfig],
   );
+
+  const messageUsage = useMemo(() => {
+    const map = new Map<string, { input: number; output: number; model: string; cost: number }>();
+    if (!activeThread) return map;
+    for (const node of activeThread.nodes) {
+      if (node.kind !== 'chat' || !node.usage) continue;
+      const record = {
+        input: node.usage.inputTokens,
+        output: node.usage.outputTokens,
+        model: node.model,
+        cost: node.usage.estimatedCostUsd ?? 0,
+      };
+      for (const message of node.messages) map.set(message.id, record);
+    }
+    return map;
+  }, [activeThread]);
   const settingsEditorModels = useMemo(
     () => modelsForConfig(modelCache, settingsEditorConfig, settingsEditorConfig?.model ?? ''),
     [modelCache, settingsEditorConfig],
@@ -322,10 +369,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (miniChatOpen && miniChatMessagesRef.current) {
-      miniChatMessagesRef.current.scrollTop = miniChatMessagesRef.current.scrollHeight;
+    if (rightPanelOpen && rightPanelMessagesRef.current) {
+      rightPanelMessagesRef.current.scrollTop = rightPanelMessagesRef.current.scrollHeight;
     }
-  }, [activeThread?.context.length, miniChatOpen]);
+  }, [activeThread?.context.length, rightPanelOpen]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -337,8 +384,7 @@ export default function App() {
       if (aiSettingsModalOpen) { setAiSettingsModalOpen(false); return; }
       if (threadEditorOpen) { closeThreadEditor(); return; }
       if (nodePreviewModal) { setNodePreviewModal(null); return; }
-      if (chatModalOpen) { setChatModalOpen(false); return; }
-      if (miniChatOpen) { setMiniChatOpen(false); return; }
+      if (rightPanelOpen) { setRightPanelOpen(false); return; }
       if (forkDraft) { cancelForkSelection(); return; }
       if (contextLinkMode) { setContextLinkMode(null); return; }
       if (state.selectedThreadId) { deselectNode(); }
@@ -349,7 +395,7 @@ export default function App() {
       window.removeEventListener('keydown', onKeyDown, true);
       document.removeEventListener('keydown', onKeyDown, true);
     };
-  }, [passphraseModal, aiSettingsModalOpen, threadEditorOpen, nodePreviewModal, chatModalOpen, miniChatOpen, contextLinkMode, forkDraft, state.selectedThreadId]);
+  }, [passphraseModal, aiSettingsModalOpen, threadEditorOpen, nodePreviewModal, rightPanelOpen, contextLinkMode, forkDraft, state.selectedThreadId]);
 
   function clampViewport(next?: Partial<Pick<LoomspaceState, 'panX' | 'panY' | 'zoom'>>) {
     const viewport = viewportRef.current;
@@ -393,9 +439,8 @@ export default function App() {
   }
 
   function selectThread(threadId: string, nodeId?: string | null) {
-    setChatModalOpen(true);
-    setMiniChatOpen(false);
-    setSidebarOpen(false);
+    setRightPanelOpen(true);
+    setLeftPanelOpen(false);
     setState((current) => ({
       ...current,
       selectedThreadId: threadId,
@@ -418,7 +463,7 @@ export default function App() {
   }
 
   function openThreadEditor(mode: 'create' | 'edit', thread?: ThreadLane) {
-    setSidebarOpen(false);
+    setLeftPanelOpen(false);
     setThreadEditorMode(mode);
     setThreadEditorTargetId(thread?.id ?? null);
     setThreadEditorDraft(
@@ -439,8 +484,7 @@ export default function App() {
       selectedNodes: forkSelection,
     });
     setContextLinkMode({ intent: 'fork', sourceThreadId: thread.id, dotNodeId: nodeId, selectedNodes: forkSelection, side });
-    setChatModalOpen(false);
-    setMiniChatOpen(false);
+    setRightPanelOpen(false);
   }
 
   function closeThreadEditor() {
@@ -528,8 +572,7 @@ export default function App() {
         ...focusCanvasOnThread(nextThreads, thread, current.threads.length, current.zoom),
       };
     });
-    setChatModalOpen(false);
-    setMiniChatOpen(true);
+    setRightPanelOpen(true);
     cancelForkSelection();
     setError(null);
   }
@@ -562,8 +605,7 @@ export default function App() {
           ...focusCanvasOnThread(nextThreads, thread, current.threads.length, current.zoom),
         };
       });
-      setChatModalOpen(false);
-      setMiniChatOpen(true);
+      setRightPanelOpen(true);
       cancelForkSelection();
     } else if (threadEditorTargetId) {
       setState((current) => ({
@@ -605,7 +647,7 @@ const userMessage: ChatMessage = {
     setSending(true);
     setError(null);
     setComposerDraft('');
-if (closeAfter) setMiniChatOpen(false);
+if (closeAfter) setRightPanelOpen(false);
     setComposerAttachments([]);
     setState((current) => ({
       ...current,
@@ -724,7 +766,7 @@ if (closeAfter) setMiniChatOpen(false);
   function deselectNode() {
     setState((current) => ({ ...current, selectedThreadId: null, selectedNodeId: null }));
     setContextLinkMode(null);
-    setMiniChatOpen(false);
+    setRightPanelOpen(false);
     setDeleteMode(null);
   }
 
@@ -765,7 +807,7 @@ if (closeAfter) setMiniChatOpen(false);
 
     setContextLinkMode((mode) => (mode?.sourceThreadId === threadId ? null : mode));
     setDeleteMode(null);
-    setMiniChatOpen(false);
+    setRightPanelOpen(false);
   }
 
   function enterDeleteMode(threadId: string, nodeId: string) {
@@ -1025,7 +1067,6 @@ if (closeAfter) setMiniChatOpen(false);
     setSettingsNotice(null);
     setError(null);
     setModelCache({});
-    setChatModalOpen(false);
     setThreadEditorOpen(false);
   }
 
@@ -1079,6 +1120,39 @@ if (closeAfter) setMiniChatOpen(false);
     } finally {
       setModelsLoading(false);
     }
+  }
+
+  useEffect(() => {
+    try { localStorage.setItem(PANEL_SIZE_KEY, JSON.stringify(panelSizes)); } catch { /* storage may be unavailable */ }
+  }, [panelSizes]);
+
+  function beginPanelResize(kind: 'left' | 'right' | 'bottom', event: PointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    if (kind === 'right' && rightPanelMaximized) setRightPanelMaximized(false);
+    panelDragRef.current = { kind, origin: kind === 'bottom' ? event.clientY : event.clientX, size: panelSizes[kind] };
+    setPanelResizing(true);
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function movePanelResize(event: PointerEvent<HTMLDivElement>) {
+    const drag = panelDragRef.current;
+    if (!drag) return;
+    if (drag.kind === 'left') {
+      const max = maxSideWidth(rightPanelOpen && !rightPanelMaximized ? panelSizes.right : 0);
+      setPanelSizes((sizes) => ({ ...sizes, left: clamp(drag.size + (event.clientX - drag.origin), MIN_PANEL_W, max) }));
+    } else if (drag.kind === 'right') {
+      const max = maxSideWidth(leftPanelOpen ? panelSizes.left : 0);
+      setPanelSizes((sizes) => ({ ...sizes, right: clamp(drag.size + (drag.origin - event.clientX), MIN_PANEL_W, max) }));
+    } else {
+      setPanelSizes((sizes) => ({ ...sizes, bottom: clamp(drag.size + (drag.origin - event.clientY), MIN_BOTTOM_H, MAX_BOTTOM_H) }));
+    }
+  }
+
+  function endPanelResize(event: PointerEvent<HTMLDivElement>) {
+    if (!panelDragRef.current) return;
+    panelDragRef.current = null;
+    setPanelResizing(false);
+    try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* capture may already be gone */ }
   }
 
   function beginPan(event: PointerEvent<HTMLDivElement>) {
@@ -1232,24 +1306,26 @@ if (closeAfter) setMiniChatOpen(false);
     ? Math.max(getModelWindow(activeProviderConfig.model) - selectedThreadUsage.totalTokens, 0)
     : 0;
 
+  const layoutStyle = {} as React.CSSProperties & Record<string, string>;
+  if (leftPanelOpen) layoutStyle['--left-w'] = `${panelSizes.left}px`;
+  if (rightPanelOpen) layoutStyle['--right-w'] = rightPanelMaximized ? `${maxSideWidth(leftPanelOpen ? panelSizes.left : 0)}px` : `${panelSizes.right}px`;
+  if (bottomPanelOpen) layoutStyle['--bottom-h'] = `${panelSizes.bottom}px`;
+
   return (
     <div className="app-shell">
       <header className="topbar">
         <div className="topbar-title">
-          <button
-            type="button"
-            className="menu-toggle"
-            onClick={() => setSidebarOpen((open) => !open)}
-            aria-label="Toggle threads panel"
-          >
-            ☰
-          </button>
           <div>
             <p className="eyebrow">Loomspace</p>
             <h1>{state.title}</h1>
           </div>
         </div>
         <div className="topbar-actions">
+          <div className="layout-toggles">
+            <button type="button" className={`layout-toggle icon-btn ${leftPanelOpen ? 'active' : ''}`} aria-pressed={leftPanelOpen} onClick={() => setLeftPanelOpen((open) => !open)} aria-label="Toggle left panel" title="Toggle left panel"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><rect x="1.5" y="2.5" width="4.5" height="11" fill="currentColor" stroke="none"/></svg></button>
+            <button type="button" className={`layout-toggle icon-btn ${bottomPanelOpen ? 'active' : ''}`} aria-pressed={bottomPanelOpen} onClick={() => setBottomPanelOpen((open) => !open)} aria-label="Toggle bottom panel" title="Toggle bottom panel"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><rect x="1.5" y="9.5" width="13" height="4" fill="currentColor" stroke="none"/></svg></button>
+            <button type="button" className={`layout-toggle icon-btn ${rightPanelOpen ? 'active' : ''}`} aria-pressed={rightPanelOpen} onClick={() => setRightPanelOpen((open) => !open)} aria-label="Toggle right panel (chat)" title="Toggle chat panel"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><rect x="10" y="2.5" width="4.5" height="11" fill="currentColor" stroke="none"/></svg></button>
+          </div>
           <button onClick={() => openThreadEditor('create')}><svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="6.5" y1="1.5" x2="6.5" y2="11.5"/><line x1="1.5" y1="6.5" x2="11.5" y2="6.5"/></svg> New thread</button>
           <button onClick={() => zoomFromButton(-1)} aria-label="Zoom out">−</button>
           <button onClick={resetView} className="topbar-reset-view" aria-label="Reset view"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M2 8a6 6 0 1 0 1.17-3.6"/><polyline points="2 4 2 8 6 8"/></svg></button>
@@ -1266,9 +1342,12 @@ if (closeAfter) setMiniChatOpen(false);
         </div>
       </header>
 
-      <main className="layout">
-        {sidebarOpen ? <div className="sidebar-scrim" onClick={() => setSidebarOpen(false)} /> : null}
-        <aside className={`panel left ${sidebarOpen ? 'open' : ''}`}>
+      <main
+        className={`layout ${leftPanelOpen ? 'left-open' : ''} ${rightPanelOpen ? 'right-open' : ''} ${bottomPanelOpen ? 'bottom-open' : ''} ${panelResizing ? 'resizing' : ''}`}
+        style={layoutStyle}
+      >
+        {leftPanelOpen ? <div className="sidebar-scrim" onClick={() => setLeftPanelOpen(false)} /> : null}
+        <aside className={`panel left ${leftPanelOpen ? 'open' : ''}`}>
           {activeThread ? (
             <section className="inspector-card editor-summary">
               <div className="meta-row">
@@ -1301,7 +1380,7 @@ if (closeAfter) setMiniChatOpen(false);
                 type="button"
                 className="quiet"
                 onClick={() => {
-                  setSidebarOpen(false);
+                  setLeftPanelOpen(false);
                   setSettingsEditorConfigId(activeProviderConfig?.id ?? settings.providerConfigs[0]?.id ?? null);
                   setAiSettingsModalOpen(true);
                 }}
@@ -1322,7 +1401,7 @@ if (closeAfter) setMiniChatOpen(false);
                       providerConfigs: [...current.providerConfigs, next],
                     }));
                     setSettingsEditorConfigId(next.id);
-                    setSidebarOpen(false);
+                    setLeftPanelOpen(false);
                     setAiSettingsModalOpen(true);
                   }}
                 >
@@ -1346,7 +1425,7 @@ if (closeAfter) setMiniChatOpen(false);
                         className={`profile-chip ${isActive ? 'selected' : ''}`}
                         onClick={() => {
                           setSettingsEditorConfigId(config.id);
-                          setSidebarOpen(false);
+                          setLeftPanelOpen(false);
                           setAiSettingsModalOpen(true);
                         }}
                       >
@@ -1371,7 +1450,7 @@ if (closeAfter) setMiniChatOpen(false);
                         providerConfigs: [...current.providerConfigs, next],
                       }));
                       setSettingsEditorConfigId(next.id);
-                      setSidebarOpen(false);
+                      setLeftPanelOpen(false);
                       setAiSettingsModalOpen(true);
                     }}
                   >
@@ -1549,7 +1628,7 @@ if (closeAfter) setMiniChatOpen(false);
                         const isContextSource = ctxPart !== null;
                         const isContextTarget = contextLinkMode !== null && thread.id !== contextLinkMode.sourceThreadId;
                         const isContextSnapTarget = contextLinkSnapTarget?.threadId === thread.id && contextLinkSnapTarget.nodeId === node.id;
-                        const showDots = !miniChatOpen && (isSelected || (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id));
+                        const showDots = !rightPanelOpen && (isSelected || (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id));
                         const handleSideDotCtx = (side: 'left' | 'right') => (e: React.MouseEvent) => {
                           e.stopPropagation();
                           if (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id && contextLinkMode.side === side) {
@@ -1591,8 +1670,7 @@ if (closeAfter) setMiniChatOpen(false);
                                 if (contextLinkMode) return;
                                 selectNode(thread.id, node.id);
                                 if (nodeIndex === lane.nodes.length - 1) {
-                                  setChatModalOpen(false);
-                                  setMiniChatOpen(true);
+                                  setRightPanelOpen(true);
                                   return;
                                 }
                                 if (ctxNode.messages.length > 0) {
@@ -1693,7 +1771,7 @@ if (closeAfter) setMiniChatOpen(false);
                                 </div>
                                 {nodeIndex === lane.nodes.length - 1 && (<>
                                   <div className="action-line-v" style={{ top: CHAT_HEIGHT, left: NODE_WIDTH / 2 }} />
-                                  <button type="button" className="action-node-ghost" style={{ top: CHAT_HEIGHT + 36, left: 0 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setChatModalOpen(false); setMiniChatOpen(true); }}>
+                                  <button type="button" className="action-node-ghost" style={{ top: CHAT_HEIGHT + 36, left: 0 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setRightPanelOpen(true); }}>
                                     <span>Open chat</span>
                                   </button>
                                 </>)}
@@ -1712,7 +1790,7 @@ if (closeAfter) setMiniChatOpen(false);
                       const isContextTarget = contextLinkMode?.intent === 'link' && thread.id !== contextLinkMode.sourceThreadId;
                       const isForkSelection = forkDraft?.sourceThreadId === thread.id && contextLinkMode?.intent === 'fork';
                       const isContextSnapTarget = contextLinkSnapTarget?.threadId === thread.id && contextLinkSnapTarget.nodeId === node.id;
-                      const showDots = !miniChatOpen && (isSelected || (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id));
+                      const showDots = !rightPanelOpen && (isSelected || (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id));
 
                       const handleSideDot = (side: 'left' | 'right') => (e: React.MouseEvent) => {
                         e.stopPropagation();
@@ -1737,7 +1815,7 @@ if (closeAfter) setMiniChatOpen(false);
                           data-node-id={node.id}
                         >
                           <div
-                            className={`chat-node ${isSelected ? 'selected' : ''} ${chatNode.status === 'pending' ? 'sending' : ''} ${chatNode.status === 'unread' && !(miniChatOpen && thread.id === state.selectedThreadId) ? 'responded' : ''} ${isContextSource ? 'context-source-selected' : ''} ${isContextTarget ? 'context-target' : ''} ${isContextSnapTarget ? 'context-link-snap-target' : ''}`}
+                            className={`chat-node ${isSelected ? 'selected' : ''} ${chatNode.status === 'pending' ? 'sending' : ''} ${chatNode.status === 'unread' && !(rightPanelOpen && thread.id === state.selectedThreadId) ? 'responded' : ''} ${isContextSource ? 'context-source-selected' : ''} ${isContextTarget ? 'context-target' : ''} ${isContextSnapTarget ? 'context-link-snap-target' : ''}`}
                             style={{ position: 'relative', top: 0, left: 0 }}
                             onClick={(e) => {
                               e.stopPropagation();
@@ -1755,8 +1833,7 @@ if (closeAfter) setMiniChatOpen(false);
                               if (contextLinkMode) return;
                               selectNode(thread.id, node.id);
                               if (nodeIndex === lane.nodes.length - 1) {
-                                setChatModalOpen(false);
-                                setMiniChatOpen(true);
+                                setRightPanelOpen(true);
                                 return;
                               }
                               if (chatNode.messages.length > 0) {
@@ -1857,7 +1934,7 @@ if (closeAfter) setMiniChatOpen(false);
                               </div>
                               {nodeIndex === lane.nodes.length - 1 && (<>
                                 <div className="action-line-v" style={{ top: CHAT_HEIGHT, left: NODE_WIDTH / 2 }} />
-                                <button type="button" className="action-node-ghost" style={{ top: CHAT_HEIGHT + 36, left: 0 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setChatModalOpen(false); setMiniChatOpen(true); }}>
+                                <button type="button" className="action-node-ghost" style={{ top: CHAT_HEIGHT + 36, left: 0 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setRightPanelOpen(true); }}>
                                   <span>Open chat</span>
                                 </button>
                               </>)}
@@ -1871,93 +1948,231 @@ if (closeAfter) setMiniChatOpen(false);
               })}
             </div>
           </div>
-          {miniChatOpen && activeThread ? (
-            <div className={`mini-chat ${miniChatMaximized ? 'maximized' : ''}`}>
-              <div className="mini-chat-header">
-                <span className="mini-chat-title">{activeThread.title}</span>
-                <div className="mini-chat-header-actions">
-                  <button
-                    type="button"
-                    className="quiet mini-chat-maximize"
-                    onClick={() => setMiniChatMaximized((current) => !current)}
-                    aria-label={miniChatMaximized ? 'Restore mini chat size' : 'Maximize mini chat'}
-                    title={miniChatMaximized ? 'Restore' : 'Maximize'}
-                  >
-                    {miniChatMaximized ? '▢' : '□'}
-                  </button>
-                  <button type="button" className="quiet mini-chat-close" onClick={() => setMiniChatOpen(false)} aria-label="Close chat">×</button>
-                </div>
+          </div>
+        </section>
+        <section className="panel bottom">
+          {bottomPanelOpen ? (
+            <div className="bottom-dock">
+              <div className="bottom-dock-header">
+                <span className="bottom-dock-title">Panel</span>
+                <button type="button" className="quiet icon-btn bottom-dock-close" onClick={() => setBottomPanelOpen(false)} aria-label="Close bottom panel">×</button>
               </div>
-              <div className="mini-chat-messages" ref={miniChatMessagesRef}>
-                {activeThread.context.length === 0 ? (
-                  <p className="muted">No messages yet. Send the first one.</p>
-                ) : (
-                  activeThread.context.map((message) => (
-                    <div
-                      key={message.id}
-                      className={`bubble ${message.role} ${message.injectedFromThreadId ? 'injected' : ''}`}
-                      style={message.injectedFromColor ? {
-                        '--inject-bg': hexToRgba(message.injectedFromColor, 0.07),
-                        '--inject-border': hexToRgba(message.injectedFromColor, 0.3),
-                      } as React.CSSProperties : undefined}
-                    >
-                      <strong>{message.role === 'assistant' ? 'ai' : message.role}</strong>
-                      <FormattedMessage text={getMessageText(message) || message.text || ''} />
-                    </div>
-                  ))
-                )}
-              </div>
-              <div className="mini-chat-composer">
-                <textarea
-                  autoFocus
-                  value={composerDraft}
-                  onChange={(e) => setComposerDraft(e.target.value)}
-                  placeholder="Ask the thread something"
-                  rows={3}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Escape') { e.preventDefault(); setMiniChatOpen(false); return; }
-                    if (e.key !== 'Enter') return;
-                    if (e.shiftKey) return;
-                    e.preventDefault();
-                    if (e.ctrlKey || e.metaKey) { sendMessage(true); } else { sendMessage(); }
-                  }}
-                />
-                {error ? <p className="error">{error}</p> : null}
-                <div className="mini-chat-actions">
-                  {settings.providerConfigs.length === 0 ? (
-                    <button type="button" className="mini-chat-add-profile" onClick={() => setAiSettingsModalOpen(true)}>Add AI profile</button>
-                  ) : (
-                    <select
-                      value={activeProviderConfig?.id ?? ''}
-                      onChange={(e) => changeSettingsProvider(e.target.value)}
-                    >
-                      {settings.providerConfigs.map((config) => (
-                        <option key={config.id} value={config.id}>{config.label}</option>
-                      ))}
-                    </select>
-                  )}
-                  {activeProviderConfig ? (
-                    <select
-                      className="mini-chat-model"
-                      value={activeProviderConfig.model}
-                      onChange={(e) => updateProviderConfig(activeProviderConfig.id, { model: e.target.value })}
-                    >
-                      {settingsModels.map((m) => <option key={m} value={m}>{m}</option>)}
-                    </select>
-                  ) : null}
-                  <button
-                    className="mini-chat-send"
-                    onClick={() => sendMessage()}
-                    disabled={!composerDraft.trim() || sending || !activeProviderConfig?.apiKey.trim()}
-                  >
-                    {sending ? '…' : 'Send'}
-                  </button>
-                </div>
+              <div className="bottom-dock-body">
+                <p className="muted">Nothing here yet.</p>
               </div>
             </div>
           ) : null}
-          </div>
         </section>
+        <aside className="panel right">
+          {rightPanelOpen ? (
+            activeThread ? (
+              <div className="chat-dock">
+                <div className="mini-chat-header">
+                  <span className="mini-chat-title">{activeThread.title}</span>
+                  <div className="mini-chat-header-actions">
+                    <button type="button" className="quiet mini-chat-icon" onClick={() => openThreadEditor('edit', activeThread)} aria-label="Edit thread" title="Edit thread"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M11.5 2.5a1.5 1.5 0 0 1 2.12 2.12L5 13.24l-3 .76.76-3 8.74-8.5z"/></svg></button>
+                    <button type="button" className="quiet mini-chat-maximize" onClick={() => setRightPanelMaximized((current) => !current)} aria-label={rightPanelMaximized ? 'Restore chat panel width' : 'Widen chat panel'} title={rightPanelMaximized ? 'Restore' : 'Widen'}>{rightPanelMaximized ? '▢' : '□'}</button>
+                    <button type="button" className="quiet mini-chat-close" onClick={() => setRightPanelOpen(false)} aria-label="Close chat">×</button>
+                  </div>
+                </div>
+                <div className="chat-dock-meta">
+                  <div className="chat-dock-meta-bar">
+                    <button type="button" className="chat-dock-provider" onClick={() => setProviderMenuOpen((open) => !open)} aria-expanded={providerMenuOpen} aria-label="Thread AI provider" title="Thread AI provider">
+                      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="8" cy="8" r="2.5"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.05 3.05l1.41 1.41M11.54 11.54l1.41 1.41M3.05 12.95l1.41-1.41M11.54 4.46l1.41-1.41"/></svg>
+                      <span className="chat-dock-provider-label">{activeProviderConfig ? `${activeProviderConfig.label} · ${activeProviderConfig.model || 'no model'}` : 'No AI profile'}</span>
+                      <svg className={`chat-dock-caret ${providerMenuOpen ? 'open' : ''}`} width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><polyline points="2 4 5 7 8 4"/></svg>
+                    </button>
+                    <span className="pill chat-dock-context" title="Context tokens remaining">{remainingContext.toLocaleString()} left</span>
+                  </div>
+                  {providerMenuOpen ? (
+                    <div className="chat-dock-provider-menu">
+                      {settings.providerConfigs.length === 0 ? (
+                        <button type="button" className="mini-chat-add-profile" onClick={() => { setProviderMenuOpen(false); setAiSettingsModalOpen(true); }}>Add AI profile to chat</button>
+                      ) : (
+                        <>
+                          <label className="chat-dock-field">
+                            <span>Profile</span>
+                            <select
+                              value={activeProviderConfig?.id ?? ''}
+                              onChange={(event) => {
+                                const nextConfigId = event.target.value;
+                                changeSettingsProvider(nextConfigId);
+                                const nextConfig = settings.providerConfigs.find((config) => config.id === nextConfigId);
+                                if (nextConfig?.hasEncryptedApiKey && !nextConfig.apiKey.trim()) {
+                                  setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: nextConfigId });
+                                }
+                              }}
+                            >
+                              {settings.providerConfigs.map((config) => (
+                                <option key={config.id} value={config.id}>{config.label}</option>
+                              ))}
+                            </select>
+                          </label>
+                          {activeProviderConfig ? (
+                            <label className="chat-dock-field">
+                              <span>Model</span>
+                              <select
+                                value={activeProviderConfig.model}
+                                onChange={(e) => updateProviderConfig(activeProviderConfig.id, { model: e.target.value })}
+                              >
+                                {settingsModels.map((m) => <option key={m} value={m}>{m}</option>)}
+                              </select>
+                            </label>
+                          ) : null}
+                          <button type="button" className="quiet chat-dock-manage" onClick={() => { setProviderMenuOpen(false); setAiSettingsModalOpen(true); }}>Manage profiles</button>
+                        </>
+                      )}
+                    </div>
+                  ) : null}
+                  {selectedThreadUsage ? (
+                    <details className="chat-dock-usage-summary">
+                      <summary>
+                        <span className="chat-dock-usage-caret" aria-hidden="true">▸</span>
+                        <span className="chat-dock-usage-headline"><strong>{selectedThreadUsage.totalTokens.toLocaleString()}</strong> tokens</span>
+                        <span className="chat-dock-usage-cost">${selectedThreadUsage.estimatedCostUsd.toFixed(4)}</span>
+                      </summary>
+                      <div className="usage-grid chat-dock-usage">
+                        <div><span>Input</span><strong>{selectedThreadUsage.inputTokens.toLocaleString()}</strong></div>
+                        <div><span>Output</span><strong>{selectedThreadUsage.outputTokens.toLocaleString()}</strong></div>
+                        <div><span>Total</span><strong>{selectedThreadUsage.totalTokens.toLocaleString()}</strong></div>
+                        <div><span>Cost est.</span><strong>${selectedThreadUsage.estimatedCostUsd.toFixed(4)}</strong></div>
+                      </div>
+                    </details>
+                  ) : null}
+                </div>
+                <div className="mini-chat-messages" ref={rightPanelMessagesRef}>
+                  {activeThread.context.length === 0 ? (
+                    <p className="muted">No messages yet. Send the first one.</p>
+                  ) : (
+                    activeThread.context.map((message) => {
+                      const usage = messageUsage.get(message.id);
+                      return (
+                      <div
+                        key={message.id}
+                        className={`bubble ${message.role} ${message.injectedFromThreadId ? 'injected' : ''}`}
+                        style={message.injectedFromColor ? {
+                          '--inject-bg': hexToRgba(message.injectedFromColor, 0.07),
+                          '--inject-border': hexToRgba(message.injectedFromColor, 0.3),
+                        } as React.CSSProperties : undefined}
+                      >
+                        <strong>{message.role === 'assistant' ? 'ai' : message.role}</strong>
+                        <FormattedMessage text={getMessageText(message) || message.text || ''} />
+                        {hasAttachments(message) && (
+                          <div className="message-attachments">
+                            {getAttachmentsByType(message, 'image').map(att => (
+                              <img key={att.id} src={att.preview} alt={att.filename} className="message-image" />
+                            ))}
+                            {getAttachmentsByType(message, 'document').map(att => (
+                              <div key={att.id} className="message-document">📄 {att.filename}</div>
+                            ))}
+                          </div>
+                        )}
+                        {usage ? (
+                          <div className="bubble-meta">
+                            {message.role === 'assistant'
+                              ? `${usage.output.toLocaleString()} tokens out · ${usage.model}${usage.cost ? ` · $${usage.cost.toFixed(4)}` : ''}`
+                              : `${usage.input.toLocaleString()} tokens in`}
+                          </div>
+                        ) : null}
+                      </div>
+                      );
+                    })
+                  )}
+                </div>
+                <div className="mini-chat-composer">
+                  <textarea
+                    autoFocus
+                    value={composerDraft}
+                    onChange={(e) => setComposerDraft(e.target.value)}
+                    placeholder="Ask the thread something"
+                    rows={3}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Escape') { e.preventDefault(); setRightPanelOpen(false); return; }
+                      if (e.key !== 'Enter') return;
+                      if (e.shiftKey) return;
+                      e.preventDefault();
+                      if (e.ctrlKey || e.metaKey) { sendMessage(true); } else { sendMessage(); }
+                    }}
+                  />
+                  {composerAttachments.length > 0 && (
+                    <div className="composer-attachments">
+                      {composerAttachments.map(att => (
+                        <div key={att.id} className="attachment-preview">
+                          {att.type === 'image' ? (
+                            <img src={att.preview} alt={att.filename} className="attachment-thumbnail" />
+                          ) : (
+                            <div className="document-preview">📄 {att.filename}</div>
+                          )}
+                          <button onClick={() => setComposerAttachments(prev => prev.filter(a => a.id !== att.id))} className="remove-attachment">×</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {settingsLockState === 'locked' ? <p className="muted">Unlock the active AI profile to send a message.</p> : null}
+                  {error ? <p className="error">{error}</p> : null}
+                  <div className="mini-chat-actions">
+                    <input
+                      type="file"
+                      id="file-upload"
+                      multiple
+                      accept="image/*,application/pdf,text/plain,text/markdown"
+                      onChange={async (e) => {
+                        if (!e.target.files) return;
+                        const newAttachments: MediaAttachment[] = [];
+                        const errors: string[] = [];
+                        for (const file of Array.from(e.target.files)) {
+                          const validation = validateFile(file);
+                          if (!validation.valid) {
+                            errors.push(`${file.name}: ${validation.error}`);
+                            continue;
+                          }
+                          if (file.type === 'image/png' || file.type === 'image/jpeg') {
+                            const byteCheck = await verifyImageBytes(file);
+                            if (!byteCheck.valid) {
+                              errors.push(byteCheck.error!);
+                              continue;
+                            }
+                          }
+                          try {
+                            const attachment = await processFile(file);
+                            newAttachments.push(attachment);
+                          } catch {
+                            errors.push(`Failed to process ${file.name}`);
+                          }
+                        }
+                        if (errors.length > 0) setError(errors.join('\n'));
+                        if (newAttachments.length > 0) setComposerAttachments(prev => [...prev, ...newAttachments]);
+                        e.target.value = '';
+                      }}
+                      style={{ display: 'none' }}
+                    />
+                    <label htmlFor="file-upload" className="file-upload-button mini-chat-attach">📎</label>
+                    <button
+                      className="mini-chat-send"
+                      onClick={() => sendMessage()}
+                      disabled={(!composerDraft.trim() && composerAttachments.length === 0) || sending || !activeProviderConfig?.apiKey.trim()}
+                    >
+                      {sending ? 'Thinking…' : settingsLockState === 'locked' ? 'Unlock to send' : 'Send'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="panel-empty">
+                <p className="muted">Select a thread to start chatting.</p>
+              </div>
+            )
+          ) : null}
+        </aside>
+        {leftPanelOpen ? (
+          <div className="resize-handle resize-handle-left" role="separator" aria-orientation="vertical" aria-label="Resize left panel" onPointerDown={(event) => beginPanelResize('left', event)} onPointerMove={movePanelResize} onPointerUp={endPanelResize} onPointerCancel={endPanelResize} />
+        ) : null}
+        {rightPanelOpen && !rightPanelMaximized ? (
+          <div className="resize-handle resize-handle-right" role="separator" aria-orientation="vertical" aria-label="Resize chat panel" onPointerDown={(event) => beginPanelResize('right', event)} onPointerMove={movePanelResize} onPointerUp={endPanelResize} onPointerCancel={endPanelResize} />
+        ) : null}
+        {bottomPanelOpen ? (
+          <div className="resize-handle resize-handle-bottom" role="separator" aria-orientation="horizontal" aria-label="Resize bottom panel" onPointerDown={(event) => beginPanelResize('bottom', event)} onPointerMove={movePanelResize} onPointerUp={endPanelResize} onPointerCancel={endPanelResize} />
+        ) : null}
       </main>
 
       {nodePreviewModal ? (
@@ -1982,230 +2197,6 @@ if (closeAfter) setMiniChatOpen(false);
         </div>
       ) : null}
 
-      {chatModalOpen && activeThread ? (
-        <div className="chat-modal-backdrop" onClick={() => setChatModalOpen(false)}>
-          <section className="chat-modal" onClick={(event) => event.stopPropagation()}>
-            <header className="chat-modal-header">
-              <div>
-                <p className="eyebrow">Active thread</p>
-                <h2>{activeThread.title}</h2>
-              </div>
-              <button type="button" className="quiet" onClick={() => setChatModalOpen(false)} aria-label="Close chat panel">
-                ×
-              </button>
-            </header>
-
-            <div className="chat-modal-body">
-              <article className="inspector-card">
-                <div className="meta-row">
-                  <div>
-                    <h3>{activeThread.description}</h3>
-                    <p>{activeThread.nodes.length} nodes in this lane.</p>
-                  </div>
-                  <button className="quiet icon-btn" onClick={() => openThreadEditor('edit', activeThread)} aria-label="Edit thread"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M11.5 2.5a1.5 1.5 0 0 1 2.12 2.12L5 13.24l-3 .76.76-3 8.74-8.5z"/></svg></button>
-                </div>
-                <div className="thread-meta-row stack">
-                  {settings.providerConfigs.length === 0 ? (
-                    <button type="button" onClick={() => setAiSettingsModalOpen(true)}>
-                      Add AI profile to chat
-                    </button>
-                  ) : (
-                    <label className="field compact">
-                      AI profile
-                      <select
-                        value={activeProviderConfig?.id ?? ''}
-                        onChange={(event) => {
-                          const nextConfigId = event.target.value;
-                          changeSettingsProvider(nextConfigId);
-                          const nextConfig = settings.providerConfigs.find((config) => config.id === nextConfigId);
-                          if (nextConfig?.hasEncryptedApiKey && !nextConfig.apiKey.trim()) {
-                            setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: nextConfigId });
-                          }
-                        }}
-                      >
-                        {settings.providerConfigs.map((config) => (
-                          <option key={config.id} value={config.id}>
-                            {config.label}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  )}
-                  <span className="pill">Model: {activeProviderConfig?.model ?? '—'}</span>
-                  <span className="pill">Context left: {activeThread ? remainingContext.toLocaleString() : '—'}</span>
-                  <button type="button" className="quiet icon-btn" onClick={() => setAiSettingsModalOpen(true)} aria-label="AI settings"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="8" cy="8" r="2.5"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.05 3.05l1.41 1.41M11.54 11.54l1.41 1.41M3.05 12.95l1.41-1.41M11.54 4.46l1.41-1.41"/></svg></button>
-                </div>
-                {selectedThreadUsage ? (
-                  <div className="usage-grid">
-                    <div>
-                      <span>Input</span>
-                      <strong>{selectedThreadUsage.inputTokens.toLocaleString()}</strong>
-                    </div>
-                    <div>
-                      <span>Output</span>
-                      <strong>{selectedThreadUsage.outputTokens.toLocaleString()}</strong>
-                    </div>
-                    <div>
-                      <span>Total</span>
-                      <strong>{selectedThreadUsage.totalTokens.toLocaleString()}</strong>
-                    </div>
-                    <div>
-                      <span>Cost est.</span>
-                      <strong>${selectedThreadUsage.estimatedCostUsd.toFixed(4)}</strong>
-                    </div>
-                  </div>
-                ) : null}
-              </article>
-
-              <section className="chat-panel">
-                {activeThread.context.length === 0 ? (
-                  <p className="muted">No messages yet. Send the first one.</p>
-                ) : (
-                  activeThread.context.map((message) => (
-<div
-                      key={message.id}
-                      className={`bubble ${message.role} ${message.injectedFromThreadId ? 'injected' : ''}`}
-                      style={message.injectedFromColor ? {
-                        '--inject-bg': hexToRgba(message.injectedFromColor, 0.07),
-                        '--inject-border': hexToRgba(message.injectedFromColor, 0.3),
-                      } as React.CSSProperties : undefined}
-                    >
-                      <strong>{message.role === 'assistant' ? 'ai' : message.role}</strong>
-                      <FormattedMessage text={getMessageText(message) || message.text || ''} />
-                      {hasAttachments(message) && (
-                        <div className="message-attachments">
-                          {getAttachmentsByType(message, 'image').map(att => (
-                            <img key={att.id} src={att.preview} alt={att.filename} className="message-image" />
-                          ))}
-                          {getAttachmentsByType(message, 'document').map(att => (
-                            <div key={att.id} className="message-document">
-                              📄 {att.filename}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  ))
-                )}
-              </section>
-
-              {activeNodeIsChat ? (
-                <section className="inspector-card send-card">
-                  <h4>Send to AI</h4>
-                  <textarea
-                    autoFocus
-                    value={composerDraft}
-                    onChange={(event) => setComposerDraft(event.target.value)}
-                    placeholder="Ask the thread something"
-                    rows={5}
-                    onKeyDown={(e) => {
-                      if (e.key !== 'Enter') return;
-                      if (e.shiftKey) return;
-                      e.preventDefault();
-                      if (e.ctrlKey || e.metaKey) { sendMessage(true); } else { sendMessage(); }
-                    }}
-                  />
-                  
-                  {/* File attachments display */}
-                  {composerAttachments.length > 0 && (
-                    <div className="composer-attachments">
-                      {composerAttachments.map(att => (
-                        <div key={att.id} className="attachment-preview">
-                          {att.type === 'image' ? (
-                            <img src={att.preview} alt={att.filename} className="attachment-thumbnail" />
-                          ) : (
-                            <div className="document-preview">📄 {att.filename}</div>
-                          )}
-                          <button 
-                            onClick={() => setComposerAttachments(prev => prev.filter(a => a.id !== att.id))}
-                            className="remove-attachment"
-                          >
-                            ×
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  
-                  {/* File upload */}
-                  <div className="file-upload-area">
-                    <input
-                      type="file"
-                      id="file-upload"
-                      multiple
-                      accept="image/*,application/pdf,text/plain,text/markdown"
-                      onChange={async (e) => {
-                        if (!e.target.files) return;
-                        const newAttachments: MediaAttachment[] = [];
-                        const errors: string[] = [];
-                        
-                        for (const file of Array.from(e.target.files)) {
-                          const validation = validateFile(file);
-                          if (!validation.valid) {
-                            errors.push(`${file.name}: ${validation.error}`);
-                            continue;
-                          }
-                          
-                          // Verify image magic bytes to catch MIME spoofing
-                          if (file.type === 'image/png' || file.type === 'image/jpeg') {
-                            const byteCheck = await verifyImageBytes(file);
-                            if (!byteCheck.valid) {
-                              errors.push(byteCheck.error!);
-                              continue;
-                            }
-                          }
-                          
-                          try {
-                            const attachment = await processFile(file);
-                            newAttachments.push(attachment);
-                          } catch {
-                            errors.push(`Failed to process ${file.name}`);
-                          }
-                        }
-                        
-                        if (errors.length > 0) {
-                          setError(errors.join('\n'));
-                        }
-                        if (newAttachments.length > 0) {
-                          setComposerAttachments(prev => [...prev, ...newAttachments]);
-                        }
-                        e.target.value = '';
-                      }}
-                      style={{ display: 'none' }}
-                    />
-                    <label htmlFor="file-upload" className="file-upload-button">
-                      📎 Attach files
-                    </label>
-                  </div>
-                  
-                  {settingsLockState === 'locked' ? <p className="muted">Unlock the active AI profile to send a message.</p> : null}
-                  {error ? <p className="error">{error}</p> : null}
-<button
-                    onClick={() => sendMessage()}
-                    disabled={(!composerDraft.trim() && composerAttachments.length === 0) || sending || !activeProviderConfig?.apiKey.trim()}
-                  >
-                    {sending ? 'Thinking…' : settingsLockState === 'locked' ? 'Unlock to send' : 'Send'}
-                  </button>
-                </section>
-              ) : null}
-
-              {activeNode?.kind === 'chat' ? (
-                <section className={`inspector-card node-card ${sending && activeNode.id === activeThread.activeNodeId ? 'sending' : ''}`}>
-                  <h4>Selected node</h4>
-                  <p>{activeNode.summary}</p>
-                  <ul>
-                    <li>{activeNode.messages.length} messages</li>
-                    <li>{activeNode.createdAt.slice(0, 10)}</li>
-                    <li>{activeNode.model}</li>
-                    {activeNode.usage ? <li>{activeNode.usage.totalTokens.toLocaleString()} tokens</li> : null}
-                  </ul>
-                </section>
-              ) : null}
-
-            </div>
-          </section>
-        </div>
-      ) : null}
 
       {aiSettingsModalOpen ? (
         <div className="chat-modal-backdrop" onClick={() => { setAiSettingsModalOpen(false); setSettingsEditorConfigId(null); }}>
