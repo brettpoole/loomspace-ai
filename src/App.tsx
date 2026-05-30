@@ -4,7 +4,6 @@ import {
   PROVIDERS,
   appendContextInjection,
   clearProviderSecret,
-  clearSettingsCookies,
   computeMetrics,
   createChatNode,
   createContextNode,
@@ -76,6 +75,19 @@ const MIN_CANVAS_W = 320;
 const MIN_BOTTOM_H = 120;
 const MAX_BOTTOM_H = 600;
 
+const THEME_MODE_KEY = 'loomspace.theme.v1';
+type ThemeMode = 'auto' | 'light' | 'dark';
+
+function loadThemeMode(): ThemeMode {
+  const stored = localStorage.getItem(THEME_MODE_KEY);
+  return stored === 'light' || stored === 'dark' || stored === 'auto' ? stored : 'auto';
+}
+
+function resolveThemeMode(mode: ThemeMode): 'light' | 'dark' {
+  if (mode !== 'auto') return mode;
+  return window.matchMedia?.('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+}
+
 function maxSideWidth(reserved = 0) {
   const viewport = typeof window === 'undefined' ? 1280 : window.innerWidth;
   return Math.max(MIN_PANEL_W, Math.round(viewport - MIN_CANVAS_W - reserved));
@@ -130,6 +142,7 @@ export default function App() {
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
   const [panelSizes, setPanelSizes] = useState(loadPanelSizes);
+  const [themeMode, setThemeMode] = useState<ThemeMode>(loadThemeMode);
   const [panelResizing, setPanelResizing] = useState(false);
   const panelDragRef = useRef<{ kind: 'left' | 'right' | 'bottom'; origin: number; size: number } | null>(null);
   const [contextLinkMode, setContextLinkMode] = useState<{
@@ -165,6 +178,27 @@ export default function App() {
   const spaceHeld = useRef(false);
   const ctrlHeld = useRef(false);
   const [panMode, setPanMode] = useState<'idle' | 'ready' | 'panning'>('idle');
+
+  useEffect(() => {
+    const applyTheme = () => {
+      const resolved = resolveThemeMode(themeMode);
+      document.documentElement.dataset.theme = resolved;
+      document.documentElement.style.colorScheme = resolved;
+      let meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+      if (!meta) {
+        meta = document.createElement('meta');
+        meta.name = 'theme-color';
+        document.head.appendChild(meta);
+      }
+      meta.content = resolved === 'light' ? '#f5f7fb' : '#070b17';
+    };
+    localStorage.setItem(THEME_MODE_KEY, themeMode);
+    applyTheme();
+    if (themeMode !== 'auto') return;
+    const media = window.matchMedia?.('(prefers-color-scheme: light)');
+    media?.addEventListener('change', applyTheme);
+    return () => media?.removeEventListener('change', applyTheme);
+  }, [themeMode]);
 
   useEffect(() => saveWorkspace(state), [state]);
   useEffect(() => saveSettings(settings), [settings]);
@@ -1215,22 +1249,24 @@ export default function App() {
     setPassphraseModal(null);
   }
 
+  function confirmResetWorkspace() {
+    const confirmed = window.confirm(
+      'Reset workspace canvas?\n\nThis removes all threads, messages, nodes, and canvas layout from this browser. Your AI provider profiles and saved provider keys will be kept.',
+    );
+    if (!confirmed) return;
+    resetWorkspace();
+  }
+
   function resetWorkspace() {
     localStorage.removeItem('loomspace.workspace.v7');
-    clearSettingsCookies();
-    settings.providerConfigs.forEach((config) => clearProviderSecret(config.id));
-    clearProviderSecret('openai');
-    clearProviderSecret('anthropic');
-    clearProviderSecret('openrouter');
-    clearProviderSecret('openai-compatible-custom');
     setState(loadWorkspace());
-    setSettings(loadSettings());
     setComposerDraft('');
+    setComposerAttachments([]);
     setPassphraseModal(null);
     setSettingsNotice(null);
     setError(null);
-    setModelCache({});
     setThreadEditorOpen(false);
+    setRightPanelOpen(false);
   }
 
   function changeSettingsProvider(providerConfigId: string) {
@@ -1478,6 +1514,16 @@ export default function App() {
     <div className="app-shell">
       <header className="topbar">
         <div className="topbar-title">
+          <div className="brand-mark" aria-hidden="true">
+            <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+              <path d="M6 8.5C9.5 3.5 18.2 3.8 21.6 8.9C24.9 13.8 22.5 22.8 14.2 23.5C6 24.2 1.9 14.4 6 8.5Z" fill="currentColor" opacity="0.13"/>
+              <path d="M8.2 15.2C10.4 11.6 14.2 9.7 19.9 9.7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+              <path d="M8.2 12.3C11.4 16.1 15.2 17.7 20 17.1" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+              <circle cx="8.2" cy="13.7" r="2.1" fill="currentColor"/>
+              <circle cx="20" cy="9.7" r="1.8" fill="currentColor"/>
+              <circle cx="20" cy="17.1" r="1.8" fill="currentColor"/>
+            </svg>
+          </div>
           <div>
             <p className="eyebrow">Loomspace</p>
             <h1>{state.title}</h1>
@@ -1490,18 +1536,30 @@ export default function App() {
             <button type="button" className={`layout-toggle icon-btn ${rightPanelOpen ? 'active' : ''}`} aria-pressed={rightPanelOpen} onClick={() => setRightPanelOpen((open) => !open)} aria-label="Toggle right panel (chat)" title="Toggle chat panel"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><rect x="10" y="2.5" width="4.5" height="11" fill="currentColor" stroke="none"/></svg></button>
           </div>
           <button onClick={() => openThreadEditor('create')}><svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="6.5" y1="1.5" x2="6.5" y2="11.5"/><line x1="1.5" y1="6.5" x2="11.5" y2="6.5"/></svg> New thread</button>
-          <button onClick={() => zoomFromButton(-1)} aria-label="Zoom out">−</button>
-          <button onClick={resetView} className="topbar-reset-view" aria-label="Reset view"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M2 8a6 6 0 1 0 1.17-3.6"/><polyline points="2 4 2 8 6 8"/></svg></button>
-          <button onClick={() => zoomFromButton(1)} aria-label="Zoom in">+</button>
-          <input
-            className="zoom-slider"
-            type="range"
-            min={Math.round(MIN_ZOOM * 100)}
-            max={Math.round(MAX_ZOOM * 100)}
-            value={Math.round(state.zoom * 100)}
-            onChange={(event) => setZoom(Number(event.target.value) / 100)}
-          />
-          <button onClick={() => { if (window.confirm('Reset the fabric?\n\nThis will permanently delete all threads and AI profiles from this browser. This cannot be undone.')) resetWorkspace(); }} className="quiet topbar-reset-fabric icon-btn" aria-label="Reset fabric"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 3 14 13 14 13 6"/><line x1="1" y1="3" x2="15" y2="3"/><line x1="6" y1="3" x2="6" y2="1"/><line x1="10" y1="3" x2="10" y2="1"/></svg></button>
+          <div className="zoom-control" aria-label="Canvas zoom controls">
+            <button type="button" onClick={() => zoomFromButton(-1)} aria-label="Zoom out">−</button>
+            <button type="button" onClick={resetView} className="topbar-reset-view" aria-label="Center canvas" title="Center canvas">100%</button>
+            <button type="button" onClick={() => zoomFromButton(1)} aria-label="Zoom in">+</button>
+          </div>
+          <button
+            type="button"
+            className="theme-toggle"
+            onClick={() => setThemeMode((mode) => (mode === 'auto' ? 'light' : mode === 'light' ? 'dark' : 'auto'))}
+            aria-label={`Theme: ${themeMode}`}
+            title={`Theme: ${themeMode}`}
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              {themeMode === 'dark' ? (
+                <path d="M13.5 10.2A5.8 5.8 0 0 1 5.8 2.5 6.2 6.2 0 1 0 13.5 10.2Z"/>
+              ) : (
+                <><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.2M8 13.3v1.2M1.5 8h1.2M13.3 8h1.2M3.4 3.4l.85.85M11.75 11.75l.85.85M3.4 12.6l.85-.85M11.75 4.25l.85-.85"/></>
+              )}
+            </svg>
+            <span>{themeMode === 'auto' ? 'Auto' : themeMode === 'light' ? 'Light' : 'Dark'}</span>
+          </button>
+          <button type="button" onClick={confirmResetWorkspace} className="quiet workspace-reset" aria-label="Reset workspace" title="Reset workspace (provider profiles are kept)">
+            Reset workspace
+          </button>
         </div>
       </header>
 

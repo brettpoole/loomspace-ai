@@ -119,6 +119,73 @@ ul {
   min-width: 0;
 }
 
+.brand-mark {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  border-radius: 16px;
+  color: #7cf7c2;
+  background:
+    radial-gradient(circle at 28% 22%, rgba(124, 247, 194, 0.32), transparent 34%),
+    linear-gradient(145deg, rgba(124, 247, 194, 0.13), rgba(126, 168, 255, 0.12));
+  border: 1px solid rgba(124, 247, 194, 0.22);
+  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.zoom-control {
+  display: inline-flex;
+  align-items: center;
+  overflow: hidden;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.zoom-control button {
+  min-width: 38px;
+  height: 38px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.zoom-control button + button {
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.zoom-control .topbar-reset-view {
+  min-width: 58px;
+  color: #aab8d8;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.theme-toggle,
+.workspace-reset {
+  height: 38px;
+  border-radius: 14px;
+  font-size: 13px;
+}
+
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding-inline: 12px;
+}
+
+.theme-toggle svg {
+  flex-shrink: 0;
+}
+
+.workspace-reset {
+  color: #ffd58b;
+  border-color: rgba(255, 213, 139, 0.22);
+}
+
 .sidebar-scrim {
   display: none;
   position: fixed;
@@ -2336,4 +2403,375 @@ button.btn-danger:disabled {
   .mini-chat-send {
     font-size: 16px;
   }
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  background:
+    radial-gradient(circle at top left, rgba(48, 196, 141, 0.22), transparent 34%),
+    radial-gradient(circle at right, rgba(72, 116, 255, 0.16), transparent 30%),
+    linear-gradient(180deg, #f8fbff 0%, #edf3fb 100%);
+  color: #172033;
+}
+
+:root[data-theme='light'] body {
+  background: #f4f8fd;
+}
+
+:root[data-theme='light'] button {
+  border-color: rgba(24, 37, 63, 0.12);
+  background: rgba(255, 255, 255, 0.74);
+  color: #172033;
+  box-shadow: 0 8px 22px rgba(35, 52, 84, 0.08);
+}
+
+:root[data-theme='light'] button:hover {
+  border-color: rgba(24, 37, 63, 0.22);
+  background: rgba(255, 255, 255, 0.95);
+}
+
+:root[data-theme='light'] input,
+:root[data-theme='light'] textarea,
+:root[data-theme='light'] select {
+  border-color: rgba(24, 37, 63, 0.14);
+  background: rgba(255, 255, 255, 0.9);
+  color: #172033;
+}
+
+:root[data-theme='light'] .topbar {
+  border-bottom-color: rgba(24, 37, 63, 0.1);
+  background: rgba(246, 250, 255, 0.82);
+  box-shadow: 0 12px 40px rgba(35, 52, 84, 0.08);
+}
+
+:root[data-theme='light'] .eyebrow,
+:root[data-theme='light'] .canvas-toolbar,
+:root[data-theme='light'] .muted,
+:root[data-theme='light'] .inspector-card p,
+:root[data-theme='light'] .inspector-card li {
+  color: #60708d;
+}
+
+:root[data-theme='light'] .brand-mark {
+  color: #0b9f70;
+  background:
+    radial-gradient(circle at 28% 22%, rgba(48, 196, 141, 0.36), transparent 34%),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.9), rgba(219, 232, 255, 0.72));
+  border-color: rgba(11, 159, 112, 0.2);
+  box-shadow: 0 16px 34px rgba(35, 52, 84, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+:root[data-theme='light'] .zoom-control,
+:root[data-theme='light'] .layout-toggles {
+  border-color: rgba(24, 37, 63, 0.1);
+  background: rgba(255, 255, 255, 0.68);
+}
+
+:root[data-theme='light'] .zoom-control button + button {
+  border-left-color: rgba(24, 37, 63, 0.1);
+}
+
+:root[data-theme='light'] .layout-toggle,
+:root[data-theme='light'] .zoom-control button {
+  box-shadow: none;
+}
+
+:root[data-theme='light'] .layout-toggle.active {
+  background: rgba(11, 159, 112, 0.14);
+  color: #087854;
+}
+
+:root[data-theme='light'] .workspace-reset {
+  color: #9a5b00;
+  border-color: rgba(154, 91, 0, 0.22);
+}
+
+:root[data-theme='light'] .canvas-toolbar,
+:root[data-theme='light'] .panel.left,
+:root[data-theme='light'] .panel.right,
+:root[data-theme='light'] .panel.bottom {
+  background: rgba(247, 250, 255, 0.74);
+}
+
+:root[data-theme='light'] .canvas-viewport {
+  background:
+    radial-gradient(circle at 50% 8%, rgba(11, 159, 112, 0.13), transparent 26%),
+    radial-gradient(circle at 70% 38%, rgba(72, 116, 255, 0.12), transparent 28%),
+    linear-gradient(180deg, rgba(246, 250, 255, 0.95), rgba(232, 239, 249, 0.92));
+}
+
+:root[data-theme='light'] .canvas-viewport.overlay::before {
+  opacity: 0.26;
+}
+
+:root[data-theme='light'] .inspector-card,
+:root[data-theme='light'] .metric-card,
+:root[data-theme='light'] .chat-node,
+:root[data-theme='light'] .title-node,
+:root[data-theme='light'] .context-node,
+:root[data-theme='light'] .bubble {
+  border-color: rgba(24, 37, 63, 0.12);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(248, 251, 255, 0.68));
+  box-shadow: 0 20px 52px rgba(35, 52, 84, 0.11);
+}
+
+:root[data-theme='light'] .bubble.user {
+  background: linear-gradient(180deg, rgba(218, 253, 239, 0.95), rgba(237, 255, 247, 0.8));
+  border-color: rgba(11, 159, 112, 0.16);
+}
+
+:root[data-theme='light'] .bubble.assistant {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.97), rgba(240, 245, 255, 0.86));
+  border-color: rgba(72, 116, 255, 0.16);
+}
+
+:root[data-theme='light'] .bubble.assistant .message-copy {
+  color: #172033;
+}
+
+:root[data-theme='light'] .chat-message-topline strong,
+:root[data-theme='light'] .bubble-meta,
+:root[data-theme='light'] .chat-dock-provider,
+:root[data-theme='light'] .mini-chat-title,
+:root[data-theme='light'] .bottom-dock-title {
+  color: #4e5f7d;
+}
+
+:root[data-theme='light'] .code-block-shell {
+  background: #f7faff;
+  border-color: rgba(24, 37, 63, 0.12);
+  box-shadow: 0 12px 32px rgba(35, 52, 84, 0.1);
+}
+
+:root[data-theme='light'] .code-block-header {
+  background: rgba(228, 236, 249, 0.82);
+  border-bottom-color: rgba(24, 37, 63, 0.08);
+  color: #60708d;
+}
+
+:root[data-theme='light'] .code-block-shell pre {
+  color: #20304d;
+}
+
+:root[data-theme='light'] .chat-dock-provider-menu,
+:root[data-theme='light'] .bottom-dock,
+:root[data-theme='light'] .chat-dock {
+  background: rgba(248, 251, 255, 0.82);
+}
+
+:root[data-theme='light'] .pill,
+:root[data-theme='light'] .settings-pill {
+  background: rgba(255, 255, 255, 0.72);
+  border-color: rgba(24, 37, 63, 0.12);
+  color: #4e5f7d;
+}
+
+/* Light theme: minimal zen flowchart */
+:root[data-theme='light'] {
+  background:
+    radial-gradient(circle at 28% 12%, rgba(103, 211, 170, 0.2), transparent 30%),
+    radial-gradient(circle at 74% 18%, rgba(152, 181, 255, 0.16), transparent 28%),
+    linear-gradient(180deg, #fbfcff 0%, #eef4fb 100%);
+  color: #162033;
+}
+
+:root[data-theme='light'] .canvas-viewport {
+  background:
+    radial-gradient(circle at 45% 8%, rgba(103, 211, 170, 0.14), transparent 25%),
+    linear-gradient(180deg, #f8fbff 0%, #edf4fb 100%);
+}
+
+:root[data-theme='light'] .canvas-viewport.overlay {
+  background-image:
+    linear-gradient(rgba(64, 83, 112, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(64, 83, 112, 0.045) 1px, transparent 1px),
+    radial-gradient(circle at 45% 8%, rgba(103, 211, 170, 0.14), transparent 25%),
+    linear-gradient(180deg, #f8fbff 0%, #edf4fb 100%);
+  background-size: 56px 56px, 56px 56px, auto, auto;
+}
+
+:root[data-theme='light'] .rope-shadow {
+  stroke: rgba(116, 132, 160, 0.22);
+  stroke-width: 7;
+  filter: blur(0.4px);
+}
+
+:root[data-theme='light'] .rope {
+  stroke: rgba(75, 101, 138, 0.34);
+  stroke-width: 3;
+  filter: none;
+}
+
+:root[data-theme='light'] .rope.active {
+  stroke: rgba(21, 154, 111, 0.68);
+  filter: drop-shadow(0 2px 6px rgba(21, 154, 111, 0.16));
+}
+
+:root[data-theme='light'] .link-line {
+  stroke: rgba(76, 111, 178, 0.62);
+}
+
+:root[data-theme='light'] .knot {
+  fill: #ffffff;
+  stroke: rgba(75, 101, 138, 0.34);
+}
+
+:root[data-theme='light'] .title-node,
+:root[data-theme='light'] .chat-node,
+:root[data-theme='light'] .context-node {
+  color: #162033;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 251, 255, 0.94));
+  border-color: rgba(70, 89, 118, 0.18);
+  box-shadow:
+    0 10px 28px rgba(48, 67, 101, 0.12),
+    0 1px 0 rgba(255, 255, 255, 0.9) inset;
+}
+
+:root[data-theme='light'] .title-node {
+  border-color: rgba(21, 154, 111, 0.22);
+}
+
+:root[data-theme='light'] .chat-node {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(245, 249, 255, 0.96));
+}
+
+:root[data-theme='light'] .chat-node.responded {
+  border-color: rgba(21, 154, 111, 0.42);
+  box-shadow:
+    0 0 0 2px rgba(21, 154, 111, 0.08),
+    0 12px 30px rgba(48, 67, 101, 0.13);
+}
+
+:root[data-theme='light'] .chat-node.selected,
+:root[data-theme='light'] .context-node.selected {
+  border-color: rgba(33, 120, 210, 0.38);
+  box-shadow:
+    0 0 0 3px rgba(33, 120, 210, 0.1),
+    0 16px 36px rgba(48, 67, 101, 0.16);
+}
+
+:root[data-theme='light'] .chat-card-top,
+:root[data-theme='light'] .exchange-head,
+:root[data-theme='light'] .context-node .exchange-head {
+  color: #66748d;
+  opacity: 1;
+}
+
+:root[data-theme='light'] .chat-node strong,
+:root[data-theme='light'] .context-node strong {
+  color: #172033;
+}
+
+:root[data-theme='light'] .chat-node small,
+:root[data-theme='light'] .context-node small {
+  color: #52627b;
+}
+
+:root[data-theme='light'] .title-node input {
+  color: #132033;
+}
+
+:root[data-theme='light'] .thread-popout {
+  color: #26344d;
+  background: rgba(255, 255, 255, 0.96);
+  border-color: rgba(21, 154, 111, 0.18);
+  box-shadow: 0 12px 30px rgba(48, 67, 101, 0.12);
+}
+
+:root[data-theme='light'] .info-button {
+  color: #36506f;
+  background: rgba(239, 245, 252, 0.92);
+  border-color: rgba(70, 89, 118, 0.14);
+  box-shadow: none;
+}
+
+:root[data-theme='light'] .thread-delete-button {
+  color: #b43232;
+  background: rgba(255, 239, 239, 0.95);
+  border-color: rgba(180, 50, 50, 0.24);
+  box-shadow: none;
+}
+
+:root[data-theme='light'] .action-node-ghost {
+  color: #21785e;
+  background: rgba(255, 255, 255, 0.9);
+  border-color: rgba(21, 154, 111, 0.28);
+  box-shadow: 0 10px 24px rgba(48, 67, 101, 0.1);
+}
+
+:root[data-theme='light'] .empty-state {
+  color: #40516a;
+}
+
+:root[data-theme='light'] .chat-modal-backdrop {
+  background: rgba(230, 238, 249, 0.68);
+  backdrop-filter: blur(14px) saturate(1.08);
+}
+
+:root[data-theme='light'] .thread-editor-modal,
+:root[data-theme='light'] .chat-modal,
+:root[data-theme='light'] .ai-settings-modal,
+:root[data-theme='light'] .passphrase-modal {
+  color: #162033;
+  background:
+    radial-gradient(circle at 12% 0%, rgba(103, 211, 170, 0.14), transparent 32%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(246, 250, 255, 0.96));
+  border-color: rgba(70, 89, 118, 0.16);
+  box-shadow:
+    0 34px 90px rgba(48, 67, 101, 0.2),
+    0 1px 0 rgba(255, 255, 255, 0.92) inset;
+}
+
+:root[data-theme='light'] .chat-modal-header {
+  border-bottom-color: rgba(70, 89, 118, 0.12);
+  background: rgba(255, 255, 255, 0.38);
+}
+
+:root[data-theme='light'] .chat-modal-header h2,
+:root[data-theme='light'] .thread-editor-modal h2,
+:root[data-theme='light'] .ai-settings-modal h2,
+:root[data-theme='light'] .passphrase-modal h2 {
+  color: #132033;
+}
+
+:root[data-theme='light'] .chat-modal-body {
+  background: rgba(248, 251, 255, 0.34);
+}
+
+:root[data-theme='light'] .thread-editor-modal label,
+:root[data-theme='light'] .ai-settings-modal label,
+:root[data-theme='light'] .passphrase-modal label,
+:root[data-theme='light'] .field {
+  color: #53647e;
+}
+
+:root[data-theme='light'] .thread-editor-modal input,
+:root[data-theme='light'] .thread-editor-modal textarea,
+:root[data-theme='light'] .ai-settings-modal input,
+:root[data-theme='light'] .ai-settings-modal textarea,
+:root[data-theme='light'] .ai-settings-modal select,
+:root[data-theme='light'] .passphrase-modal input {
+  background: rgba(255, 255, 255, 0.94);
+  border-color: rgba(70, 89, 118, 0.18);
+  color: #162033;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.9) inset, 0 10px 24px rgba(48, 67, 101, 0.06);
+}
+
+:root[data-theme='light'] .thread-editor-modal input:focus,
+:root[data-theme='light'] .thread-editor-modal textarea:focus,
+:root[data-theme='light'] .ai-settings-modal input:focus,
+:root[data-theme='light'] .ai-settings-modal textarea:focus,
+:root[data-theme='light'] .ai-settings-modal select:focus,
+:root[data-theme='light'] .passphrase-modal input:focus {
+  outline: none;
+  border-color: rgba(21, 154, 111, 0.42);
+  box-shadow:
+    0 0 0 3px rgba(21, 154, 111, 0.1),
+    0 10px 24px rgba(48, 67, 101, 0.08);
+}
+
+:root[data-theme='light'] .editor-actions {
+  border-top-color: rgba(70, 89, 118, 0.12);
 }
