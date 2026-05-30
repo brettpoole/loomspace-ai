@@ -88,6 +88,60 @@ function resolveThemeMode(mode: ThemeMode): 'light' | 'dark' {
   return window.matchMedia?.('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
 }
 
+
+const TTS_SETTINGS_KEY = 'loomspace.tts.v1';
+
+function loadTtsSettings(): { voiceURI: string; rate: number } {
+  try {
+    const raw = localStorage.getItem(TTS_SETTINGS_KEY);
+    if (!raw) return { voiceURI: '', rate: 1 };
+    const parsed = JSON.parse(raw) as Partial<{ voiceURI: string; rate: number }>;
+    return {
+      voiceURI: typeof parsed.voiceURI === 'string' ? parsed.voiceURI : '',
+      rate: clamp(Number(parsed.rate) || 1, 0.75, 1.35),
+    };
+  } catch {
+    return { voiceURI: '', rate: 1 };
+  }
+}
+
+function cleanTextForSpeech(text: string) {
+  return text
+    .replace(/```(\w+)?\n[\s\S]*?```/g, (_, lang) => ` Code block${lang ? ` in ${lang}` : ''}. `)
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' image ')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+    .replace(/^\s{0,3}>\s?/gm, '')
+    .replace(/^\s*[-*+]\s+/gm, '')
+    .replace(/^\s*\d+\.\s+/gm, '')
+    .replace(/[*_~]{1,3}/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function splitTextForSpeech(text: string, maxLength = 220) {
+  const sentences = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g) ?? [text];
+  const chunks: string[] = [];
+  let current = '';
+  for (const sentence of sentences) {
+    const next = `${current}${current ? ' ' : ''}${sentence.trim()}`.trim();
+    if (next.length <= maxLength) {
+      current = next;
+      continue;
+    }
+    if (current) chunks.push(current);
+    if (sentence.length <= maxLength) {
+      current = sentence.trim();
+      continue;
+    }
+    for (let i = 0; i < sentence.length; i += maxLength) chunks.push(sentence.slice(i, i + maxLength).trim());
+    current = '';
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
 function maxSideWidth(reserved = 0) {
   const viewport = typeof window === 'undefined' ? 1280 : window.innerWidth;
   return Math.max(MIN_PANEL_W, Math.round(viewport - MIN_CANVAS_W - reserved));
@@ -143,7 +197,10 @@ export default function App() {
   const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
   const [panelSizes, setPanelSizes] = useState(loadPanelSizes);
   const [themeMode, setThemeMode] = useState<ThemeMode>(loadThemeMode);
+  const [ttsVoices, setTtsVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [ttsSettings, setTtsSettings] = useState(loadTtsSettings);
   const [panelResizing, setPanelResizing] = useState(false);
+  const ttsQueueRef = useRef<{ messageId: string; chunks: string[]; index: number; keepAlive: number | null } | null>(null);
   const panelDragRef = useRef<{ kind: 'left' | 'right' | 'bottom'; origin: number; size: number } | null>(null);
   const [contextLinkMode, setContextLinkMode] = useState<{
     intent: 'link' | 'fork';
@@ -260,8 +317,30 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    return () => window.speechSynthesis?.cancel();
+    const synth = window.speechSynthesis;
+    if (!synth) return;
+    const loadVoices = () => {
+      const voices = synth.getVoices();
+      setTtsVoices(voices);
+      return voices;
+    };
+    loadVoices();
+    const timers = [100, 500, 1500].map((delay) => window.setTimeout(loadVoices, delay));
+    synth.addEventListener?.('voiceschanged', loadVoices);
+    synth.onvoiceschanged = loadVoices;
+    return () => {
+      if (ttsQueueRef.current?.keepAlive) window.clearInterval(ttsQueueRef.current.keepAlive);
+      ttsQueueRef.current = null;
+      synth.cancel();
+      timers.forEach((timer) => window.clearTimeout(timer));
+      synth.removeEventListener?.('voiceschanged', loadVoices);
+      synth.onvoiceschanged = null;
+    };
   }, []);
+
+  useEffect(() => {
+    localStorage.setItem(TTS_SETTINGS_KEY, JSON.stringify(ttsSettings));
+  }, [ttsSettings]);
 
   const metrics = useMemo(() => computeMetrics(state), [state]);
   const activeThread = state.threads.find((thread) => thread.id === state.selectedThreadId) ?? null;
@@ -798,23 +877,80 @@ export default function App() {
     }
   }
 
+  function stopSpeaking() {
+    const synth = window.speechSynthesis;
+    if (ttsQueueRef.current?.keepAlive) window.clearInterval(ttsQueueRef.current.keepAlive);
+    ttsQueueRef.current = null;
+    synth?.cancel();
+    setSpeakingMessageId(null);
+  }
+
   function listenToMessage(messageId: string, value: string) {
     const synth = window.speechSynthesis;
-    if (!synth) {
+    if (!synth || typeof SpeechSynthesisUtterance === 'undefined') {
       setError('Speech playback is not available in this browser.');
       return;
     }
     if (speakingMessageId === messageId) {
-      synth.cancel();
-      setSpeakingMessageId(null);
+      stopSpeaking();
       return;
     }
-    synth.cancel();
-    const utterance = new SpeechSynthesisUtterance(value);
-    utterance.onend = () => setSpeakingMessageId((current) => (current === messageId ? null : current));
-    utterance.onerror = () => setSpeakingMessageId((current) => (current === messageId ? null : current));
+    const spokenText = cleanTextForSpeech(value);
+    if (!spokenText) {
+      setError("No text to speak");
+    };
+
+    stopSpeaking();
+    const voices = synth.getVoices();
+    if (voices.length > 0 && ttsVoices.length === 0) setTtsVoices(voices);
+    const voice = voices.find((candidate) => candidate.voiceURI === ttsSettings.voiceURI)
+      ?? ttsVoices.find((candidate) => candidate.voiceURI === ttsSettings.voiceURI)
+      ?? voices.find((candidate) => candidate.default)
+      ?? ttsVoices.find((candidate) => candidate.default)
+      ?? null;
+    const chunks = splitTextForSpeech(spokenText);
+    ttsQueueRef.current = {
+      messageId,
+      chunks,
+      index: 0,
+      keepAlive: window.setInterval(() => {
+        if (!synth.paused) synth.resume();
+      }, 5000),
+    };
     setSpeakingMessageId(messageId);
-    synth.speak(utterance);
+
+    const speakNext = () => {
+      const queue = ttsQueueRef.current;
+      if (!queue || queue.messageId !== messageId) return;
+      const text = queue.chunks[queue.index++];
+      if (!text) {
+        stopSpeaking();
+        return;
+      }
+      const utterance = new SpeechSynthesisUtterance(text);
+      if (voice) {
+        try {
+          utterance.voice = voice;
+          utterance.lang = voice.lang;
+        } catch {
+          // Some browser engines reject stale/non-native voice objects; default voice is safer than failing playback.
+        }
+      }
+      utterance.rate = ttsSettings.rate;
+      utterance.onend = speakNext;
+      utterance.onerror = (event) => {
+        stopSpeaking();
+        setError(`Speech playback failed${event.error ? `: ${event.error}` : ''}.`);
+      };
+      try {
+        synth.speak(utterance);
+        synth.resume();
+      } catch (err) {
+        stopSpeaking();
+        setError(err instanceof Error ? err.message : 'Speech playback failed.');
+      }
+    };
+    speakNext();
   }
 
   async function retryAssistantMessage(messageId: string) {
@@ -2257,6 +2393,39 @@ export default function App() {
                         <div><span>Output</span><strong>{selectedThreadUsage.outputTokens.toLocaleString()}</strong></div>
                         <div><span>Total</span><strong>{selectedThreadUsage.totalTokens.toLocaleString()}</strong></div>
                         <div><span>Cost est.</span><strong>${selectedThreadUsage.estimatedCostUsd.toFixed(4)}</strong></div>
+                      </div>
+                    </details>
+                  ) : null}
+                  {ttsVoices.length > 0 ? (
+                    <details className="chat-dock-tts">
+                      <summary>
+                        <span className="chat-dock-usage-caret" aria-hidden="true">▸</span>
+                        <span>Browser voice</span>
+                      </summary>
+                      <div className="chat-dock-tts-grid">
+                        <label className="chat-dock-field">
+                          <span>Voice</span>
+                          <select
+                            value={ttsSettings.voiceURI}
+                            onChange={(event) => setTtsSettings((current) => ({ ...current, voiceURI: event.target.value }))}
+                          >
+                            <option value="">Browser default</option>
+                            {ttsVoices.map((voice) => (
+                              <option key={voice.voiceURI} value={voice.voiceURI}>{voice.name} · {voice.lang}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="chat-dock-field">
+                          <span>Speed {ttsSettings.rate.toFixed(2)}×</span>
+                          <input
+                            type="range"
+                            min="0.75"
+                            max="1.35"
+                            step="0.05"
+                            value={ttsSettings.rate}
+                            onChange={(event) => setTtsSettings((current) => ({ ...current, rate: Number(event.target.value) }))}
+                          />
+                        </label>
                       </div>
                     </details>
                   ) : null}

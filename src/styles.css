@@ -2253,7 +2253,8 @@ button.btn-danger:disabled {
   color: #8ea1c8;
 }
 
-.chat-dock-field select {
+.chat-dock-field select,
+.chat-dock-field input {
   font-size: 12px;
   padding: 6px 10px;
 }
@@ -2278,7 +2279,8 @@ button.btn-danger:disabled {
   color: #aab8d8;
 }
 
-.chat-dock-usage-summary > summary::-webkit-details-marker {
+.chat-dock-usage-summary > summary::-webkit-details-marker,
+.chat-dock-tts > summary::-webkit-details-marker {
   display: none;
 }
 
@@ -2286,6 +2288,33 @@ button.btn-danger:disabled {
   font-size: 10px;
   color: #6b7a9a;
   transition: transform 150ms ease;
+}
+
+.chat-dock-tts {
+  font-size: 12px;
+}
+
+.chat-dock-tts > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+  padding: 4px 2px;
+  color: #aab8d8;
+}
+
+.chat-dock-tts[open] .chat-dock-usage-caret {
+  transform: rotate(90deg);
+}
+
+.chat-dock-tts-grid {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(12, 16, 28, 0.68);
 }
 
 .chat-dock-usage-summary[open] .chat-dock-usage-caret {
@@ -2554,6 +2583,7 @@ button.btn-danger:disabled {
 }
 
 :root[data-theme='light'] .chat-dock-provider-menu,
+:root[data-theme='light'] .chat-dock-tts-grid,
 :root[data-theme='light'] .bottom-dock,
 :root[data-theme='light'] .chat-dock {
   background: rgba(248, 251, 255, 0.82);
