@@ -175,18 +175,35 @@ const DEFAULT_THREAD_DRAFT: ThreadDraft = {
 
 type ModelCache = Record<string, string[]>;
 
+interface ComposerState {
+  draft: string;
+  attachments: MediaAttachment[];
+}
+
+const EMPTY_COMPOSER_STATE: ComposerState = { draft: '', attachments: [] };
+
+function composerStateKey(threadId: string, nodeId?: string | null): string {
+  return `${threadId}::${nodeId ?? 'root'}`;
+}
+
 function providerModelCacheKey(config: AIProviderConfig): string {
   const baseUrl = config.baseUrl?.trim().toLowerCase() ?? '';
   return `provider:${config.kind}:${baseUrl}`;
 }
 
+function sameProviderModelSource(left: AIProviderConfig, right: AIProviderConfig): boolean {
+  const leftBaseUrl = left.baseUrl?.trim().toLowerCase() ?? '';
+  const rightBaseUrl = right.baseUrl?.trim().toLowerCase() ?? '';
+  return left.kind === right.kind && leftBaseUrl === rightBaseUrl;
+}
+
 export default function App() {
   const [state, setState] = useState<LoomspaceState>(() => loadWorkspace());
   const [settings, setSettings] = useState<AISettings>(() => loadSettings());
-  const [composerDraft, setComposerDraft] = useState('');
-  const [composerAttachments, setComposerAttachments] = useState<MediaAttachment[]>([]);
+  const [composerStates, setComposerStates] = useState<Record<string, ComposerState>>({});
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [providerError, setProviderError] = useState<string | null>(null);
   const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
   const [passphraseModal, setPassphraseModal] = useState<{ mode: 'encrypt' | 'unlock'; passphrase: string; busy: boolean; pendingKey?: string; targetConfigId?: string } | null>(null);
   const [savingSettings, setSavingSettings] = useState(false);
@@ -225,7 +242,8 @@ export default function App() {
   const [nodePreviewModal, setNodePreviewModal] = useState<{ title: string; messages: ChatMessage[] } | null>(null);
   const [deleteMode, setDeleteMode] = useState<{ nodeId: string; parts: { user: boolean; assistant: boolean } } | null>(null);
   const [modelCache, setModelCache] = useState<ModelCache>(() => loadModelCache());
-  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsLoadingConfigId, setModelsLoadingConfigId] = useState<string | null>(null);
+  const settingsRef = useRef(settings);
   const viewportRef = useRef<HTMLDivElement>(null);
   const panGesture = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
   const pointerMap = useRef<Map<number, { x: number; y: number }>>(new Map());
@@ -258,7 +276,10 @@ export default function App() {
   }, [themeMode]);
 
   useEffect(() => saveWorkspace(state), [state]);
-  useEffect(() => saveSettings(settings), [settings]);
+  useEffect(() => {
+    settingsRef.current = settings;
+    saveSettings(settings);
+  }, [settings]);
   useEffect(() => saveModelCache(modelCache), [modelCache]);
 
   useEffect(() => {
@@ -347,7 +368,10 @@ export default function App() {
   const activeNode =
     activeThread?.nodes.find((node) => node.id === state.selectedNodeId) ??
     (activeThread ? activeThread.nodes.find((node) => node.id === activeThread.activeNodeId) ?? null : null);
-  const activeNodeIsChat = activeNode?.kind === 'chat';
+  const composerKey = activeThread ? composerStateKey(activeThread.id, activeNode?.id ?? activeThread.activeNodeId) : null;
+  const composerState = composerKey ? composerStates[composerKey] ?? EMPTY_COMPOSER_STATE : EMPTY_COMPOSER_STATE;
+  const composerDraft = composerState.draft;
+  const composerAttachments = composerState.attachments;
   const activeProviderConfig =
     settings.providerConfigs.find((config) => config.id === settings.activeProviderConfigId) ?? settings.providerConfigs[0] ?? null;
   const settingsLockState = activeProviderConfig ? (activeProviderConfig.hasEncryptedApiKey ? (activeProviderConfig.apiKey.trim() ? 'unlocked' : 'locked') : 'none') : 'none';
@@ -766,32 +790,57 @@ export default function App() {
 
 
   async function sendMessage(closeAfter = false) {
-    if (!activeThread || !activeNodeIsChat || (!composerDraft.trim() && composerAttachments.length === 0) || sending) return;
+    if (sending) return;
+    if (!activeThread) {
+      setError('Select or create a thread before sending.');
+      return;
+    }
     const activeConfig = activeProviderConfig;
     if (!activeConfig) {
-      setError('Pick an AI profile first.');
+      setError('Add an AI profile to start chatting.');
+      openProviderSetup();
       return;
     }
     if (!activeConfig.apiKey.trim()) {
-      setError(activeConfig.hasEncryptedApiKey ? 'Unlock this AI profile, or save a new encrypted key.' : 'Add your API key to this profile first.');
-      setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: activeConfig.id });
+      const message = activeConfig.hasEncryptedApiKey ? 'Unlock this AI profile, or save a new encrypted key.' : 'Add your API key to this profile first.';
+      setError(message);
+      if (activeConfig.hasEncryptedApiKey) {
+        setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: activeConfig.id });
+      } else {
+        setProviderError(message);
+        openProviderSetup(activeConfig.id);
+      }
+      return;
+    }
+    if (!activeConfig.model.trim()) {
+      const message = 'Select a model for this AI profile before sending.';
+      setError(message);
+      setProviderError(message);
+      openProviderSetup(activeConfig.id);
       return;
     }
 
-    const userText = composerDraft.trim();
+    const sourceComposerKey = composerKey;
+    const composerStateForSend = composerState;
+    const userText = composerStateForSend.draft.trim();
+    if (!userText && composerStateForSend.attachments.length === 0) {
+      setError('Write a message or attach a file before sending.');
+      return;
+    }
+
     const userMessage: ChatMessage = {
       id: `msg-${crypto.randomUUID()}`,
       role: 'user',
-      content: createMixedMessage(userText, composerAttachments),
+      content: createMixedMessage(userText, composerStateForSend.attachments),
       text: userText,
     };
     const pendingChatNode = createChatNode('Thinking…', [userMessage], activeConfig.model, undefined, 'pending');
+    const pendingComposerKey = composerStateKey(activeThread.id, pendingChatNode.id);
 
     setSending(true);
     setError(null);
-    setComposerDraft('');
+    updateComposerState(sourceComposerKey, () => EMPTY_COMPOSER_STATE);
     if (closeAfter) setRightPanelOpen(false);
-    setComposerAttachments([]);
     setState((current) => ({
       ...current,
       version: current.version + 1,
@@ -860,8 +909,8 @@ export default function App() {
           };
         }),
       }));
+      updateComposerState(pendingComposerKey, () => composerStateForSend);
       setError(err instanceof Error ? err.message : 'AI request failed');
-      setComposerDraft(userText);
     } finally {
       setSending(false);
     }
@@ -961,8 +1010,21 @@ export default function App() {
       return;
     }
     if (!activeConfig.apiKey.trim()) {
-      setError(activeConfig.hasEncryptedApiKey ? 'Unlock this AI profile, or save a new encrypted key.' : 'Add your API key to this profile first.');
-      setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: activeConfig.id });
+      const message = activeConfig.hasEncryptedApiKey ? 'Unlock this AI profile, or save a new encrypted key.' : 'Add your API key to this profile first.';
+      setError(message);
+      if (activeConfig.hasEncryptedApiKey) {
+        setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: activeConfig.id });
+      } else {
+        setProviderError(message);
+        openProviderSetup(activeConfig.id);
+      }
+      return;
+    }
+    if (!activeConfig.model.trim()) {
+      const message = 'Select a model for this AI profile before retrying.';
+      setError(message);
+      setProviderError(message);
+      openProviderSetup(activeConfig.id);
       return;
     }
 
@@ -1138,6 +1200,8 @@ export default function App() {
       };
     });
 
+    clearComposerStatesForThread(threadId);
+
     setContextLinkMode((mode) => (mode?.sourceThreadId === threadId ? null : mode));
     setDeleteMode(null);
     setRightPanelOpen(false);
@@ -1187,7 +1251,7 @@ export default function App() {
               const remainingChatNodes = newNodes.filter((n): n is ThreadChatNode => n.kind === 'chat');
 
               if (remainingChatNodes.length === 0) {
-                const replacementChatNode = createChatNode('AI chat ready', [], node.model || '');
+                const replacementChatNode = createChatNode('', [], node.model || '');
                 const nodesWithReplacement = [...newNodes, replacementChatNode];
                 return {
                   ...thread,
@@ -1315,10 +1379,42 @@ export default function App() {
   }
 
   function updateProviderConfig(configId: string, patch: Partial<AIProviderConfig>) {
+    setProviderError(null);
+    setSettingsNotice(null);
     setSettings((current) => ({
       ...current,
       providerConfigs: current.providerConfigs.map((config) => (config.id === configId ? { ...config, ...patch } : config)),
     }));
+  }
+
+  function updateComposerState(key: string | null, updater: (current: ComposerState) => ComposerState) {
+    if (!key) return;
+    setComposerStates((current) => {
+      const nextState = updater(current[key] ?? EMPTY_COMPOSER_STATE);
+      if (nextState.draft.length === 0 && nextState.attachments.length === 0) {
+        if (!(key in current)) return current;
+        const next = { ...current };
+        delete next[key];
+        return next;
+      }
+      return { ...current, [key]: nextState };
+    });
+  }
+
+  function clearComposerStatesForThread(threadId: string) {
+    const prefix = `${threadId}::`;
+    setComposerStates((current) => {
+      let changed = false;
+      const next: Record<string, ComposerState> = {};
+      Object.entries(current).forEach(([key, value]) => {
+        if (key.startsWith(prefix)) {
+          changed = true;
+          return;
+        }
+        next[key] = value;
+      });
+      return changed ? next : current;
+    });
   }
 
   function requestSaveKey(configId: string) {
@@ -1329,7 +1425,7 @@ export default function App() {
       if (targetConfig?.hasEncryptedApiKey) {
         setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId });
       } else {
-        setError('Enter your API key first.');
+        setProviderError('Enter your API key first.');
       }
       return;
     }
@@ -1345,6 +1441,7 @@ export default function App() {
     clearProviderSecret(targetConfig.id);
     updateProviderConfig(targetConfig.id, { apiKey: '', hasEncryptedApiKey: false });
     setSettingsNotice('Saved key deleted from this browser.');
+    setProviderError(null);
     setError(null);
   }
 
@@ -1352,7 +1449,9 @@ export default function App() {
     if (!passphraseModal) return;
     const passphrase = passphraseModal.passphrase;
     if (!passphrase.trim()) {
-      setError('Enter a passphrase.');
+      const message = 'Enter a passphrase.';
+      setError(message);
+      setProviderError(message);
       return;
     }
     const configId = passphraseModal.targetConfigId ?? activeProviderConfig?.id;
@@ -1363,18 +1462,28 @@ export default function App() {
     try {
       if (passphraseModal.mode === 'unlock') {
         const apiKey = await unlockProviderSecret(configId, passphrase);
+        const targetConfig = settingsRef.current.providerConfigs.find((config) => config.id === configId) ?? null;
         updateProviderConfig(configId, { apiKey, hasEncryptedApiKey: true });
         setSettingsNotice('Key unlocked — loaded in memory for this session.');
+        if (targetConfig) {
+          await fetchModelsForConfig({ ...targetConfig, apiKey, hasEncryptedApiKey: true }, { requireKey: false, updateSelectedModel: true });
+        }
       } else {
         const keyToSave = passphraseModal.pendingKey?.trim() ?? settings.providerConfigs.find((config) => config.id === configId)?.apiKey.trim() ?? '';
         if (!keyToSave) throw new Error('No key to save.');
         await saveProviderSecret(configId, keyToSave, passphrase);
+        const targetConfig = settingsRef.current.providerConfigs.find((config) => config.id === configId) ?? null;
         updateProviderConfig(configId, { apiKey: keyToSave, hasEncryptedApiKey: true });
         setSettingsNotice('Key encrypted and saved. Loaded in memory for this session.');
+        if (targetConfig) {
+          await fetchModelsForConfig({ ...targetConfig, apiKey: keyToSave, hasEncryptedApiKey: true }, { requireKey: false, updateSelectedModel: true });
+        }
       }
       setPassphraseModal(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Passphrase action failed.');
+      const message = err instanceof Error ? err.message : 'Passphrase action failed.';
+      setError(message);
+      setProviderError(message);
       setPassphraseModal((current) => (current ? { ...current, busy: false } : current));
     } finally {
       setSavingSettings(false);
@@ -1396,8 +1505,7 @@ export default function App() {
   function resetWorkspace() {
     localStorage.removeItem('loomspace.workspace.v7');
     setState(loadWorkspace());
-    setComposerDraft('');
-    setComposerAttachments([]);
+    setComposerStates({});
     setPassphraseModal(null);
     setSettingsNotice(null);
     setError(null);
@@ -1419,6 +1527,31 @@ export default function App() {
     }));
   }
 
+  function addProviderProfile() {
+    const next = createProviderConfig('openai');
+    setSettings((current) => ({
+      ...current,
+      providerConfigs: [...current.providerConfigs, next],
+    }));
+    setSettingsEditorConfigId(next.id);
+    setLeftPanelOpen(false);
+    setProviderMenuOpen(false);
+    setAiSettingsModalOpen(true);
+    setSettingsNotice(null);
+    setProviderError(null);
+  }
+
+  function openProviderSetup(configId?: string) {
+    setLeftPanelOpen(false);
+    setProviderMenuOpen(false);
+    if (settings.providerConfigs.length === 0) {
+      addProviderProfile();
+      return;
+    }
+    setSettingsEditorConfigId(configId ?? activeProviderConfig?.id ?? settings.providerConfigs[0]?.id ?? null);
+    setAiSettingsModalOpen(true);
+  }
+
   function deleteProfile(configId: string) {
     const target = settings.providerConfigs.find((config) => config.id === configId);
     if (!target) return;
@@ -1432,29 +1565,81 @@ export default function App() {
       return copy;
     });
     setSettingsNotice(`Deleted AI profile "${target.label}".`);
+    setProviderError(null);
     setError(null);
+  }
+
+  async function fetchModelsForConfig(
+    config: AIProviderConfig,
+    options: { requireKey?: boolean; updateSelectedModel?: boolean } = {},
+  ) {
+    if (!config.apiKey.trim()) {
+      if (options.requireKey !== false) {
+        const message = config.hasEncryptedApiKey ? 'Unlock this provider config first so we can list models.' : 'Add your API key to list models.';
+        setProviderError(message);
+        if (config.hasEncryptedApiKey) {
+          setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: config.id });
+        }
+      }
+      return false;
+    }
+
+    setModelsLoadingConfigId(config.id);
+    setProviderError(null);
+    setSettingsNotice(null);
+    try {
+      const ids = await fetchProviderModels(config);
+      const currentConfig = settingsRef.current.providerConfigs.find((entry) => entry.id === config.id) ?? null;
+      if (!currentConfig || !sameProviderModelSource(currentConfig, config)) return false;
+
+      const providerKey = providerModelCacheKey(config);
+      const sourceConfigIds = settingsRef.current.providerConfigs
+        .filter((entry) => sameProviderModelSource(entry, config))
+        .map((entry) => entry.id);
+
+      setModelCache((current) => {
+        const next = { ...current };
+        for (const id of sourceConfigIds) delete next[id];
+        delete next[providerKey];
+        if (ids.length > 0) {
+          next[config.id] = ids;
+          next[providerKey] = ids;
+        }
+        return next;
+      });
+
+      if (options.updateSelectedModel !== false) {
+        setSettings((current) => {
+          let changed = false;
+          const providerConfigs = current.providerConfigs.map((entry) => {
+            if (!sameProviderModelSource(entry, config)) return entry;
+            if (ids.length === 0) {
+              if (!entry.model) return entry;
+              changed = true;
+              return { ...entry, model: '' };
+            }
+            if (ids.includes(entry.model)) return entry;
+            changed = true;
+            return { ...entry, model: ids[0] };
+          });
+          return changed ? { ...current, providerConfigs } : current;
+        });
+      }
+
+      setSettingsNotice(ids.length === 0 ? `No models returned for ${config.label}.` : `Loaded ${ids.length} models for ${config.label}.`);
+      return true;
+    } catch (err) {
+      setProviderError(err instanceof Error ? err.message : `Failed to list models for ${config.label}`);
+      return false;
+    } finally {
+      setModelsLoadingConfigId((current) => (current === config.id ? null : current));
+    }
   }
 
   async function refreshModels(providerConfigId: string) {
     const config = settings.providerConfigs.find((entry) => entry.id === providerConfigId);
     if (!config) return;
-    if (!config.apiKey.trim()) {
-      setError(config.hasEncryptedApiKey ? 'Unlock this provider config first so we can list models.' : 'Add and unlock your API key to list models.');
-      setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: config.id });
-      return;
-    }
-    setModelsLoading(true);
-    setError(null);
-    try {
-      const ids = await fetchProviderModels(config);
-      const providerKey = providerModelCacheKey(config);
-      setModelCache((current) => ({ ...current, [providerConfigId]: ids, [providerKey]: ids }));
-      setSettingsNotice(`Loaded ${ids.length} models for ${config.label}.`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : `Failed to list models for ${config.label}`);
-    } finally {
-      setModelsLoading(false);
-    }
+    await fetchModelsForConfig(config, { requireKey: true, updateSelectedModel: true });
   }
 
   useEffect(() => {
@@ -1637,9 +1822,11 @@ export default function App() {
   }
 
   const selectedThreadUsage = activeThread ? summarizeThreadUsage(activeThread) : null;
-  const remainingContext = activeThread && selectedThreadUsage && activeProviderConfig
+  const remainingContext = activeThread && selectedThreadUsage && activeProviderConfig?.model.trim()
     ? Math.max(getModelWindow(activeProviderConfig.model) - selectedThreadUsage.totalTokens, 0)
     : 0;
+  const settingsEditorModelsLoading = settingsEditorConfig ? modelsLoadingConfigId === settingsEditorConfig.id : false;
+  const settingsEditorHasCachedModels = settingsEditorConfig ? Boolean(modelCache[settingsEditorConfig.id] ?? modelCache[providerModelCacheKey(settingsEditorConfig)]) : false;
 
   const layoutStyle = {} as React.CSSProperties & Record<string, string>;
   if (leftPanelOpen) layoutStyle['--left-w'] = `${panelSizes.left}px`;
@@ -1736,11 +1923,7 @@ export default function App() {
               <button
                 type="button"
                 className="quiet"
-                onClick={() => {
-                  setLeftPanelOpen(false);
-                  setSettingsEditorConfigId(activeProviderConfig?.id ?? settings.providerConfigs[0]?.id ?? null);
-                  setAiSettingsModalOpen(true);
-                }}
+                onClick={() => openProviderSetup()}
               >
                 Manage
               </button>
@@ -1751,16 +1934,7 @@ export default function App() {
                 <button
                   type="button"
                   className="profile-list-empty-cta"
-                  onClick={() => {
-                    const next = createProviderConfig('openai-compatible-custom', { label: 'New profile', model: '' });
-                    setSettings((current) => ({
-                      ...current,
-                      providerConfigs: [...current.providerConfigs, next],
-                    }));
-                    setSettingsEditorConfigId(next.id);
-                    setLeftPanelOpen(false);
-                    setAiSettingsModalOpen(true);
-                  }}
+                  onClick={addProviderProfile}
                 >
                   Add AI profile
                 </button>
@@ -1780,11 +1954,7 @@ export default function App() {
                         key={config.id}
                         type="button"
                         className={`profile-chip ${isActive ? 'selected' : ''}`}
-                        onClick={() => {
-                          setSettingsEditorConfigId(config.id);
-                          setLeftPanelOpen(false);
-                          setAiSettingsModalOpen(true);
-                        }}
+                        onClick={() => openProviderSetup(config.id)}
                       >
                         <span className="profile-chip-copy">
                           <strong>{config.label}</strong>
@@ -1798,19 +1968,7 @@ export default function App() {
                   })}
                 </div>
                 <div className="editor-actions left-aligned">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const next = createProviderConfig('openai-compatible-custom', { label: 'New profile', model: '' });
-                      setSettings((current) => ({
-                        ...current,
-                        providerConfigs: [...current.providerConfigs, next],
-                      }));
-                      setSettingsEditorConfigId(next.id);
-                      setLeftPanelOpen(false);
-                      setAiSettingsModalOpen(true);
-                    }}
-                  >
+                  <button type="button" onClick={addProviderProfile}>
                     Add profile
                   </button>
                 </div>
@@ -2344,7 +2502,7 @@ export default function App() {
                   {providerMenuOpen ? (
                     <div className="chat-dock-provider-menu">
                       {settings.providerConfigs.length === 0 ? (
-                        <button type="button" className="mini-chat-add-profile" onClick={() => { setProviderMenuOpen(false); setAiSettingsModalOpen(true); }}>Add AI profile to chat</button>
+                        <button type="button" className="mini-chat-add-profile" onClick={addProviderProfile}>Add AI profile to chat</button>
                       ) : (
                         <>
                           <label className="chat-dock-field">
@@ -2376,7 +2534,7 @@ export default function App() {
                               </select>
                             </label>
                           ) : null}
-                          <button type="button" className="quiet chat-dock-manage" onClick={() => { setProviderMenuOpen(false); setAiSettingsModalOpen(true); }}>Manage profiles</button>
+                          <button type="button" className="quiet chat-dock-manage" onClick={() => openProviderSetup()}>Manage profiles</button>
                         </>
                       )}
                     </div>
@@ -2483,7 +2641,7 @@ export default function App() {
                   <textarea
                     autoFocus
                     value={composerDraft}
-                    onChange={(e) => setComposerDraft(e.target.value)}
+                    onChange={(e) => updateComposerState(composerKey, (current) => ({ ...current, draft: e.target.value }))}
                     placeholder="Ask the thread something"
                     rows={3}
                     onKeyDown={(e) => {
@@ -2503,7 +2661,7 @@ export default function App() {
                           ) : (
                             <div className="document-preview">📄 {att.filename}</div>
                           )}
-                          <button onClick={() => setComposerAttachments(prev => prev.filter(a => a.id !== att.id))} className="remove-attachment">×</button>
+                          <button onClick={() => updateComposerState(composerKey, (current) => ({ ...current, attachments: current.attachments.filter((attachment) => attachment.id !== att.id) }))} className="remove-attachment">×</button>
                         </div>
                       ))}
                     </div>
@@ -2541,7 +2699,7 @@ export default function App() {
                           }
                         }
                         if (errors.length > 0) setError(errors.join('\n'));
-                        if (newAttachments.length > 0) setComposerAttachments(prev => [...prev, ...newAttachments]);
+                        if (newAttachments.length > 0) updateComposerState(composerKey, (current) => ({ ...current, attachments: [...current.attachments, ...newAttachments] }));
                         e.target.value = '';
                       }}
                       style={{ display: 'none' }}
@@ -2550,9 +2708,9 @@ export default function App() {
                     <button
                       className="mini-chat-send"
                       onClick={() => sendMessage()}
-                      disabled={(!composerDraft.trim() && composerAttachments.length === 0) || sending || !activeProviderConfig?.apiKey.trim()}
+                      disabled={sending}
                     >
-                      {sending ? 'Thinking…' : settingsLockState === 'locked' ? 'Unlock to send' : 'Send'}
+                      {sending ? 'Thinking…' : !activeProviderConfig ? 'Add AI profile' : settingsLockState === 'locked' ? 'Unlock to send' : 'Send'}
                     </button>
                   </div>
                 </div>
@@ -2612,65 +2770,41 @@ export default function App() {
             </header>
             <div className="chat-modal-body">
               <section className="inspector-card settings-card">
-                <div className="settings-management-header">
-                  <div className="settings-management-row">
-                    <label className="field compact-inline">
-                      <span>Profile</span>
-                      <select
-                        autoFocus
-                        value={settingsEditorConfig?.id ?? ''}
-                        onChange={(event) => setSettingsEditorConfigId(event.target.value)}
-                      >
-                        {settings.providerConfigs.map((config) => (
-                          <option key={config.id} value={config.id}>
-                            {config.label}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <span className={`pill settings-pill ${settingsEditorLockState}`}>
-                      {settingsEditorLockState === 'none' ? 'no saved key' : settingsEditorLockState === 'unlocked' ? 'unlocked' : 'locked'}
-                    </span>
-                  </div>
-                  <div className="editor-actions left-aligned">
+                <div className="profile-tabs" role="tablist" aria-label="AI profiles">
+                  {settings.providerConfigs.map((config) => (
                     <button
+                      key={config.id}
                       type="button"
-                      onClick={() => {
-                        const next = createProviderConfig('openai-compatible-custom', { label: 'New profile', model: '' });
-                        setSettings((current) => ({
-                          ...current,
-                          providerConfigs: [...current.providerConfigs, next],
-                        }));
-                        setSettingsEditorConfigId(next.id);
-                      }}
+                      role="tab"
+                      aria-selected={config.id === settingsEditorConfig?.id}
+                      className={`profile-tab ${config.id === settingsEditorConfig?.id ? 'selected' : ''}`}
+                      onClick={() => setSettingsEditorConfigId(config.id)}
                     >
-                      New profile
+                      {config.label}
                     </button>
-                    <button
-                      type="button"
-                      className="quiet btn-danger"
-                      onClick={() => settingsEditorConfig && deleteProfile(settingsEditorConfig.id)}
-                      disabled={!settingsEditorConfig}
-                    >
-                      Delete profile
-                    </button>
-                  </div>
+                  ))}
+                  <button type="button" className="profile-tab profile-tab-add" onClick={addProviderProfile} aria-label="Add AI profile">
+                    + New
+                  </button>
                 </div>
                 {settingsEditorConfig ? (
                   <>
                     <label className="field">
-                      Provider type
+                      Provider
                       <select
+                        autoFocus
                         value={settingsEditorConfig.kind}
                         onChange={(event) => {
                           const kind = event.target.value as AIProvider;
                           const info = providerInfo(kind);
-                          updateProviderConfig(settingsEditorConfig.id, {
+                          const patch = {
                             kind,
-                            label: settingsEditorConfig.label || info.label,
+                            label: autoProfileLabel(kind, settingsEditorConfig.label),
                             model: '',
                             baseUrl: info.baseUrl,
-                          });
+                          };
+                          updateProviderConfig(settingsEditorConfig.id, patch);
+                          void fetchModelsForConfig({ ...settingsEditorConfig, ...patch }, { requireKey: false, updateSelectedModel: true });
                         }}
                       >
                         {PROVIDERS.map((entry) => (
@@ -2680,54 +2814,51 @@ export default function App() {
                         ))}
                       </select>
                     </label>
-                    <label className="field">
-                      Label
-                      <input
-                        value={settingsEditorConfig.label}
-                        onChange={(event) => updateProviderConfig(settingsEditorConfig.id, { label: event.target.value })}
-                        placeholder="Profile name"
-                      />
-                    </label>
                     {settingsEditorConfig.kind === 'openai-compatible-custom' ? (
-                      <label className="field">
-                        Base URL
-                        <input
-                          value={settingsEditorConfig.baseUrl ?? ''}
-                          onChange={(event) => updateProviderConfig(settingsEditorConfig.id, { baseUrl: event.target.value })}
-                          placeholder="https://api.example.com/v1"
-                          autoComplete="off"
-                          spellCheck={false}
-                        />
-                      </label>
+                      <>
+                        <label className="field">
+                          Profile name
+                          <input
+                            value={settingsEditorConfig.label}
+                            onChange={(event) => updateProviderConfig(settingsEditorConfig.id, { label: event.target.value })}
+                            placeholder="e.g. Local Llama"
+                          />
+                        </label>
+                        <label className="field">
+                          Base URL
+                          <input
+                            value={settingsEditorConfig.baseUrl ?? ''}
+                            onChange={(event) => updateProviderConfig(settingsEditorConfig.id, { baseUrl: event.target.value })}
+                            onBlur={(event) => {
+                              void fetchModelsForConfig(
+                                { ...settingsEditorConfig, baseUrl: event.target.value },
+                                { requireKey: false, updateSelectedModel: true },
+                              );
+                            }}
+                            placeholder="https://api.example.com/v1"
+                            autoComplete="off"
+                            spellCheck={false}
+                          />
+                        </label>
+                      </>
                     ) : null}
                     <label className="field">
-                      Model
-                      <select
-                        value={settingsEditorConfig.model}
-                        onChange={(event) => updateProviderConfig(settingsEditorConfig.id, { model: event.target.value })}
-                      >
-                        {settingsEditorModels.map((model) => (
-                          <option key={model} value={model}>
-                            {model}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <div className="editor-actions left-aligned">
-                      <button
-                        type="button"
-                        onClick={() => refreshModels(settingsEditorConfig.id)}
-                        disabled={modelsLoading || !settingsEditorConfig.apiKey.trim()}
-                      >
-                        {modelsLoading ? 'Loading models…' : modelCache[settingsEditorConfig.id] ? 'Refresh models' : 'List models'}
-                      </button>
-                    </div>
-                    <label className="field">
-                      {providerInfo(settingsEditorConfig.kind).label} API key
+                      <span className="field-label-row">
+                        <span>{providerInfo(settingsEditorConfig.kind).label} API key</span>
+                        <span className={`pill settings-pill ${settingsEditorLockState}`}>
+                          {settingsEditorLockState === 'none' ? 'no saved key' : settingsEditorLockState === 'unlocked' ? 'unlocked' : 'locked'}
+                        </span>
+                      </span>
                       <input
                         type="password"
                         value={settingsEditorConfig.apiKey}
                         onChange={(event) => updateProviderConfig(settingsEditorConfig.id, { apiKey: event.target.value })}
+                        onBlur={(event) => {
+                          void fetchModelsForConfig(
+                            { ...settingsEditorConfig, apiKey: event.target.value },
+                            { requireKey: false, updateSelectedModel: true },
+                          );
+                        }}
                         placeholder={settingsEditorConfig.hasEncryptedApiKey && !settingsEditorConfig.apiKey ? 'saved key — tap Unlock to load' : apiKeyPlaceholder(settingsEditorConfig.kind)}
                         autoComplete="off"
                         spellCheck={false}
@@ -2760,9 +2891,44 @@ export default function App() {
                         Delete saved key
                       </button>
                     </div>
+                    <label className="field">
+                      Model
+                      <select
+                        value={settingsEditorConfig.model}
+                        onChange={(event) => updateProviderConfig(settingsEditorConfig.id, { model: event.target.value })}
+                      >
+                        {settingsEditorModels.map((model) => (
+                          <option key={model} value={model}>
+                            {model}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <div className="editor-actions left-aligned">
+                      <button
+                        type="button"
+                        onClick={() => refreshModels(settingsEditorConfig.id)}
+                        disabled={settingsEditorModelsLoading || !settingsEditorConfig.apiKey.trim()}
+                      >
+                        {settingsEditorModelsLoading ? 'Loading models…' : settingsEditorHasCachedModels ? 'Refresh models' : 'List models'}
+                      </button>
+                    </div>
+                    {providerError ? <p className="error">{providerError}</p> : null}
+                    {settingsNotice ? <p className="muted">{settingsNotice}</p> : null}
+                    <div className="settings-profile-footer">
+                      <button type="button" className="quiet btn-danger" onClick={() => deleteProfile(settingsEditorConfig.id)}>
+                        Delete this profile
+                      </button>
+                    </div>
                   </>
-                ) : null}
-                {settingsNotice ? <p className="muted">{settingsNotice}</p> : null}
+                ) : (
+                  <div className="profile-list-empty">
+                    <p>No AI profiles yet. Add one to start chatting.</p>
+                    <button type="button" className="profile-list-empty-cta" onClick={addProviderProfile}>
+                      Add AI profile
+                    </button>
+                  </div>
+                )}
               </section>
             </div>
           </section>
@@ -2959,6 +3125,13 @@ function apiKeyPlaceholder(provider: AIProvider) {
   if (provider === 'openrouter') return 'sk-or-...';
   if (provider === 'openai-compatible-custom') return 'sk-...';
   return '';
+}
+
+function autoProfileLabel(kind: AIProvider, current: string): string {
+  if (kind !== 'openai-compatible-custom') return providerInfo(kind).label;
+  const presetLabels = PROVIDERS.map((entry) => entry.label);
+  const trimmed = current.trim();
+  return trimmed && trimmed !== 'New profile' && !presetLabels.includes(trimmed) ? trimmed : 'Custom provider';
 }
 
 function providerKeyLink(provider: AIProvider): { label: string; href: string } | null {

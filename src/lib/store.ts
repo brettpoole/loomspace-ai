@@ -259,7 +259,7 @@ export function createThread(title: string, description: string, index: number, 
     title,
     description,
   };
-  const firstChatNode = createChatNode('AI chat ready', [], initialModel);
+  const firstChatNode = createChatNode('', [], initialModel);
 
   return {
     id: threadId,
