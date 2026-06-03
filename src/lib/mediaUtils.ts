@@ -106,7 +106,7 @@ export function getMessageText(message: ChatMessage): string {
 
 // Check if message has attachments
 export function hasAttachments(message: ChatMessage): boolean {
-  return message.content?.attachments && message.content.attachments.length > 0 || false;
+  return (message.content?.attachments?.length ?? 0) > 0;
 }
 
 // Get attachments of specific type

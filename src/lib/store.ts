@@ -42,10 +42,6 @@ export function providerInfo(provider: AIProvider): ProviderInfo {
   return PROVIDERS.find((entry) => entry.id === provider) ?? PROVIDERS[0];
 }
 
-export function defaultProviderConfigs(): AIProviderConfig[] {
-  return [];
-}
-
 export function defaultProviderConfigId(kind: AIProvider): string {
   return kind === 'openai-compatible-custom' ? 'openai-compatible-custom' : kind;
 }
@@ -128,7 +124,7 @@ export function saveWorkspace(state: LoomspaceState) {
 export function loadSettings(): AISettings {
   const persisted = readSettingsPayload();
   const legacy = persisted ? null : readLegacySettingsPayload();
-  const baseConfigs = persisted?.providerConfigs ?? defaultProviderConfigs();
+  const baseConfigs = persisted?.providerConfigs ?? [];
   const activeProviderConfigId = persisted?.activeProviderConfigId ?? defaultProviderConfigId(legacy?.provider ?? 'openai');
 
   legacySecretConfigId = !persisted && readCookie(LEGACY_SECRET_COOKIE) ? activeProviderConfigId : null;
@@ -221,13 +217,12 @@ export function clearProviderSecret(configId: string) {
 
 export function deleteProviderConfig(settings: AISettings, configId: string): AISettings {
   clearProviderSecret(configId);
-  const remaining = settings.providerConfigs.filter((config) => config.id !== configId);
-  const configs = remaining;
-  const nextActiveId =
+  const providerConfigs = settings.providerConfigs.filter((config) => config.id !== configId);
+  const activeProviderConfigId =
     settings.activeProviderConfigId === configId
-      ? configs[0]?.id ?? 'openai'
+      ? providerConfigs[0]?.id ?? 'openai'
       : settings.activeProviderConfigId;
-  return { activeProviderConfigId: nextActiveId, providerConfigs: configs };
+  return { activeProviderConfigId, providerConfigs };
 }
 
 export function clearSettingsCookies() {
@@ -429,7 +424,7 @@ export async function fetchProviderModels(config: AIProviderConfig): Promise<str
   return (data.data ?? []).map((entry) => entry.id ?? '').filter(Boolean).sort();
 }
 
-function resolveBaseUrl(baseUrl: string | undefined, kind: AIProvider) {
+export function resolveBaseUrl(baseUrl: string | undefined, kind: AIProvider) {
   if (kind === 'anthropic') return baseUrl?.trim().replace(/\/+$/, '') || 'https://api.anthropic.com/v1';
   if (kind === 'openrouter') return baseUrl?.trim().replace(/\/+$/, '') || 'https://openrouter.ai/api/v1';
   if (kind === 'openai') return baseUrl?.trim().replace(/\/+$/, '') || 'https://api.openai.com/v1';
@@ -466,10 +461,7 @@ function readSettingsPayload(): PersistedSettingsPayload | null {
     const provider: AIProvider = typeof parsed.provider === 'string' && isProvider(parsed.provider) ? parsed.provider : 'openai';
     return {
       activeProviderConfigId: defaultProviderConfigId(provider),
-      providerConfigs: defaultProviderConfigs().map((config) => ({
-        ...config,
-        model: typeof parsed.model === 'string' && config.id === defaultProviderConfigId(provider) ? parsed.model : config.model,
-      })),
+      providerConfigs: [],
     };
   } catch {
     return null;
@@ -494,8 +486,7 @@ function writeSettingsPayload(payload: PersistedSettingsPayload) {
   writeCookie(SETTINGS_COOKIE, JSON.stringify(payload));
 }
 
-function readConfigSecretPayload(configId: string): EncryptedSecretPayload | null {
-  const raw = readCookie(secretCookieName(configId));
+function parseSecretPayload(raw: string | null): EncryptedSecretPayload | null {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as Partial<EncryptedSecretPayload>;
@@ -514,24 +505,12 @@ function readConfigSecretPayload(configId: string): EncryptedSecretPayload | nul
   }
 }
 
+function readConfigSecretPayload(configId: string): EncryptedSecretPayload | null {
+  return parseSecretPayload(readCookie(secretCookieName(configId)));
+}
+
 function readLegacySecretPayload(): EncryptedSecretPayload | null {
-  const raw = readCookie(LEGACY_SECRET_COOKIE);
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as Partial<EncryptedSecretPayload>;
-    if (parsed.version !== 1 || typeof parsed.ciphertext !== 'string' || typeof parsed.iv !== 'string' || typeof parsed.salt !== 'string') {
-      return null;
-    }
-    return {
-      version: 1,
-      iterations: typeof parsed.iterations === 'number' ? parsed.iterations : PBKDF2_ITERATIONS,
-      salt: parsed.salt,
-      iv: parsed.iv,
-      ciphertext: parsed.ciphertext,
-    };
-  } catch {
-    return null;
-  }
+  return parseSecretPayload(readCookie(LEGACY_SECRET_COOKIE));
 }
 
 function migrateWorkspaceState(state: LoomspaceState): LoomspaceState {
@@ -618,22 +597,14 @@ async function decryptSecret(payload: EncryptedSecretPayload, passphrase: string
 }
 
 function readCookie(name: string): string | null {
-  const pattern = `${encodeURIComponent(name)}=`;
-  return document.cookie
-    .split('; ')
-    .find((entry) => entry.startsWith(pattern))
-    ?.slice(pattern.length)
-    ? decodeURIComponent(
-        document.cookie
-          .split('; ')
-          .find((entry) => entry.startsWith(pattern))!
-          .slice(pattern.length),
-      )
-    : null;
+  const prefix = `${encodeURIComponent(name)}=`;
+  const entry = document.cookie.split('; ').find((part) => part.startsWith(prefix));
+  return entry ? decodeURIComponent(entry.slice(prefix.length)) : null;
 }
 
 function writeCookie(name: string, value: string) {
-  document.cookie = `${encodeURIComponent(name)}=${encodeURIComponent(value)}; path=/; max-age=${60 * 60 * 24 * 365}`;
+  const secure = typeof location !== 'undefined' && location.protocol === 'https:' ? '; Secure' : '';
+  document.cookie = `${encodeURIComponent(name)}=${encodeURIComponent(value)}; path=/; max-age=${60 * 60 * 24 * 365}; SameSite=Strict${secure}`;
 }
 
 function deleteCookie(name: string) {

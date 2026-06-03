@@ -17,6 +17,7 @@ import {
   loadSettings,
   loadWorkspace,
   providerInfo,
+  resolveBaseUrl,
   saveModelCache,
   saveProviderSecret,
   saveSettings,
@@ -68,6 +69,7 @@ const MAX_ZOOM = 1.6;
 const EDGE_PADDING = 80;
 const CANVAS_MIN_WIDTH = 4000;
 const CANVAS_MIN_HEIGHT = 2400;
+const WORKSPACE_SAVE_DEBOUNCE_MS = 400;
 
 const PANEL_SIZE_KEY = 'loomspace.panels.v1';
 const MIN_PANEL_W = 220;
@@ -244,6 +246,7 @@ export default function App() {
   const [modelCache, setModelCache] = useState<ModelCache>(() => loadModelCache());
   const [modelsLoadingConfigId, setModelsLoadingConfigId] = useState<string | null>(null);
   const settingsRef = useRef(settings);
+  const stateRef = useRef(state);
   const viewportRef = useRef<HTMLDivElement>(null);
   const panGesture = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
   const pointerMap = useRef<Map<number, { x: number; y: number }>>(new Map());
@@ -275,7 +278,19 @@ export default function App() {
     return () => media?.removeEventListener('change', applyTheme);
   }, [themeMode]);
 
-  useEffect(() => saveWorkspace(state), [state]);
+  useEffect(() => {
+    stateRef.current = state;
+    const handle = window.setTimeout(() => saveWorkspace(state), WORKSPACE_SAVE_DEBOUNCE_MS);
+    return () => window.clearTimeout(handle);
+  }, [state]);
+  useEffect(() => {
+    const flush = () => saveWorkspace(stateRef.current);
+    window.addEventListener('pagehide', flush);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      flush();
+    };
+  }, []);
   useEffect(() => {
     settingsRef.current = settings;
     saveSettings(settings);
@@ -788,18 +803,16 @@ export default function App() {
     setError(null);
   }
 
-
-  async function sendMessage(closeAfter = false) {
-    if (sending) return;
-    if (!activeThread) {
-      setError('Select or create a thread before sending.');
-      return;
-    }
+  function ensureSendableConfig(verb: 'send' | 'retry'): AIProviderConfig | null {
     const activeConfig = activeProviderConfig;
     if (!activeConfig) {
-      setError('Add an AI profile to start chatting.');
-      openProviderSetup();
-      return;
+      if (verb === 'send') {
+        setError('Add an AI profile to start chatting.');
+        openProviderSetup();
+      } else {
+        setError('Pick an AI profile first.');
+      }
+      return null;
     }
     if (!activeConfig.apiKey.trim()) {
       const message = activeConfig.hasEncryptedApiKey ? 'Unlock this AI profile, or save a new encrypted key.' : 'Add your API key to this profile first.';
@@ -810,15 +823,27 @@ export default function App() {
         setProviderError(message);
         openProviderSetup(activeConfig.id);
       }
-      return;
+      return null;
     }
     if (!activeConfig.model.trim()) {
-      const message = 'Select a model for this AI profile before sending.';
+      const message = `Select a model for this AI profile before ${verb === 'send' ? 'sending' : 'retrying'}.`;
       setError(message);
       setProviderError(message);
       openProviderSetup(activeConfig.id);
+      return null;
+    }
+    return activeConfig;
+  }
+
+
+  async function sendMessage(closeAfter = false) {
+    if (sending) return;
+    if (!activeThread) {
+      setError('Select or create a thread before sending.');
       return;
     }
+    const activeConfig = ensureSendableConfig('send');
+    if (!activeConfig) return;
 
     const sourceComposerKey = composerKey;
     const composerStateForSend = composerState;
@@ -946,8 +971,9 @@ export default function App() {
     }
     const spokenText = cleanTextForSpeech(value);
     if (!spokenText) {
-      setError("No text to speak");
-    };
+      setError('No text to speak.');
+      return;
+    }
 
     stopSpeaking();
     const voices = synth.getVoices();
@@ -1004,29 +1030,8 @@ export default function App() {
 
   async function retryAssistantMessage(messageId: string) {
     if (!activeThread || sending) return;
-    const activeConfig = activeProviderConfig;
-    if (!activeConfig) {
-      setError('Pick an AI profile first.');
-      return;
-    }
-    if (!activeConfig.apiKey.trim()) {
-      const message = activeConfig.hasEncryptedApiKey ? 'Unlock this AI profile, or save a new encrypted key.' : 'Add your API key to this profile first.';
-      setError(message);
-      if (activeConfig.hasEncryptedApiKey) {
-        setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: activeConfig.id });
-      } else {
-        setProviderError(message);
-        openProviderSetup(activeConfig.id);
-      }
-      return;
-    }
-    if (!activeConfig.model.trim()) {
-      const message = 'Select a model for this AI profile before retrying.';
-      setError(message);
-      setProviderError(message);
-      openProviderSetup(activeConfig.id);
-      return;
-    }
+    const activeConfig = ensureSendableConfig('retry');
+    if (!activeConfig) return;
 
     const assistantIndex = activeThread.context.findIndex((message) => message.id === messageId && message.role === 'assistant');
     if (assistantIndex !== activeThread.context.length - 1) {
@@ -1299,13 +1304,8 @@ export default function App() {
   }
 
   function enterContextLinkMode(thread: ThreadLane, nodeId: string, side: 'left' | 'right', anchor?: { clientX: number; clientY: number }) {
-    const selectableNodes = thread.nodes.filter((n) => (n.kind === 'chat' && n.messages.length > 0) || n.kind === 'context');
-    const idx = selectableNodes.findIndex((n) => n.id === nodeId);
-    if (idx < 0) return;
-    const selectedNodes = selectableNodes.slice(0, idx + 1).map((n) => ({
-      nodeId: n.id,
-      parts: { user: true, assistant: true },
-    }));
+    const selectedNodes = buildContextSelection(thread, nodeId);
+    if (!selectedNodes) return;
     setContextLinkPointer(anchor ? clientToCanvasPoint(anchor.clientX, anchor.clientY) : null);
     setContextLinkSnapTarget(null);
     setContextLinkMode({ intent: 'link', sourceThreadId: thread.id, dotNodeId: nodeId, selectedNodes, side });
@@ -1337,22 +1337,7 @@ export default function App() {
     const sourceThread = state.threads.find((t) => t.id === contextLinkMode.sourceThreadId);
     if (!sourceThread) return;
 
-    const injectedMessages: ChatMessage[] = [];
-    for (const node of sourceThread.nodes) {
-      if (node.kind !== 'chat' && node.kind !== 'context') continue;
-      const selection = contextLinkMode.selectedNodes.find((s) => s.nodeId === node.id);
-      if (!selection) continue;
-      for (const msg of node.messages) {
-        if (msg.role === 'user' && !selection.parts.user) continue;
-        if (msg.role === 'assistant' && !selection.parts.assistant) continue;
-        injectedMessages.push({
-          ...msg,
-          id: `injected-${crypto.randomUUID().slice(0, 8)}`,
-          injectedFromThreadId: sourceThread.id,
-          injectedFromColor: sourceThread.color,
-        });
-      }
-    }
+    const injectedMessages = collectSelectedMessages(sourceThread, contextLinkMode.selectedNodes);
 
     if (injectedMessages.length === 0) {
       setContextLinkMode(null);
@@ -1552,21 +1537,24 @@ export default function App() {
     setAiSettingsModalOpen(true);
   }
 
-  function deleteProfile(configId: string) {
-    const target = settings.providerConfigs.find((config) => config.id === configId);
-    if (!target) return;
-    const confirmed = window.confirm(`Delete AI profile "${target.label}"? Its saved key will be removed from this browser.`);
-    if (!confirmed) return;
-    const next = deleteProviderConfig(settings, configId);
-    setSettings(next);
+  function removeProfile(target: AIProviderConfig) {
+    setSettings(deleteProviderConfig(settings, target.id));
     setModelCache((current) => {
       const copy = { ...current };
-      delete copy[configId];
+      delete copy[target.id];
       return copy;
     });
     setSettingsNotice(`Deleted AI profile "${target.label}".`);
     setProviderError(null);
     setError(null);
+  }
+
+  function deleteProfile(configId: string) {
+    const target = settings.providerConfigs.find((config) => config.id === configId);
+    if (!target) return;
+    const confirmed = window.confirm(`Delete AI profile "${target.label}"? Its saved key will be removed from this browser.`);
+    if (!confirmed) return;
+    removeProfile(target);
   }
 
   async function fetchModelsForConfig(
@@ -1827,6 +1815,124 @@ export default function App() {
     : 0;
   const settingsEditorModelsLoading = settingsEditorConfig ? modelsLoadingConfigId === settingsEditorConfig.id : false;
   const settingsEditorHasCachedModels = settingsEditorConfig ? Boolean(modelCache[settingsEditorConfig.id] ?? modelCache[providerModelCacheKey(settingsEditorConfig)]) : false;
+
+  const renderNodeFooter = (title: string, messages: ChatMessage[]) => (
+    <div className="node-footer">
+      {messages.length > 0 ? (
+        <button
+          type="button"
+          className="node-expand-toggle"
+          onClick={(e) => {
+            e.stopPropagation();
+            if (e.detail > 1) return;
+            if (readMoreTimerRef.current) window.clearTimeout(readMoreTimerRef.current);
+            const openedAt = Date.now();
+            readMoreTimerRef.current = window.setTimeout(() => {
+              readMoreTimerRef.current = null;
+              if (Date.now() < suppressReadMoreUntil.current || suppressReadMoreUntil.current > openedAt) return;
+              setNodePreviewModal({ title, messages });
+            }, 320);
+          }}
+          onDoubleClick={(e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            suppressReadMoreUntil.current = Date.now() + 400;
+            if (readMoreTimerRef.current) {
+              window.clearTimeout(readMoreTimerRef.current);
+              readMoreTimerRef.current = null;
+            }
+          }}
+        >
+          Read more
+        </button>
+      ) : null}
+    </div>
+  );
+
+  const renderNodeDeleteCorner = (thread: ThreadLane, node: ThreadNode, isSelected: boolean) =>
+    isSelected && !contextLinkMode ? (
+      <button
+        type="button"
+        className="node-delete-corner"
+        aria-label="Delete node"
+        title="Delete node"
+        onClick={(e) => { e.stopPropagation(); enterDeleteMode(thread.id, node.id); }}
+      >
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 3 14 13 14 13 6"/><line x1="1" y1="3" x2="15" y2="3"/><line x1="7" y1="7" x2="7" y2="11"/></svg>
+      </button>
+    ) : null;
+
+  const renderContextSelectOverlay = (nodeId: string, ctxPart: { parts: { user: boolean; assistant: boolean } } | null) =>
+    ctxPart ? (
+      <div className="context-select-overlay" onClick={(e) => e.stopPropagation()}>
+        <button type="button" className={`context-select-half user ${ctxPart.parts.user ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(nodeId, 'user'); }}>
+          <span>User prompt</span>
+          <span className="context-select-check">{ctxPart.parts.user ? '✓' : '○'}</span>
+        </button>
+        <button type="button" className={`context-select-half assistant ${ctxPart.parts.assistant ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(nodeId, 'assistant'); }}>
+          <span>Asst response</span>
+          <span className="context-select-check">{ctxPart.parts.assistant ? '✓' : '○'}</span>
+        </button>
+      </div>
+    ) : null;
+
+  const renderDeleteOverlay = (thread: ThreadLane, nodeId: string) =>
+    deleteMode && deleteMode.nodeId === nodeId ? (
+      <div className="delete-select-overlay" onClick={(e) => e.stopPropagation()}>
+        {deleteMode.parts.user && (
+          <button type="button" className="delete-select-half user active" onClick={(e) => { e.stopPropagation(); toggleDeletePart('user'); }}>
+            <span>User prompt</span>
+            <span className="delete-select-check">✓</span>
+          </button>
+        )}
+        {deleteMode.parts.assistant && (
+          <button type="button" className="delete-select-half assistant active" onClick={(e) => { e.stopPropagation(); toggleDeletePart('assistant'); }}>
+            <span>Asst response</span>
+            <span className="delete-select-check">✓</span>
+          </button>
+        )}
+        <button type="button" className="delete-confirm-btn" onClick={(e) => { e.stopPropagation(); confirmDeleteNode(thread.id); }}>
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 3 14 13 14 13 6"/><line x1="1" y1="3" x2="15" y2="3"/><line x1="7" y1="7" x2="7" y2="11"/></svg>
+          Delete
+        </button>
+      </div>
+    ) : null;
+
+  const renderActionDots = (thread: ThreadLane, node: ThreadNode, isLast: boolean) => {
+    const handleSideDot = (side: 'left' | 'right') => (e: React.MouseEvent) => {
+      e.stopPropagation();
+      if (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id && contextLinkMode.side === side) {
+        if (contextLinkMode.selectedNodes.length <= 1) setContextLinkMode(null);
+        else setContextLinkMode({ ...contextLinkMode, selectedNodes: [{ nodeId: node.id, parts: { user: true, assistant: true } }] });
+      } else {
+        enterContextLinkMode(thread, node.id, side, { clientX: e.clientX, clientY: e.clientY });
+      }
+    };
+    const handleForkDot = (side: 'left' | 'right') => (e: React.MouseEvent) => {
+      e.stopPropagation();
+      openForkThreadEditor(thread, node.id, side);
+    };
+    return (
+      <>
+        <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: -36 }} />
+        <div className="action-dot-group action-left" style={{ top: 0, left: -52, height: CHAT_HEIGHT }}>
+          <button type="button" className="action-dot" aria-label="Inject context left" onClick={handleSideDot('left')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M7 9l-1 1a3 3 0 0 1-4.24-4.24l2-2a3 3 0 0 1 4.24 4.24"/><path d="M9 7l1-1a3 3 0 0 1 4.24 4.24l-2 2a3 3 0 0 1-4.24-4.24"/></svg><span>Link</span></button>
+          <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDot('left')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="4" cy="3" r="1.5"/><circle cx="4" cy="13" r="1.5"/><circle cx="12" cy="8" r="1.5"/><path d="M5.5 3h2a2 2 0 0 1 2 2v1.5"/><path d="M5.5 13h2a2 2 0 0 0 2-2V9.5"/></svg><span>Fork</span></button>
+        </div>
+        <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: NODE_WIDTH }} />
+        <div className="action-dot-group action-right" style={{ top: 0, left: NODE_WIDTH + 10, height: CHAT_HEIGHT }}>
+          <button type="button" className="action-dot" aria-label="Inject context right" onClick={handleSideDot('right')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M7 9l-1 1a3 3 0 0 1-4.24-4.24l2-2a3 3 0 0 1 4.24 4.24"/><path d="M9 7l1-1a3 3 0 0 1 4.24 4.24l-2 2a3 3 0 0 1-4.24-4.24"/></svg><span>Link</span></button>
+          <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDot('right')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="4" cy="3" r="1.5"/><circle cx="4" cy="13" r="1.5"/><circle cx="12" cy="8" r="1.5"/><path d="M5.5 3h2a2 2 0 0 1 2 2v1.5"/><path d="M5.5 13h2a2 2 0 0 0 2-2V9.5"/></svg><span>Fork</span></button>
+        </div>
+        {isLast && (<>
+          <div className="action-line-v" style={{ top: CHAT_HEIGHT, left: NODE_WIDTH / 2 }} />
+          <button type="button" className="action-node-ghost" style={{ top: CHAT_HEIGHT + 36, left: 0 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setRightPanelOpen(true); }}>
+            <span>Open chat</span>
+          </button>
+        </>)}
+      </>
+    );
+  };
 
   const layoutStyle = {} as React.CSSProperties & Record<string, string>;
   if (leftPanelOpen) layoutStyle['--left-w'] = `${panelSizes.left}px`;
@@ -2144,21 +2250,6 @@ export default function App() {
                         const isContextTarget = contextLinkMode !== null && thread.id !== contextLinkMode.sourceThreadId;
                         const isContextSnapTarget = contextLinkSnapTarget?.threadId === thread.id && contextLinkSnapTarget.nodeId === node.id;
                         const showDots = !rightPanelOpen && (isSelected || (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id));
-                        const handleSideDotCtx = (side: 'left' | 'right') => (e: React.MouseEvent) => {
-                          e.stopPropagation();
-                          if (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id && contextLinkMode.side === side) {
-                            if (contextLinkMode.selectedNodes.length <= 1) setContextLinkMode(null);
-                            else setContextLinkMode({ ...contextLinkMode, selectedNodes: [{ nodeId: node.id, parts: { user: true, assistant: true } }] });
-                          } else {
-                            enterContextLinkMode(thread, node.id, side, { clientX: e.clientX, clientY: e.clientY });
-                          }
-                        };
-
-                        const handleForkDotCtx = (side: 'left' | 'right') => (e: React.MouseEvent) => {
-                          e.stopPropagation();
-                          openForkThreadEditor(thread, node.id, side);
-                        };
-
                         return (
                           <div
                             key={node.id}
@@ -2198,100 +2289,12 @@ export default function App() {
                               </div>
                               <strong style={{ color: ctxNode.sourceThreadColor }}>{ctxNode.sourceThreadTitle}</strong>
                               <small>{ctxNode.messages.length} messages · {ctxNode.createdAt.slice(0, 10)}</small>
-                              <div className="node-footer">
-                                {ctxNode.messages.length > 0 ? (
-                                  <button
-                                    type="button"
-                                    className="node-expand-toggle"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      if (e.detail > 1) return;
-                                      if (readMoreTimerRef.current) window.clearTimeout(readMoreTimerRef.current);
-                                      const openedAt = Date.now();
-                                      readMoreTimerRef.current = window.setTimeout(() => {
-                                        readMoreTimerRef.current = null;
-                                        if (Date.now() < suppressReadMoreUntil.current || suppressReadMoreUntil.current > openedAt) return;
-                                        setNodePreviewModal({ title: ctxNode.sourceThreadTitle, messages: ctxNode.messages });
-                                      }, 320);
-                                    }}
-                                    onDoubleClick={(e) => {
-                                      e.stopPropagation();
-                                      e.preventDefault();
-                                      suppressReadMoreUntil.current = Date.now() + 400;
-                                      if (readMoreTimerRef.current) {
-                                        window.clearTimeout(readMoreTimerRef.current);
-                                        readMoreTimerRef.current = null;
-                                      }
-                                    }}
-                                  >
-                                    Read more
-                                  </button>
-                                ) : null}
-                              </div>
-                              {isSelected && !contextLinkMode ? (
-                                <button
-                                  type="button"
-                                  className="node-delete-corner"
-                                  aria-label="Delete node"
-                                  title="Delete node"
-                                  onClick={(e) => { e.stopPropagation(); enterDeleteMode(thread.id, node.id); }}
-                                >
-                                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 3 14 13 14 13 6"/><line x1="1" y1="3" x2="15" y2="3"/><line x1="7" y1="7" x2="7" y2="11"/></svg>
-                                </button>
-                              ) : null}
+                              {renderNodeFooter(ctxNode.sourceThreadTitle, ctxNode.messages)}
+                              {renderNodeDeleteCorner(thread, node, isSelected)}
                             </div>
-                            {isContextSource && ctxPart ? (
-                              <div className="context-select-overlay" onClick={(e) => e.stopPropagation()}>
-                                <button type="button" className={`context-select-half user ${ctxPart.parts.user ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(node.id, 'user'); }}>
-                                  <span>User prompt</span>
-                                  <span className="context-select-check">{ctxPart.parts.user ? '✓' : '○'}</span>
-                                </button>
-                                <button type="button" className={`context-select-half assistant ${ctxPart.parts.assistant ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(node.id, 'assistant'); }}>
-                                  <span>Asst response</span>
-                                  <span className="context-select-check">{ctxPart.parts.assistant ? '✓' : '○'}</span>
-                                </button>
-                              </div>
-                            ) : null}
-                            {deleteMode?.nodeId === node.id && (
-                              <div className="delete-select-overlay" onClick={(e) => e.stopPropagation()}>
-                                {deleteMode.parts.user && (
-                                  <button type="button" className="delete-select-half user active" onClick={(e) => { e.stopPropagation(); toggleDeletePart('user'); }}>
-                                    <span>User prompt</span>
-                                    <span className="delete-select-check">✓</span>
-                                  </button>
-                                )}
-                                {deleteMode.parts.assistant && (
-                                  <button type="button" className="delete-select-half assistant active" onClick={(e) => { e.stopPropagation(); toggleDeletePart('assistant'); }}>
-                                    <span>Asst response</span>
-                                    <span className="delete-select-check">✓</span>
-                                  </button>
-                                )}
-                                <button type="button" className="delete-confirm-btn" onClick={(e) => { e.stopPropagation(); confirmDeleteNode(thread.id); }}>
-                                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 3 14 13 14 13 6"/><line x1="1" y1="3" x2="15" y2="3"/><line x1="7" y1="7" x2="7" y2="11"/></svg>
-                                  Delete
-                                </button>
-                              </div>
-                            )}
-                            {showDots && (
-                              <>
-                                <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: -36 }} />
-                                <div className="action-dot-group action-left" style={{ top: 0, left: -52, height: CHAT_HEIGHT }}>
-                                  <button type="button" className="action-dot" aria-label="Inject context left" onClick={handleSideDotCtx('left')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M7 9l-1 1a3 3 0 0 1-4.24-4.24l2-2a3 3 0 0 1 4.24 4.24"/><path d="M9 7l1-1a3 3 0 0 1 4.24 4.24l-2 2a3 3 0 0 1-4.24-4.24"/></svg><span>Link</span></button>
-                                  <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDotCtx('left')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="4" cy="3" r="1.5"/><circle cx="4" cy="13" r="1.5"/><circle cx="12" cy="8" r="1.5"/><path d="M5.5 3h2a2 2 0 0 1 2 2v1.5"/><path d="M5.5 13h2a2 2 0 0 0 2-2V9.5"/></svg><span>Fork</span></button>
-                                </div>
-                                <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: NODE_WIDTH }} />
-                                <div className="action-dot-group action-right" style={{ top: 0, left: NODE_WIDTH + 10, height: CHAT_HEIGHT }}>
-                                  <button type="button" className="action-dot" aria-label="Inject context right" onClick={handleSideDotCtx('right')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M7 9l-1 1a3 3 0 0 1-4.24-4.24l2-2a3 3 0 0 1 4.24 4.24"/><path d="M9 7l1-1a3 3 0 0 1 4.24 4.24l-2 2a3 3 0 0 1-4.24-4.24"/></svg><span>Link</span></button>
-                                  <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDotCtx('right')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="4" cy="3" r="1.5"/><circle cx="4" cy="13" r="1.5"/><circle cx="12" cy="8" r="1.5"/><path d="M5.5 3h2a2 2 0 0 1 2 2v1.5"/><path d="M5.5 13h2a2 2 0 0 0 2-2V9.5"/></svg><span>Fork</span></button>
-                                </div>
-                                {nodeIndex === lane.nodes.length - 1 && (<>
-                                  <div className="action-line-v" style={{ top: CHAT_HEIGHT, left: NODE_WIDTH / 2 }} />
-                                  <button type="button" className="action-node-ghost" style={{ top: CHAT_HEIGHT + 36, left: 0 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setRightPanelOpen(true); }}>
-                                    <span>Open chat</span>
-                                  </button>
-                                </>)}
-                              </>
-                            )}
+                            {renderContextSelectOverlay(node.id, ctxPart)}
+                            {renderDeleteOverlay(thread, node.id)}
+                            {showDots && renderActionDots(thread, node, nodeIndex === lane.nodes.length - 1)}
                           </div>
                         );
                       }
@@ -2303,24 +2306,8 @@ export default function App() {
                         : null;
                       const isContextSource = ctxPart !== null;
                       const isContextTarget = contextLinkMode?.intent === 'link' && thread.id !== contextLinkMode.sourceThreadId;
-                      const isForkSelection = forkDraft?.sourceThreadId === thread.id && contextLinkMode?.intent === 'fork';
                       const isContextSnapTarget = contextLinkSnapTarget?.threadId === thread.id && contextLinkSnapTarget.nodeId === node.id;
                       const showDots = !rightPanelOpen && (isSelected || (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id));
-
-                      const handleSideDot = (side: 'left' | 'right') => (e: React.MouseEvent) => {
-                        e.stopPropagation();
-                        if (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id && contextLinkMode.side === side) {
-                          if (contextLinkMode.selectedNodes.length <= 1) setContextLinkMode(null);
-                          else setContextLinkMode({ ...contextLinkMode, selectedNodes: [{ nodeId: node.id, parts: { user: true, assistant: true } }] });
-                        } else {
-                          enterContextLinkMode(thread, node.id, side);
-                        }
-                      };
-
-                      const handleForkDot = (side: 'left' | 'right') => (e: React.MouseEvent) => {
-                        e.stopPropagation();
-                        openForkThreadEditor(thread, node.id, side);
-                      };
 
                       return (
                         <div
@@ -2361,100 +2348,12 @@ export default function App() {
                             </div>
                             <strong>{chatNode.summary}</strong>
                             <small>{chatNode.model}</small>
-                            <div className="node-footer">
-                              {chatNode.messages.length > 0 ? (
-                                <button
-                                  type="button"
-                                  className="node-expand-toggle"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    if (e.detail > 1) return;
-                                    if (readMoreTimerRef.current) window.clearTimeout(readMoreTimerRef.current);
-                                    const openedAt = Date.now();
-                                    readMoreTimerRef.current = window.setTimeout(() => {
-                                      readMoreTimerRef.current = null;
-                                      if (Date.now() < suppressReadMoreUntil.current || suppressReadMoreUntil.current > openedAt) return;
-                                      setNodePreviewModal({ title: chatNode.summary, messages: chatNode.messages });
-                                    }, 320);
-                                  }}
-                                  onDoubleClick={(e) => {
-                                    e.stopPropagation();
-                                    e.preventDefault();
-                                    suppressReadMoreUntil.current = Date.now() + 400;
-                                    if (readMoreTimerRef.current) {
-                                      window.clearTimeout(readMoreTimerRef.current);
-                                      readMoreTimerRef.current = null;
-                                    }
-                                  }}
-                                >
-                                  Read more
-                                </button>
-                              ) : null}
-                            </div>
-                            {isSelected && !contextLinkMode ? (
-                              <button
-                                type="button"
-                                className="node-delete-corner"
-                                aria-label="Delete node"
-                                title="Delete node"
-                                onClick={(e) => { e.stopPropagation(); enterDeleteMode(thread.id, node.id); }}
-                              >
-                                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 3 14 13 14 13 6"/><line x1="1" y1="3" x2="15" y2="3"/><line x1="7" y1="7" x2="7" y2="11"/></svg>
-                              </button>
-                            ) : null}
+                            {renderNodeFooter(chatNode.summary, chatNode.messages)}
+                            {renderNodeDeleteCorner(thread, node, isSelected)}
                           </div>
-                          {isContextSource && ctxPart ? (
-                            <div className="context-select-overlay" onClick={(e) => e.stopPropagation()}>
-                              <button type="button" className={`context-select-half user ${ctxPart.parts.user ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(node.id, 'user'); }}>
-                                <span>User prompt</span>
-                                <span className="context-select-check">{ctxPart.parts.user ? '✓' : '○'}</span>
-                              </button>
-                              <button type="button" className={`context-select-half assistant ${ctxPart.parts.assistant ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(node.id, 'assistant'); }}>
-                                <span>Asst response</span>
-                                <span className="context-select-check">{ctxPart.parts.assistant ? '✓' : '○'}</span>
-                              </button>
-                            </div>
-                          ) : null}
-                          {deleteMode?.nodeId === node.id && (
-                            <div className="delete-select-overlay" onClick={(e) => e.stopPropagation()}>
-                              {deleteMode.parts.user && (
-                                <button type="button" className="delete-select-half user active" onClick={(e) => { e.stopPropagation(); toggleDeletePart('user'); }}>
-                                  <span>User prompt</span>
-                                  <span className="delete-select-check">✓</span>
-                                </button>
-                              )}
-                              {deleteMode.parts.assistant && (
-                                <button type="button" className="delete-select-half assistant active" onClick={(e) => { e.stopPropagation(); toggleDeletePart('assistant'); }}>
-                                  <span>Asst response</span>
-                                  <span className="delete-select-check">✓</span>
-                                </button>
-                              )}
-                              <button type="button" className="delete-confirm-btn" onClick={(e) => { e.stopPropagation(); confirmDeleteNode(thread.id); }}>
-                                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 3 14 13 14 13 6"/><line x1="1" y1="3" x2="15" y2="3"/><line x1="7" y1="7" x2="7" y2="11"/></svg>
-                                Delete
-                              </button>
-                            </div>
-                          )}
-                          {showDots && (
-                            <>
-                              <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: -36 }} />
-                              <div className="action-dot-group action-left" style={{ top: 0, left: -52, height: CHAT_HEIGHT }}>
-                                <button type="button" className="action-dot" aria-label="Inject context left" onClick={handleSideDot('left')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M7 9l-1 1a3 3 0 0 1-4.24-4.24l2-2a3 3 0 0 1 4.24 4.24"/><path d="M9 7l1-1a3 3 0 0 1 4.24 4.24l-2 2a3 3 0 0 1-4.24-4.24"/></svg><span>Link</span></button>
-                                <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDot('left')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="4" cy="3" r="1.5"/><circle cx="4" cy="13" r="1.5"/><circle cx="12" cy="8" r="1.5"/><path d="M5.5 3h2a2 2 0 0 1 2 2v1.5"/><path d="M5.5 13h2a2 2 0 0 0 2-2V9.5"/></svg><span>Fork</span></button>
-                              </div>
-                              <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: NODE_WIDTH }} />
-                              <div className="action-dot-group action-right" style={{ top: 0, left: NODE_WIDTH + 10, height: CHAT_HEIGHT }}>
-                                <button type="button" className="action-dot" aria-label="Inject context right" onClick={handleSideDot('right')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M7 9l-1 1a3 3 0 0 1-4.24-4.24l2-2a3 3 0 0 1 4.24 4.24"/><path d="M9 7l1-1a3 3 0 0 1 4.24 4.24l-2 2a3 3 0 0 1-4.24-4.24"/></svg><span>Link</span></button>
-                                <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDot('right')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="4" cy="3" r="1.5"/><circle cx="4" cy="13" r="1.5"/><circle cx="12" cy="8" r="1.5"/><path d="M5.5 3h2a2 2 0 0 1 2 2v1.5"/><path d="M5.5 13h2a2 2 0 0 0 2-2V9.5"/></svg><span>Fork</span></button>
-                              </div>
-                              {nodeIndex === lane.nodes.length - 1 && (<>
-                                <div className="action-line-v" style={{ top: CHAT_HEIGHT, left: NODE_WIDTH / 2 }} />
-                                <button type="button" className="action-node-ghost" style={{ top: CHAT_HEIGHT + 36, left: 0 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setRightPanelOpen(true); }}>
-                                  <span>Open chat</span>
-                                </button>
-                              </>)}
-                            </>
-                          )}
+                          {renderContextSelectOverlay(node.id, ctxPart)}
+                          {renderDeleteOverlay(thread, node.id)}
+                          {showDots && renderActionDots(thread, node, nodeIndex === lane.nodes.length - 1)}
                         </div>
                       );
                     })}
@@ -3042,15 +2941,7 @@ export default function App() {
                       if (!target) return;
                       const confirmed = window.confirm(`Delete AI profile "${target.label}" and the saved key you can no longer unlock?`);
                       if (!confirmed) return;
-                      const next = deleteProviderConfig(settings, target.id);
-                      setSettings(next);
-                      setModelCache((current) => {
-                        const copy = { ...current };
-                        delete copy[target.id];
-                        return copy;
-                      });
-                      setSettingsNotice(`Deleted AI profile "${target.label}".`);
-                      setError(null);
+                      removeProfile(target);
                       setPassphraseModal(null);
                     }}
                   >
@@ -3150,14 +3041,6 @@ const SYSTEM_PROMPT = (thread: ThreadLane) =>
     'Use blank lines between ideas.',
     'Do not mention internal tools or policies.',
   ].join(' ');
-
-function resolveBaseUrl(baseUrl: string | undefined, kind: AIProvider) {
-  if (kind === 'anthropic') return baseUrl?.trim().replace(/\/+$/, '') || 'https://api.anthropic.com/v1';
-  if (kind === 'openrouter') return baseUrl?.trim().replace(/\/+$/, '') || 'https://openrouter.ai/api/v1';
-  if (kind === 'openai') return baseUrl?.trim().replace(/\/+$/, '') || 'https://api.openai.com/v1';
-  if (!baseUrl?.trim()) throw new Error('Enter a Base URL for the custom OpenAI-compatible provider.');
-  return baseUrl.trim().replace(/\/+$/, '');
-}
 
 async function requestOpenRouter(config: AIProviderConfig, thread: ThreadLane, messages: ChatMessage[]) {
   const baseUrl = resolveBaseUrl(config.baseUrl, config.kind);
