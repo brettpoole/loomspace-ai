@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type PointerEvent, type WheelEven
 import Markdown from 'react-markdown';
 import {
   PROVIDERS,
+  PARAM_SUPPORT,
   appendContextInjection,
   clearProviderSecret,
   computeMetrics,
@@ -45,6 +46,7 @@ import {
 import type {
   AIProvider,
   AIProviderConfig,
+  GenerationParams,
   AISettings,
   ChatMessage,
   ForkDraft,
@@ -214,6 +216,7 @@ export default function App() {
   const [rightPanelMaximized, setRightPanelMaximized] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
   const [focusSidebarOpen, setFocusSidebarOpen] = useState(true);
+  const [focusParamsOpen, setFocusParamsOpen] = useState(false);
   const [providerMenuOpen, setProviderMenuOpen] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
@@ -1367,6 +1370,15 @@ export default function App() {
     }));
   }
 
+  function updateProviderParams(configId: string, patch: Partial<GenerationParams>) {
+    const config = settings.providerConfigs.find((entry) => entry.id === configId);
+    const next: GenerationParams = { ...(config?.params ?? {}), ...patch };
+    (Object.keys(next) as Array<keyof GenerationParams>).forEach((key) => {
+      if (next[key] === undefined) delete next[key];
+    });
+    updateProviderConfig(configId, { params: next });
+  }
+
   function updateComposerState(key: string | null, updater: (current: ComposerState) => ComposerState) {
     if (!key) return;
     setComposerStates((current) => {
@@ -2133,6 +2145,18 @@ export default function App() {
               ) : (
                 <button type="button" className="quiet focus-add-profile" onClick={() => openProviderSetup()}>Add AI profile</button>
               )}
+              {activeProviderConfig ? (
+                <div className="focus-params-wrap">
+                  <button type="button" className={`focus-tune ${focusParamsOpen ? 'active' : ''}`} onClick={() => setFocusParamsOpen((open) => !open)} aria-expanded={focusParamsOpen} aria-label="Model controls" title="Model controls">
+                    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><line x1="2.5" y1="5" x2="13.5" y2="5"/><line x1="2.5" y1="11" x2="13.5" y2="11"/><circle cx="6" cy="5" r="1.7"/><circle cx="10.5" cy="11" r="1.7"/></svg>
+                  </button>
+                  {focusParamsOpen ? (
+                    <div className="focus-params-popover">
+                      {renderModelParams(activeProviderConfig, { flat: true })}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
               <button type="button" className="focus-exit" onClick={() => setFocusMode(false)} aria-label="Exit focus mode" title="Exit focus mode (Esc)">
                 <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M9.5 2H14v4.5"/><path d="M14 2 8.5 7.5"/><path d="M6.5 14H2V9.5"/><path d="M2 14l5.5-5.5"/></svg>
                 <span>Exit</span>
@@ -2174,6 +2198,101 @@ export default function App() {
           )}
         </div>
       </div>
+    );
+  };
+
+  const renderModelParams = (config: AIProviderConfig, options: { flat?: boolean } = {}) => {
+    const supported = PARAM_SUPPORT[config.kind];
+    const numericKeys = supported.filter((key): key is Exclude<keyof GenerationParams, 'stop'> => key !== 'stop');
+    const activeCount = config.params ? Object.keys(config.params).length : 0;
+    const badge = activeCount > 0 ? <span className="model-params-count">{activeCount} set</span> : <span className="model-params-auto">defaults</span>;
+    const body = (
+      <div className="model-params-body">
+        {numericKeys.map((key) => {
+          const meta = PARAM_META[key];
+          const max = key === 'temperature' && config.kind === 'anthropic' ? 1 : meta.max;
+          const value = config.params?.[key];
+          const enabled = value !== undefined;
+          const current = value ?? meta.default;
+          return (
+            <div key={key} className={`param-row ${enabled ? 'active' : ''}`}>
+              <div className="param-row-head">
+                <label className="param-toggle">
+                  <input
+                    type="checkbox"
+                    checked={enabled}
+                    onChange={(event) => updateProviderParams(config.id, { [key]: event.target.checked ? Math.min(meta.default, max) : undefined } as Partial<GenerationParams>)}
+                  />
+                  <span className="param-name">{meta.label}</span>
+                </label>
+                <span className="param-state">{enabled ? current : 'Auto'}</span>
+              </div>
+              {enabled ? (
+                meta.control === 'range' ? (
+                  <input
+                    type="range"
+                    className="param-slider"
+                    min={meta.min}
+                    max={max}
+                    step={meta.step}
+                    value={current}
+                    onChange={(event) => updateProviderParams(config.id, { [key]: Number(event.target.value) } as Partial<GenerationParams>)}
+                  />
+                ) : (
+                  <input
+                    type="number"
+                    className="param-number"
+                    min={meta.min}
+                    max={max}
+                    step={meta.step}
+                    value={current}
+                    onChange={(event) => updateProviderParams(config.id, { [key]: event.target.value === '' ? undefined : Number(event.target.value) } as Partial<GenerationParams>)}
+                  />
+                )
+              ) : null}
+            </div>
+          );
+        })}
+        {supported.includes('stop') ? (
+          <label className="field param-stop">
+            Stop sequences
+            <input
+              value={(config.params?.stop ?? []).join(', ')}
+              placeholder="comma-separated, e.g. END, ###"
+              onChange={(event) => {
+                const stop = event.target.value.split(',').map((entry) => entry.trim()).filter(Boolean);
+                updateProviderParams(config.id, { stop: stop.length > 0 ? stop : undefined });
+              }}
+            />
+          </label>
+        ) : null}
+        {activeCount > 0 ? (
+          <button type="button" className="quiet model-params-reset" onClick={() => updateProviderConfig(config.id, { params: {} })}>
+            Reset to defaults
+          </button>
+        ) : null}
+      </div>
+    );
+    if (options.flat) {
+      return (
+        <div className="model-params model-params-flat">
+          <div className="model-params-flat-head">
+            <span>Model controls</span>
+            {badge}
+          </div>
+          {body}
+        </div>
+      );
+    }
+    return (
+      <details className="model-params">
+        <summary>
+          <span className="chat-dock-usage-caret" aria-hidden="true">▸</span>
+          <span>Advanced model controls</span>
+          {badge}
+        </summary>
+        {body}
+      </details>
     );
   };
 
@@ -2690,6 +2809,7 @@ export default function App() {
                               </select>
                             </label>
                           ) : null}
+                          {activeProviderConfig ? renderModelParams(activeProviderConfig) : null}
                           <button type="button" className="quiet chat-dock-manage" onClick={() => openProviderSetup()}>Manage profiles</button>
                         </>
                       )}
@@ -2831,139 +2951,151 @@ export default function App() {
                   </button>
                 </div>
                 {settingsEditorConfig ? (
-                  <>
-                    <label className="field">
-                      Provider
-                      <select
-                        autoFocus
-                        value={settingsEditorConfig.kind}
-                        onChange={(event) => {
-                          const kind = event.target.value as AIProvider;
-                          const info = providerInfo(kind);
-                          const patch = {
-                            kind,
-                            label: autoProfileLabel(kind, settingsEditorConfig.label),
-                            model: '',
-                            baseUrl: info.baseUrl,
-                          };
-                          updateProviderConfig(settingsEditorConfig.id, patch);
-                          void fetchModelsForConfig({ ...settingsEditorConfig, ...patch }, { requireKey: false, updateSelectedModel: true });
-                        }}
-                      >
-                        {PROVIDERS.map((entry) => (
-                          <option key={entry.id} value={entry.id}>
-                            {entry.label}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    {settingsEditorConfig.kind === 'openai-compatible-custom' ? (
-                      <>
-                        <label className="field">
-                          Profile name
-                          <input
-                            value={settingsEditorConfig.label}
-                            onChange={(event) => updateProviderConfig(settingsEditorConfig.id, { label: event.target.value })}
-                            placeholder="e.g. Local Llama"
-                          />
-                        </label>
-                        <label className="field">
-                          Base URL
-                          <input
-                            value={settingsEditorConfig.baseUrl ?? ''}
-                            onChange={(event) => updateProviderConfig(settingsEditorConfig.id, { baseUrl: event.target.value })}
-                            onBlur={(event) => {
-                              void fetchModelsForConfig(
-                                { ...settingsEditorConfig, baseUrl: event.target.value },
-                                { requireKey: false, updateSelectedModel: true },
-                              );
-                            }}
-                            placeholder="https://api.example.com/v1"
-                            autoComplete="off"
-                            spellCheck={false}
-                          />
-                        </label>
-                      </>
-                    ) : null}
-                    <label className="field">
-                      <span className="field-label-row">
-                        <span>{providerInfo(settingsEditorConfig.kind).label} API key</span>
-                        <span className={`pill settings-pill ${settingsEditorLockState}`}>
-                          {settingsEditorLockState === 'none' ? 'no saved key' : settingsEditorLockState === 'unlocked' ? 'unlocked' : 'locked'}
-                        </span>
-                      </span>
-                      <input
-                        type="password"
-                        value={settingsEditorConfig.apiKey}
-                        onChange={(event) => updateProviderConfig(settingsEditorConfig.id, { apiKey: event.target.value })}
-                        onBlur={(event) => {
-                          void fetchModelsForConfig(
-                            { ...settingsEditorConfig, apiKey: event.target.value },
-                            { requireKey: false, updateSelectedModel: true },
-                          );
-                        }}
-                        placeholder={settingsEditorConfig.hasEncryptedApiKey && !settingsEditorConfig.apiKey ? 'saved key — tap Unlock to load' : apiKeyPlaceholder(settingsEditorConfig.kind)}
-                        autoComplete="off"
-                        spellCheck={false}
-                      />
-                      {providerKeyLink(settingsEditorConfig.kind) ? (
-                        <a
-                          className="key-signup-link"
-                          href={providerKeyLink(settingsEditorConfig.kind)!.href}
-                          target="_blank"
-                          rel="noopener noreferrer"
+                  <div className="settings-editor">
+                    <div className="settings-section">
+                      <h3 className="settings-section-title">Connection</h3>
+                      <label className="field">
+                        Provider
+                        <select
+                          autoFocus
+                          value={settingsEditorConfig.kind}
+                          onChange={(event) => {
+                            const kind = event.target.value as AIProvider;
+                            const info = providerInfo(kind);
+                            const patch = {
+                              kind,
+                              label: autoProfileLabel(kind, settingsEditorConfig.label),
+                              model: '',
+                              baseUrl: info.baseUrl,
+                            };
+                            updateProviderConfig(settingsEditorConfig.id, patch);
+                            void fetchModelsForConfig({ ...settingsEditorConfig, ...patch }, { requireKey: false, updateSelectedModel: true });
+                          }}
                         >
-                          {providerKeyLink(settingsEditorConfig.kind)!.label} →
-                        </a>
+                          {PROVIDERS.map((entry) => (
+                            <option key={entry.id} value={entry.id}>
+                              {entry.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      {settingsEditorConfig.kind === 'openai-compatible-custom' ? (
+                        <>
+                          <label className="field">
+                            Profile name
+                            <input
+                              value={settingsEditorConfig.label}
+                              onChange={(event) => updateProviderConfig(settingsEditorConfig.id, { label: event.target.value })}
+                              placeholder="e.g. Local Llama"
+                            />
+                          </label>
+                          <label className="field">
+                            Base URL
+                            <input
+                              value={settingsEditorConfig.baseUrl ?? ''}
+                              onChange={(event) => updateProviderConfig(settingsEditorConfig.id, { baseUrl: event.target.value })}
+                              onBlur={(event) => {
+                                void fetchModelsForConfig(
+                                  { ...settingsEditorConfig, baseUrl: event.target.value },
+                                  { requireKey: false, updateSelectedModel: true },
+                                );
+                              }}
+                              placeholder="https://api.example.com/v1"
+                              autoComplete="off"
+                              spellCheck={false}
+                            />
+                          </label>
+                        </>
                       ) : null}
-                    </label>
-                    <div className="editor-actions left-aligned">
-                      <button type="button" onClick={() => requestSaveKey(settingsEditorConfig.id)} disabled={savingSettings}>
-                        {savingSettings
-                          ? 'Working…'
-                          : settingsEditorConfig.apiKey.trim()
-                            ? settingsEditorConfig.hasEncryptedApiKey ? 'Update saved key' : 'Save key'
-                            : settingsEditorConfig.hasEncryptedApiKey ? 'Unlock saved key' : 'Save key'}
-                      </button>
-                      <button
-                        type="button"
-                        className="quiet btn-danger"
-                        onClick={() => deleteSavedKey(settingsEditorConfig.id)}
-                        disabled={savingSettings || !settingsEditorConfig.hasEncryptedApiKey}
-                      >
-                        Delete saved key
-                      </button>
+                      <label className="field">
+                        <span className="field-label-row">
+                          <span>{providerInfo(settingsEditorConfig.kind).label} API key</span>
+                          <span className={`pill settings-pill ${settingsEditorLockState}`}>
+                            {settingsEditorLockState === 'none' ? 'no saved key' : settingsEditorLockState === 'unlocked' ? 'unlocked' : 'locked'}
+                          </span>
+                        </span>
+                        <input
+                          type="password"
+                          value={settingsEditorConfig.apiKey}
+                          onChange={(event) => updateProviderConfig(settingsEditorConfig.id, { apiKey: event.target.value })}
+                          onBlur={(event) => {
+                            void fetchModelsForConfig(
+                              { ...settingsEditorConfig, apiKey: event.target.value },
+                              { requireKey: false, updateSelectedModel: true },
+                            );
+                          }}
+                          placeholder={settingsEditorConfig.hasEncryptedApiKey && !settingsEditorConfig.apiKey ? 'saved key — tap Unlock to load' : apiKeyPlaceholder(settingsEditorConfig.kind)}
+                          autoComplete="off"
+                          spellCheck={false}
+                        />
+                        {providerKeyLink(settingsEditorConfig.kind) ? (
+                          <a
+                            className="key-signup-link"
+                            href={providerKeyLink(settingsEditorConfig.kind)!.href}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            {providerKeyLink(settingsEditorConfig.kind)!.label} →
+                          </a>
+                        ) : null}
+                      </label>
+                      <div className="editor-actions left-aligned">
+                        <button type="button" onClick={() => requestSaveKey(settingsEditorConfig.id)} disabled={savingSettings}>
+                          {savingSettings
+                            ? 'Working…'
+                            : settingsEditorConfig.apiKey.trim()
+                              ? settingsEditorConfig.hasEncryptedApiKey ? 'Update saved key' : 'Save key'
+                              : settingsEditorConfig.hasEncryptedApiKey ? 'Unlock saved key' : 'Save key'}
+                        </button>
+                        <button
+                          type="button"
+                          className="quiet btn-danger"
+                          onClick={() => deleteSavedKey(settingsEditorConfig.id)}
+                          disabled={savingSettings || !settingsEditorConfig.hasEncryptedApiKey}
+                        >
+                          Delete saved key
+                        </button>
+                      </div>
                     </div>
-                    <label className="field">
-                      Model
-                      <select
-                        value={settingsEditorConfig.model}
-                        onChange={(event) => updateProviderConfig(settingsEditorConfig.id, { model: event.target.value })}
-                      >
-                        {settingsEditorModels.map((model) => (
-                          <option key={model} value={model}>
-                            {model}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <div className="editor-actions left-aligned">
-                      <button
-                        type="button"
-                        onClick={() => refreshModels(settingsEditorConfig.id)}
-                        disabled={settingsEditorModelsLoading || !settingsEditorConfig.apiKey.trim()}
-                      >
-                        {settingsEditorModelsLoading ? 'Loading models…' : settingsEditorHasCachedModels ? 'Refresh models' : 'List models'}
-                      </button>
+
+                    <div className="settings-section">
+                      <h3 className="settings-section-title">Model</h3>
+                      <div className="settings-model-row">
+                        <label className="field">
+                          Model
+                          <select
+                            value={settingsEditorConfig.model}
+                            onChange={(event) => updateProviderConfig(settingsEditorConfig.id, { model: event.target.value })}
+                          >
+                            {settingsEditorModels.map((model) => (
+                              <option key={model} value={model}>
+                                {model}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <button
+                          type="button"
+                          className="settings-refresh"
+                          onClick={() => refreshModels(settingsEditorConfig.id)}
+                          disabled={settingsEditorModelsLoading || !settingsEditorConfig.apiKey.trim()}
+                        >
+                          {settingsEditorModelsLoading ? 'Loading…' : settingsEditorHasCachedModels ? 'Refresh' : 'List models'}
+                        </button>
+                      </div>
                     </div>
-                    {providerError ? <p className="error">{providerError}</p> : null}
-                    {settingsNotice ? <p className="muted">{settingsNotice}</p> : null}
-                    <div className="settings-profile-footer">
+
+                    {renderModelParams(settingsEditorConfig)}
+
+                    {providerError ? <p className="error settings-status">{providerError}</p> : null}
+                    {settingsNotice ? <p className="muted settings-status">{settingsNotice}</p> : null}
+
+                    <div className="settings-danger">
                       <button type="button" className="quiet btn-danger" onClick={() => deleteProfile(settingsEditorConfig.id)}>
                         Delete this profile
                       </button>
                     </div>
-                  </>
+                  </div>
                 ) : (
                   <div className="profile-list-empty">
                     <p>No AI profiles yet. Add one to start chatting.</p>
@@ -3175,6 +3307,33 @@ const SYSTEM_PROMPT = (thread: ThreadLane) =>
     'Do not mention internal tools or policies.',
   ].join(' ');
 
+function openAiGenerationBody(config: AIProviderConfig): Record<string, unknown> {
+  const params = config.params ?? {};
+  const body: Record<string, unknown> = {};
+  // OpenAI proper omits temperature by default (some models only accept the default);
+  // other OpenAI-shaped providers keep the historical 0.4 unless the user overrides.
+  const temperature = params.temperature ?? (config.kind === 'openai' ? undefined : 0.4);
+  if (temperature !== undefined) body.temperature = temperature;
+  if (params.topP !== undefined) body.top_p = params.topP;
+  if (params.maxTokens !== undefined) body.max_tokens = params.maxTokens;
+  if (params.frequencyPenalty !== undefined) body.frequency_penalty = params.frequencyPenalty;
+  if (params.presencePenalty !== undefined) body.presence_penalty = params.presencePenalty;
+  if (params.seed !== undefined) body.seed = params.seed;
+  if (params.stop && params.stop.length > 0) body.stop = params.stop;
+  if (config.kind !== 'openai' && params.topK !== undefined) body.top_k = params.topK;
+  return body;
+}
+
+const PARAM_META: Record<Exclude<keyof GenerationParams, 'stop'>, { label: string; min: number; max: number; step: number; control: 'range' | 'number'; default: number }> = {
+  temperature: { label: 'Temperature', min: 0, max: 2, step: 0.01, control: 'range', default: 0.7 },
+  topP: { label: 'Top P (nucleus)', min: 0, max: 1, step: 0.01, control: 'range', default: 1 },
+  topK: { label: 'Top K', min: 0, max: 500, step: 1, control: 'number', default: 40 },
+  maxTokens: { label: 'Max output tokens', min: 1, max: 200000, step: 1, control: 'number', default: 1024 },
+  frequencyPenalty: { label: 'Frequency penalty', min: -2, max: 2, step: 0.01, control: 'range', default: 0 },
+  presencePenalty: { label: 'Presence penalty', min: -2, max: 2, step: 0.01, control: 'range', default: 0 },
+  seed: { label: 'Seed', min: 0, max: 2147483647, step: 1, control: 'number', default: 0 },
+};
+
 async function requestOpenRouter(config: AIProviderConfig, thread: ThreadLane, messages: ChatMessage[]) {
   const baseUrl = resolveBaseUrl(config.baseUrl, config.kind);
   const response = await fetch(`${baseUrl}/chat/completions`, {
@@ -3192,7 +3351,7 @@ async function requestOpenRouter(config: AIProviderConfig, thread: ThreadLane, m
         { role: 'system', content: SYSTEM_PROMPT(thread) },
         ...messages.map(formatMessageForOpenAI),
       ],
-      temperature: 0.4,
+      ...openAiGenerationBody(config),
     }),
   });
 
@@ -3242,11 +3401,11 @@ async function requestOpenAiCompatible(config: AIProviderConfig, thread: ThreadL
       ...messages.map(formatMessageForOpenAI),
     ],
   };
+  const genBody = openAiGenerationBody(config);
 
   const send = async (includeTemperature: boolean) => {
-    const body = includeTemperature
-      ? { ...payloadBase, temperature: 0.4 }
-      : payloadBase;
+    const body: Record<string, unknown> = { ...payloadBase, ...genBody };
+    if (!includeTemperature) delete body.temperature;
 
     const response = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
@@ -3269,7 +3428,7 @@ async function requestOpenAiCompatible(config: AIProviderConfig, thread: ThreadL
     return { ok: true as const, data };
   };
 
-  let result = await send(config.kind !== 'openai');
+  let result = await send(true);
 
   if (!result.ok && config.kind === 'openai') {
     const maybeTempUnsupported = /temperature/i.test(result.text) && /unsupported|default \(1\)/i.test(result.text);
@@ -3330,7 +3489,11 @@ async function requestAnthropic(config: AIProviderConfig, thread: ThreadLane, me
     },
     body: JSON.stringify({
       model: config.model,
-      max_tokens: 1024,
+      max_tokens: config.params?.maxTokens ?? 1024,
+      ...(config.params?.temperature !== undefined ? { temperature: config.params.temperature } : {}),
+      ...(config.params?.topP !== undefined ? { top_p: config.params.topP } : {}),
+      ...(config.params?.topK !== undefined ? { top_k: config.params.topK } : {}),
+      ...(config.params?.stop && config.params.stop.length > 0 ? { stop_sequences: config.params.stop } : {}),
       system: SYSTEM_PROMPT(thread),
       messages: messages
         .filter((message) => message.role !== 'system')

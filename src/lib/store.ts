@@ -3,6 +3,7 @@ import { migrateMessage } from './mediaUtils';
 import type {
   AIProvider,
   AIProviderConfig,
+  GenerationParams,
   AISettings,
   ChatMessage,
   FabricMetrics,
@@ -56,7 +57,32 @@ export function createProviderConfig(kind: AIProvider = 'openai-compatible-custo
     apiKey: overrides.apiKey ?? '',
     hasEncryptedApiKey: overrides.hasEncryptedApiKey ?? false,
     baseUrl: overrides.baseUrl ?? info.baseUrl,
+    params: overrides.params ?? {},
   };
+}
+
+export const PARAM_SUPPORT: Record<AIProvider, Array<keyof GenerationParams>> = {
+  openai: ['temperature', 'topP', 'maxTokens', 'frequencyPenalty', 'presencePenalty', 'seed', 'stop'],
+  openrouter: ['temperature', 'topP', 'topK', 'maxTokens', 'frequencyPenalty', 'presencePenalty', 'seed', 'stop'],
+  'openai-compatible-custom': ['temperature', 'topP', 'topK', 'maxTokens', 'frequencyPenalty', 'presencePenalty', 'seed', 'stop'],
+  anthropic: ['temperature', 'topP', 'topK', 'maxTokens', 'stop'],
+};
+
+export function sanitizeGenerationParams(raw: unknown): GenerationParams {
+  if (!raw || typeof raw !== 'object') return {};
+  const record = raw as Record<string, unknown>;
+  const params: GenerationParams = {};
+  const num = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? value : undefined);
+  const numericKeys: Array<Exclude<keyof GenerationParams, 'stop'>> = ['temperature', 'topP', 'topK', 'maxTokens', 'frequencyPenalty', 'presencePenalty', 'seed'];
+  for (const key of numericKeys) {
+    const value = num(record[key]);
+    if (value !== undefined) params[key] = value;
+  }
+  if (Array.isArray(record.stop)) {
+    const stop = record.stop.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0);
+    if (stop.length > 0) params.stop = stop;
+  }
+  return params;
 }
 
 const MODEL_WINDOWS: Record<string, number> = {
@@ -84,6 +110,7 @@ interface PersistedProviderConfig {
   model: string;
   hasEncryptedApiKey: boolean;
   baseUrl?: string;
+  params?: GenerationParams;
 }
 
 interface PersistedSettingsPayload {
@@ -139,6 +166,7 @@ export function loadSettings(): AISettings {
       model: model.trim(),
       apiKey: '',
       hasEncryptedApiKey: Boolean(persistedConfig?.hasEncryptedApiKey || hasSecret),
+      params: sanitizeGenerationParams(config.params),
     };
   });
 
@@ -158,6 +186,7 @@ export function saveSettings(settings: AISettings) {
       model: config.model,
       hasEncryptedApiKey: config.hasEncryptedApiKey,
       baseUrl: config.baseUrl,
+      params: config.params,
     })),
   });
 }
