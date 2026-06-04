@@ -245,8 +245,7 @@ export function summarize(text: string, limit = 60) {
   return compact.length > limit ? `${compact.slice(0, limit - 1)}…` : compact;
 }
 
-export function createThread(title: string, description: string, index: number, defaults?: { initialModel?: string }): ThreadLane {
-  const initialModel = defaults?.initialModel ?? '';
+export function createThread(title: string, description: string, index: number): ThreadLane {
   const threadId = `thread-${crypto.randomUUID().slice(0, 8)}`;
   const titleNode: ThreadTitleNode = {
     id: `title-${crypto.randomUUID().slice(0, 8)}`,
@@ -254,7 +253,6 @@ export function createThread(title: string, description: string, index: number, 
     title,
     description,
   };
-  const firstChatNode = createChatNode('', [], initialModel);
 
   return {
     id: threadId,
@@ -263,8 +261,8 @@ export function createThread(title: string, description: string, index: number, 
     title,
     description,
     context: [],
-    nodes: [titleNode, firstChatNode],
-    activeNodeId: firstChatNode.id,
+    nodes: [titleNode],
+    activeNodeId: titleNode.id,
     infoOpen: false,
   };
 }

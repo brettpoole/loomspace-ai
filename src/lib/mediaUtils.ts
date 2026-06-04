@@ -113,3 +113,15 @@ export function hasAttachments(message: ChatMessage): boolean {
 export function getAttachmentsByType(message: ChatMessage, type: 'image' | 'document'): MediaAttachment[] {
   return message.content?.attachments?.filter(att => att.type === type) || [];
 }
+
+// Decode base64-encoded UTF-8 text (e.g. text/plain or text/markdown attachments)
+// so their contents can be inlined into a model request.
+export function decodeBase64Text(base64: string): string {
+  try {
+    const binary = atob(base64);
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
+  } catch {
+    return '';
+  }
+}

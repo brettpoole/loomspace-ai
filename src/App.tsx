@@ -33,6 +33,7 @@ import {
 import {
   createTextMessage,
   createMixedMessage,
+  decodeBase64Text,
   getMessageText,
   hasAttachments,
   getAttachmentsByType,
@@ -739,9 +740,7 @@ export default function App() {
     }
     const selectedCount = countSelectedMessages(sourceThread, forkDraft.selectedNodes);
     if (selectedCount === 0) return;
-    const baseThread = createThread(`Fork of ${forkDraft.sourceThreadTitle}`, sourceThread.description, state.threads.length, {
-      initialModel: activeProviderConfig?.model,
-    });
+    const baseThread = createThread(`Fork of ${forkDraft.sourceThreadTitle}`, sourceThread.description, state.threads.length);
     const thread = buildForkThread(baseThread, sourceThread, forkDraft.selectedNodes);
     setState((current) => {
       const nextThreads = [...current.threads, thread];
@@ -761,12 +760,10 @@ export default function App() {
 
   function submitThreadEditor() {
     const title = threadEditorDraft.title.trim() || 'Untitled thread';
-    const description = threadEditorDraft.description.trim() || 'A new lane for a project idea and its AI chat context.';
+    const description = threadEditorDraft.description.trim();
 
     if (threadEditorMode === 'create') {
-      const baseThread = createThread(title, description, state.threads.length, {
-        initialModel: activeProviderConfig?.model,
-      });
+      const baseThread = createThread(title, description, state.threads.length);
 
       const thread = forkDraft && forkDraft.selectedNodes.length > 0
         ? (() => {
@@ -1174,12 +1171,7 @@ export default function App() {
     setState((current) => {
       const remainingThreads = current.threads.filter((thread) => thread.id !== threadId);
       if (remainingThreads.length === 0) {
-        const fallbackThread = createThread(
-          'New thread',
-          'A new lane for a project idea and its AI chat context.',
-          0,
-          { initialModel: activeProviderConfig?.model ?? '' },
-        );
+        const fallbackThread = createThread('New thread', '', 0);
         return {
           ...current,
           threads: [fallbackThread],
@@ -2214,6 +2206,9 @@ export default function App() {
                     {lane.nodes.map(({ node, top }, nodeIndex) => {
                       if (node.kind === 'title') {
                         const titleNode = node;
+                        const isSelected = thread.id === state.selectedThreadId && node.id === state.selectedNodeId;
+                        const isLast = nodeIndex === lane.nodes.length - 1;
+                        const titleHeight = TITLE_HEIGHT + (thread.infoOpen ? TITLE_INFO_EXTRA : 0);
                         return (
                           <div key={node.id} className={`title-node-wrap ${thread.infoOpen ? 'open' : ''}`} style={{ top }}>
                             <article className="title-node">
@@ -2236,6 +2231,14 @@ export default function App() {
                               </div>
                               {thread.infoOpen ? <p className="thread-popout">{titleNode.description}</p> : null}
                             </article>
+                            {!rightPanelOpen && isSelected && isLast ? (
+                              <>
+                                <div className="action-line-v" style={{ top: titleHeight, left: NODE_WIDTH / 2 }} />
+                                <button type="button" className="action-node-ghost" style={{ top: titleHeight + 36, left: 0 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setRightPanelOpen(true); }}>
+                                  <span>Open chat</span>
+                                </button>
+                              </>
+                            ) : null}
                           </div>
                         );
                       }
@@ -2967,41 +2970,30 @@ function modelsForConfig(cache: ModelCache, config: AIProviderConfig | null | un
   return base;
 }
 
+// Convert a single attachment into an OpenAI chat-completions content part.
+// Images use image_url, PDFs use the `file` part, and text documents are inlined as text.
+function attachmentToOpenAIPart(attachment: MediaAttachment) {
+  if (attachment.type === 'image') {
+    return { type: 'image_url', image_url: { url: `data:${attachment.mimeType};base64,${attachment.data}` } };
+  }
+  if (attachment.mimeType === 'application/pdf') {
+    return { type: 'file', file: { filename: attachment.filename, file_data: `data:application/pdf;base64,${attachment.data}` } };
+  }
+  return { type: 'text', text: `Attached file "${attachment.filename}":\n\n${decodeBase64Text(attachment.data)}` };
+}
+
 // Helper function to convert ChatMessage to OpenAI API format
 function formatMessageForOpenAI(message: ChatMessage) {
   const role = message.role === 'assistant' ? 'assistant' : message.role === 'system' ? 'system' : 'user';
-  
-  // Handle backward compatibility and simple text messages
-  if (!message.content || message.content.type === 'text') {
+  const attachments = message.content?.attachments ?? [];
+  if (!message.content || message.content.type === 'text' || attachments.length === 0) {
     return { role, content: getMessageText(message) };
   }
-  
-  // Handle mixed content with attachments
-  if (message.content.attachments && message.content.attachments.length > 0) {
-    const content = [];
-    
-    // Add text if present
-    if (message.content.text) {
-      content.push({ type: 'text', text: message.content.text });
-    }
-    
-    // Add images (documents are not supported in vision API)
-    message.content.attachments.forEach(attachment => {
-      if (attachment.type === 'image') {
-        content.push({
-          type: 'image_url',
-          image_url: {
-            url: `data:${attachment.mimeType};base64,${attachment.data}`
-          }
-        });
-      }
-    });
-    
-    return { role, content };
-  }
-  
-  // Fallback to text
-  return { role, content: getMessageText(message) };
+
+  const content: unknown[] = [];
+  if (message.content.text) content.push({ type: 'text', text: message.content.text });
+  for (const attachment of attachments) content.push(attachmentToOpenAIPart(attachment));
+  return { role, content };
 }
 
 async function requestAiReply(config: AIProviderConfig, thread: ThreadLane, messages: ChatMessage[]) {
@@ -3159,43 +3151,30 @@ async function requestOpenAiCompatible(config: AIProviderConfig, thread: ThreadL
   return { assistantText, usage };
 }
 
+// Convert a single attachment into an Anthropic content block.
+// Images and PDFs use base64 source blocks; text documents are inlined as text.
+function attachmentToAnthropicPart(attachment: MediaAttachment) {
+  if (attachment.type === 'image') {
+    return { type: 'image', source: { type: 'base64', media_type: attachment.mimeType, data: attachment.data } };
+  }
+  if (attachment.mimeType === 'application/pdf') {
+    return { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: attachment.data } };
+  }
+  return { type: 'text', text: `Attached file "${attachment.filename}":\n\n${decodeBase64Text(attachment.data)}` };
+}
+
 // Helper function to convert ChatMessage to Anthropic API format
 function formatMessageForAnthropic(message: ChatMessage) {
   const role = message.role === 'assistant' ? 'assistant' : 'user';
-
-  // Handle backward compatibility and simple text messages
-  if (!message.content || message.content.type === 'text') {
+  const attachments = message.content?.attachments ?? [];
+  if (!message.content || message.content.type === 'text' || attachments.length === 0) {
     return { role, content: getMessageText(message) };
   }
 
-  // Handle mixed content with attachments
-  if (message.content.attachments && message.content.attachments.length > 0) {
-    const content = [];
-
-    // Add text if present
-    if (message.content.text) {
-      content.push({ type: 'text', text: message.content.text });
-    }
-
-    // Add images in Anthropic format
-    message.content.attachments.forEach(attachment => {
-      if (attachment.type === 'image') {
-        content.push({
-          type: 'image',
-          source: {
-            type: 'base64',
-            media_type: attachment.mimeType,
-            data: attachment.data
-          }
-        });
-      }
-    });
-
-    return { role, content };
-  }
-
-  // Fallback to text
-  return { role, content: getMessageText(message) };
+  const content: unknown[] = [];
+  if (message.content.text) content.push({ type: 'text', text: message.content.text });
+  for (const attachment of attachments) content.push(attachmentToAnthropicPart(attachment));
+  return { role, content };
 }
 
 async function requestAnthropic(config: AIProviderConfig, thread: ThreadLane, messages: ChatMessage[]) {
