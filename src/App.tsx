@@ -212,6 +212,8 @@ export default function App() {
   const [savingSettings, setSavingSettings] = useState(false);
   const [rightPanelOpen, setRightPanelOpen] = useState(false);
   const [rightPanelMaximized, setRightPanelMaximized] = useState(false);
+  const [focusMode, setFocusMode] = useState(false);
+  const [focusSidebarOpen, setFocusSidebarOpen] = useState(true);
   const [providerMenuOpen, setProviderMenuOpen] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
@@ -235,6 +237,8 @@ export default function App() {
   const [settingsEditorConfigId, setSettingsEditorConfigId] = useState<string | null>(null);
   const rightPanelMessagesRef = useRef<HTMLDivElement>(null);
   const rightPanelEndRef = useRef<HTMLDivElement>(null);
+  const focusMessagesRef = useRef<HTMLDivElement>(null);
+  const focusEndRef = useRef<HTMLDivElement>(null);
   const [threadEditorOpen, setThreadEditorOpen] = useState(false);
   const [leftPanelOpen, setLeftPanelOpen] = useState(false);
   const [bottomPanelOpen, setBottomPanelOpen] = useState(false);
@@ -529,9 +533,8 @@ export default function App() {
   }, []);
 
   function scrollChatToBottom(behavior: ScrollBehavior = 'auto') {
-    if (!rightPanelOpen) return;
-    const messages = rightPanelMessagesRef.current;
-    const anchor = rightPanelEndRef.current;
+    const messages = focusMode ? focusMessagesRef.current : rightPanelOpen ? rightPanelMessagesRef.current : null;
+    const anchor = focusMode ? focusEndRef.current : rightPanelOpen ? rightPanelEndRef.current : null;
     if (!messages || !anchor) return;
     const scroll = () => {
       anchor.scrollIntoView({ block: 'end', behavior });
@@ -546,16 +549,15 @@ export default function App() {
 
   useEffect(() => {
     scrollChatToBottom('smooth');
-  }, [activeThread?.context.length, rightPanelOpen]);
+  }, [activeThread?.context.length, rightPanelOpen, focusMode]);
 
   useEffect(() => {
-    if (!rightPanelOpen) return;
-    const messages = rightPanelMessagesRef.current;
+    const messages = focusMode ? focusMessagesRef.current : rightPanelOpen ? rightPanelMessagesRef.current : null;
     if (!messages || typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(() => scrollChatToBottom());
     for (const child of Array.from(messages.children)) observer.observe(child);
     return () => observer.disconnect();
-  }, [activeThread?.id, activeThread?.context.length, rightPanelOpen]);
+  }, [activeThread?.id, activeThread?.context.length, rightPanelOpen, focusMode]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -567,6 +569,7 @@ export default function App() {
       if (aiSettingsModalOpen) { setAiSettingsModalOpen(false); return; }
       if (threadEditorOpen) { closeThreadEditor(); return; }
       if (nodePreviewModal) { setNodePreviewModal(null); return; }
+      if (focusMode) { setFocusMode(false); return; }
       if (rightPanelOpen) { setRightPanelOpen(false); return; }
       if (forkDraft) { cancelForkSelection(); return; }
       if (contextLinkMode) { setContextLinkMode(null); return; }
@@ -578,7 +581,7 @@ export default function App() {
       window.removeEventListener('keydown', onKeyDown, true);
       document.removeEventListener('keydown', onKeyDown, true);
     };
-  }, [passphraseModal, aiSettingsModalOpen, threadEditorOpen, nodePreviewModal, rightPanelOpen, contextLinkMode, forkDraft, state.selectedThreadId]);
+  }, [passphraseModal, aiSettingsModalOpen, threadEditorOpen, nodePreviewModal, rightPanelOpen, contextLinkMode, forkDraft, focusMode, state.selectedThreadId]);
 
   function clampViewport(next?: Partial<Pick<LoomspaceState, 'panX' | 'panY' | 'zoom'>>) {
     const viewport = viewportRef.current;
@@ -1926,6 +1929,254 @@ export default function App() {
     );
   };
 
+  const renderChatMessage = (message: ChatMessage, isLatestAssistant: boolean) => {
+    const usage = messageUsage.get(message.id);
+    const messageText = getMessageText(message) || message.text || '';
+    return (
+      <article
+        key={message.id}
+        className={`bubble chat-message ${message.role} ${message.injectedFromThreadId ? 'injected' : ''}`}
+        style={message.injectedFromColor ? {
+          '--inject-bg': hexToRgba(message.injectedFromColor, 0.07),
+          '--inject-border': hexToRgba(message.injectedFromColor, 0.3),
+        } as React.CSSProperties : undefined}
+      >
+        <div className="chat-message-topline">
+          <strong>{message.role === 'assistant' ? 'AI' : message.role}</strong>
+          <div className="chat-message-actions">
+            <button type="button" onClick={() => copyText(messageText, message.id)} aria-label="Copy message">{copiedMessageId === message.id ? 'Copied' : 'Copy'}</button>
+            <button type="button" onClick={() => listenToMessage(message.id, messageText)} aria-label={speakingMessageId === message.id ? 'Stop reading message' : 'Read message aloud'}>{speakingMessageId === message.id ? 'Stop' : 'Listen'}</button>
+            {isLatestAssistant ? <button type="button" onClick={() => retryAssistantMessage(message.id)} disabled={sending} aria-label="Retry response">Retry</button> : null}
+          </div>
+        </div>
+        <FormattedMessage text={messageText} rich={message.role === 'assistant'} />
+        {hasAttachments(message) && (
+          <div className="message-attachments">
+            {getAttachmentsByType(message, 'image').map(att => (
+              <img key={att.id} src={att.preview} alt={att.filename} className="message-image" />
+            ))}
+            {getAttachmentsByType(message, 'document').map(att => (
+              <div key={att.id} className="message-document">📄 {att.filename}</div>
+            ))}
+          </div>
+        )}
+        {usage ? (
+          <div className="bubble-meta">
+            {message.role === 'assistant'
+              ? `${usage.output.toLocaleString()} tokens out · ${usage.model}${usage.cost ? ` · $${usage.cost.toFixed(4)}` : ''}`
+              : `${usage.input.toLocaleString()} tokens in`}
+          </div>
+        ) : null}
+      </article>
+    );
+  };
+
+  const renderComposer = (opts: { fileInputId: string; placeholder: string; onEscape: () => void; autoFocus?: boolean }) => (
+    <div className="mini-chat-composer">
+      <textarea
+        autoFocus={opts.autoFocus}
+        value={composerDraft}
+        onChange={(e) => updateComposerState(composerKey, (current) => ({ ...current, draft: e.target.value }))}
+        placeholder={opts.placeholder}
+        rows={3}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') { e.preventDefault(); opts.onEscape(); return; }
+          if (e.key !== 'Enter') return;
+          if (e.shiftKey) return;
+          e.preventDefault();
+          if (e.ctrlKey || e.metaKey) { sendMessage(true); } else { sendMessage(); }
+        }}
+      />
+      {composerAttachments.length > 0 && (
+        <div className="composer-attachments">
+          {composerAttachments.map(att => (
+            <div key={att.id} className="attachment-preview">
+              {att.type === 'image' ? (
+                <img src={att.preview} alt={att.filename} className="attachment-thumbnail" />
+              ) : (
+                <div className="document-preview">📄 {att.filename}</div>
+              )}
+              <button onClick={() => updateComposerState(composerKey, (current) => ({ ...current, attachments: current.attachments.filter((attachment) => attachment.id !== att.id) }))} className="remove-attachment">×</button>
+            </div>
+          ))}
+        </div>
+      )}
+      {settingsLockState === 'locked' ? <p className="muted">Unlock the active AI profile to send a message.</p> : null}
+      {error ? <p className="error">{error}</p> : null}
+      <div className="mini-chat-actions">
+        <input
+          type="file"
+          id={opts.fileInputId}
+          multiple
+          accept="image/*,application/pdf,text/plain,text/markdown"
+          onChange={async (e) => {
+            if (!e.target.files) return;
+            const newAttachments: MediaAttachment[] = [];
+            const errors: string[] = [];
+            for (const file of Array.from(e.target.files)) {
+              const validation = validateFile(file);
+              if (!validation.valid) {
+                errors.push(`${file.name}: ${validation.error}`);
+                continue;
+              }
+              if (file.type === 'image/png' || file.type === 'image/jpeg') {
+                const byteCheck = await verifyImageBytes(file);
+                if (!byteCheck.valid) {
+                  errors.push(byteCheck.error!);
+                  continue;
+                }
+              }
+              try {
+                const attachment = await processFile(file);
+                newAttachments.push(attachment);
+              } catch {
+                errors.push(`Failed to process ${file.name}`);
+              }
+            }
+            if (errors.length > 0) setError(errors.join('\n'));
+            if (newAttachments.length > 0) updateComposerState(composerKey, (current) => ({ ...current, attachments: [...current.attachments, ...newAttachments] }));
+            e.target.value = '';
+          }}
+          style={{ display: 'none' }}
+        />
+        <label htmlFor={opts.fileInputId} className="file-upload-button mini-chat-attach">📎</label>
+        <button
+          className="mini-chat-send"
+          onClick={() => sendMessage()}
+          disabled={sending}
+        >
+          {sending ? 'Thinking…' : !activeProviderConfig ? 'Add AI profile' : settingsLockState === 'locked' ? 'Unlock to send' : 'Send'}
+        </button>
+      </div>
+    </div>
+  );
+
+  function focusNewThread() {
+    const baseThread = createThread('New chat', '', state.threads.length);
+    setState((current) => {
+      const nextThreads = [...current.threads, baseThread];
+      return {
+        ...current,
+        version: current.version + 1,
+        threads: nextThreads,
+        selectedThreadId: baseThread.id,
+        selectedNodeId: baseThread.activeNodeId,
+        ...focusCanvasOnThread(nextThreads, baseThread, current.threads.length, current.zoom),
+      };
+    });
+    setError(null);
+  }
+
+  function enterFocusMode() {
+    if (!activeThread && state.threads.length > 0) {
+      const last = state.threads[state.threads.length - 1];
+      setState((current) => ({ ...current, selectedThreadId: last.id, selectedNodeId: last.activeNodeId }));
+    }
+    setFocusMode(true);
+  }
+
+  const renderFocusMode = () => {
+    const hour = new Date().getHours();
+    const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+    return (
+      <div className="focus-mode">
+        {focusSidebarOpen ? (
+          <aside className="focus-sidebar">
+            <div className="focus-sidebar-head">
+              <span className="focus-brand">Loomspace</span>
+              <button type="button" className="focus-icon-btn" onClick={() => setFocusSidebarOpen(false)} aria-label="Collapse sidebar" title="Collapse sidebar">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 3 4 8 9 13"/></svg>
+              </button>
+            </div>
+            <button type="button" className="focus-new-chat" onClick={focusNewThread}>
+              <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="6.5" y1="1.5" x2="6.5" y2="11.5"/><line x1="1.5" y1="6.5" x2="11.5" y2="6.5"/></svg>
+              New chat
+            </button>
+            <div className="focus-thread-list">
+              {state.threads.length === 0 ? (
+                <p className="muted focus-empty-list">No chats yet.</p>
+              ) : (
+                state.threads.slice().reverse().map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    className={`focus-thread-item ${t.id === activeThread?.id ? 'active' : ''}`}
+                    onClick={() => setState((current) => ({ ...current, selectedThreadId: t.id, selectedNodeId: t.activeNodeId }))}
+                    style={{ '--thread-color': t.color } as React.CSSProperties}
+                  >
+                    <span className="focus-thread-dot" aria-hidden="true" />
+                    <span className="focus-thread-name">{t.title || 'Untitled thread'}</span>
+                  </button>
+                ))
+              )}
+            </div>
+            <div className="focus-sidebar-foot">
+              <button type="button" className="quiet" onClick={() => openProviderSetup()}>AI profiles</button>
+            </div>
+          </aside>
+        ) : null}
+        <div className="focus-main">
+          <header className="focus-topbar">
+            {!focusSidebarOpen ? (
+              <button type="button" className="focus-icon-btn" onClick={() => setFocusSidebarOpen(true)} aria-label="Show sidebar" title="Show sidebar">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><line x1="2" y1="4" x2="14" y2="4"/><line x1="2" y1="8" x2="14" y2="8"/><line x1="2" y1="12" x2="14" y2="12"/></svg>
+              </button>
+            ) : null}
+            {activeThread ? (
+              <input className="focus-title-input" value={activeThread.title} onChange={(e) => updateTitle(activeThread.id, e.target.value)} placeholder="Untitled thread" aria-label="Thread title" />
+            ) : <span className="focus-title-input focus-title-placeholder" />}
+            <div className="focus-topbar-right">
+              {settings.providerConfigs.length > 0 && activeProviderConfig ? (
+                <select className="focus-model-select" value={activeProviderConfig.model} onChange={(e) => updateProviderConfig(activeProviderConfig.id, { model: e.target.value })} aria-label="Model">
+                  {settingsModels.length === 0 ? <option value={activeProviderConfig.model}>{activeProviderConfig.model || 'no model'}</option> : settingsModels.map((m) => <option key={m} value={m}>{m}</option>)}
+                </select>
+              ) : (
+                <button type="button" className="quiet focus-add-profile" onClick={() => openProviderSetup()}>Add AI profile</button>
+              )}
+              <button type="button" className="focus-exit" onClick={() => setFocusMode(false)} aria-label="Exit focus mode" title="Exit focus mode (Esc)">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M9.5 2H14v4.5"/><path d="M14 2 8.5 7.5"/><path d="M6.5 14H2V9.5"/><path d="M2 14l5.5-5.5"/></svg>
+                <span>Exit</span>
+              </button>
+            </div>
+          </header>
+          {activeThread ? (
+            <>
+              <div className="focus-scroll" ref={focusMessagesRef}>
+                <div className="focus-column">
+                  {activeThread.context.length === 0 ? (
+                    <div className="focus-greeting">
+                      <h1>{greeting}</h1>
+                      <p className="focus-greeting-sub">Send a message to start this chat.</p>
+                    </div>
+                  ) : (
+                    activeThread.context.map((m) => renderChatMessage(m, m.role === 'assistant' && activeThread.context[activeThread.context.length - 1]?.id === m.id))
+                  )}
+                  <div ref={focusEndRef} className="chat-scroll-anchor" aria-hidden="true" />
+                </div>
+              </div>
+              <div className="focus-composer-bar">
+                <div className="focus-column">
+                  {renderComposer({ fileInputId: 'file-upload-focus', placeholder: 'Message your thread…', onEscape: () => setFocusMode(false), autoFocus: true })}
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="focus-conversation-empty">
+              <div className="focus-greeting">
+                <h1>{greeting}</h1>
+                <p className="focus-greeting-sub">Start a new chat to begin.</p>
+                <button type="button" className="focus-new-chat focus-new-chat-lg" onClick={focusNewThread}>
+                  <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="6.5" y1="1.5" x2="6.5" y2="11.5"/><line x1="1.5" y1="6.5" x2="11.5" y2="6.5"/></svg>
+                  New chat
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   const layoutStyle = {} as React.CSSProperties & Record<string, string>;
   if (leftPanelOpen) layoutStyle['--left-w'] = `${panelSizes.left}px`;
   if (rightPanelOpen) layoutStyle['--right-w'] = rightPanelMaximized ? `${maxSideWidth(leftPanelOpen ? panelSizes.left : 0)}px` : `${panelSizes.right}px`;
@@ -1933,6 +2184,8 @@ export default function App() {
 
   return (
     <div className="app-shell">
+      {focusMode ? renderFocusMode() : (
+      <>
       <header className="topbar">
         <div className="topbar-title">
           <div className="brand-mark" aria-hidden="true">
@@ -1956,6 +2209,7 @@ export default function App() {
             <button type="button" className={`layout-toggle icon-btn ${bottomPanelOpen ? 'active' : ''}`} aria-pressed={bottomPanelOpen} onClick={() => setBottomPanelOpen((open) => !open)} aria-label="Toggle bottom panel" title="Toggle bottom panel"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><rect x="1.5" y="9.5" width="13" height="4" fill="currentColor" stroke="none"/></svg></button>
             <button type="button" className={`layout-toggle icon-btn ${rightPanelOpen ? 'active' : ''}`} aria-pressed={rightPanelOpen} onClick={() => setRightPanelOpen((open) => !open)} aria-label="Toggle right panel (chat)" title="Toggle chat panel"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><rect x="10" y="2.5" width="4.5" height="11" fill="currentColor" stroke="none"/></svg></button>
           </div>
+          <button type="button" className="focus-enter" onClick={enterFocusMode} aria-label="Enter focus mode" title="Focus mode — distraction-free chat"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M2 6V3.5A1.5 1.5 0 0 1 3.5 2H6"/><path d="M14 6V3.5A1.5 1.5 0 0 0 12.5 2H10"/><path d="M2 10v2.5A1.5 1.5 0 0 0 3.5 14H6"/><path d="M14 10v2.5a1.5 1.5 0 0 1-1.5 1.5H10"/></svg> Focus</button>
           <button onClick={() => openThreadEditor('create')}><svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="6.5" y1="1.5" x2="6.5" y2="11.5"/><line x1="1.5" y1="6.5" x2="11.5" y2="6.5"/></svg> New thread</button>
           <div className="zoom-control" aria-label="Canvas zoom controls">
             <button type="button" onClick={() => zoomFromButton(-1)} aria-label="Zoom out">−</button>
@@ -2494,128 +2748,13 @@ export default function App() {
                   {activeThread.context.length === 0 ? (
                     <p className="muted">No messages yet. Send the first one.</p>
                   ) : (
-                    activeThread.context.map((message) => {
-                      const usage = messageUsage.get(message.id);
-                      const messageText = getMessageText(message) || message.text || '';
-                      const isLatestAssistant = message.role === 'assistant' && activeThread.context[activeThread.context.length - 1]?.id === message.id;
-                      return (
-                        <article
-                          key={message.id}
-                          className={`bubble chat-message ${message.role} ${message.injectedFromThreadId ? 'injected' : ''}`}
-                          style={message.injectedFromColor ? {
-                            '--inject-bg': hexToRgba(message.injectedFromColor, 0.07),
-                            '--inject-border': hexToRgba(message.injectedFromColor, 0.3),
-                          } as React.CSSProperties : undefined}
-                        >
-                          <div className="chat-message-topline">
-                            <strong>{message.role === 'assistant' ? 'AI' : message.role}</strong>
-                            <div className="chat-message-actions">
-                              <button type="button" onClick={() => copyText(messageText, message.id)} aria-label="Copy message">{copiedMessageId === message.id ? 'Copied' : 'Copy'}</button>
-                              <button type="button" onClick={() => listenToMessage(message.id, messageText)} aria-label={speakingMessageId === message.id ? 'Stop reading message' : 'Read message aloud'}>{speakingMessageId === message.id ? 'Stop' : 'Listen'}</button>
-                              {isLatestAssistant ? <button type="button" onClick={() => retryAssistantMessage(message.id)} disabled={sending} aria-label="Retry response">Retry</button> : null}
-                            </div>
-                          </div>
-                          <FormattedMessage text={messageText} rich={message.role === 'assistant'} />
-                          {hasAttachments(message) && (
-                            <div className="message-attachments">
-                              {getAttachmentsByType(message, 'image').map(att => (
-                                <img key={att.id} src={att.preview} alt={att.filename} className="message-image" />
-                              ))}
-                              {getAttachmentsByType(message, 'document').map(att => (
-                                <div key={att.id} className="message-document">📄 {att.filename}</div>
-                              ))}
-                            </div>
-                          )}
-                          {usage ? (
-                            <div className="bubble-meta">
-                              {message.role === 'assistant'
-                                ? `${usage.output.toLocaleString()} tokens out · ${usage.model}${usage.cost ? ` · $${usage.cost.toFixed(4)}` : ''}`
-                                : `${usage.input.toLocaleString()} tokens in`}
-                            </div>
-                          ) : null}
-                        </article>
-                      );
-                    })
+                    activeThread.context.map((message) =>
+                      renderChatMessage(message, message.role === 'assistant' && activeThread.context[activeThread.context.length - 1]?.id === message.id),
+                    )
                   )}
                   <div ref={rightPanelEndRef} className="chat-scroll-anchor" aria-hidden="true" />
                 </div>
-                <div className="mini-chat-composer">
-                  <textarea
-                    autoFocus
-                    value={composerDraft}
-                    onChange={(e) => updateComposerState(composerKey, (current) => ({ ...current, draft: e.target.value }))}
-                    placeholder="Ask the thread something"
-                    rows={3}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Escape') { e.preventDefault(); setRightPanelOpen(false); return; }
-                      if (e.key !== 'Enter') return;
-                      if (e.shiftKey) return;
-                      e.preventDefault();
-                      if (e.ctrlKey || e.metaKey) { sendMessage(true); } else { sendMessage(); }
-                    }}
-                  />
-                  {composerAttachments.length > 0 && (
-                    <div className="composer-attachments">
-                      {composerAttachments.map(att => (
-                        <div key={att.id} className="attachment-preview">
-                          {att.type === 'image' ? (
-                            <img src={att.preview} alt={att.filename} className="attachment-thumbnail" />
-                          ) : (
-                            <div className="document-preview">📄 {att.filename}</div>
-                          )}
-                          <button onClick={() => updateComposerState(composerKey, (current) => ({ ...current, attachments: current.attachments.filter((attachment) => attachment.id !== att.id) }))} className="remove-attachment">×</button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {settingsLockState === 'locked' ? <p className="muted">Unlock the active AI profile to send a message.</p> : null}
-                  {error ? <p className="error">{error}</p> : null}
-                  <div className="mini-chat-actions">
-                    <input
-                      type="file"
-                      id="file-upload"
-                      multiple
-                      accept="image/*,application/pdf,text/plain,text/markdown"
-                      onChange={async (e) => {
-                        if (!e.target.files) return;
-                        const newAttachments: MediaAttachment[] = [];
-                        const errors: string[] = [];
-                        for (const file of Array.from(e.target.files)) {
-                          const validation = validateFile(file);
-                          if (!validation.valid) {
-                            errors.push(`${file.name}: ${validation.error}`);
-                            continue;
-                          }
-                          if (file.type === 'image/png' || file.type === 'image/jpeg') {
-                            const byteCheck = await verifyImageBytes(file);
-                            if (!byteCheck.valid) {
-                              errors.push(byteCheck.error!);
-                              continue;
-                            }
-                          }
-                          try {
-                            const attachment = await processFile(file);
-                            newAttachments.push(attachment);
-                          } catch {
-                            errors.push(`Failed to process ${file.name}`);
-                          }
-                        }
-                        if (errors.length > 0) setError(errors.join('\n'));
-                        if (newAttachments.length > 0) updateComposerState(composerKey, (current) => ({ ...current, attachments: [...current.attachments, ...newAttachments] }));
-                        e.target.value = '';
-                      }}
-                      style={{ display: 'none' }}
-                    />
-                    <label htmlFor="file-upload" className="file-upload-button mini-chat-attach">📎</label>
-                    <button
-                      className="mini-chat-send"
-                      onClick={() => sendMessage()}
-                      disabled={sending}
-                    >
-                      {sending ? 'Thinking…' : !activeProviderConfig ? 'Add AI profile' : settingsLockState === 'locked' ? 'Unlock to send' : 'Send'}
-                    </button>
-                  </div>
-                </div>
+                {renderComposer({ fileInputId: 'file-upload', placeholder: 'Ask the thread something', onEscape: () => setRightPanelOpen(false), autoFocus: true })}
               </div>
             ) : (
               <div className="panel-empty">
@@ -2634,6 +2773,8 @@ export default function App() {
           <div className="resize-handle resize-handle-bottom" role="separator" aria-orientation="horizontal" aria-label="Resize bottom panel" onPointerDown={(event) => beginPanelResize('bottom', event)} onPointerMove={movePanelResize} onPointerUp={endPanelResize} onPointerCancel={endPanelResize} />
         ) : null}
       </main>
+      </>
+      )}
 
       {nodePreviewModal ? (
         <div className="chat-modal-backdrop" onClick={() => setNodePreviewModal(null)}>

@@ -2557,6 +2557,7 @@ button.btn-danger:disabled {
   border-color: rgba(24, 37, 63, 0.12);
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(248, 251, 255, 0.68));
   box-shadow: 0 20px 52px rgba(35, 52, 84, 0.11);
+  padding: 1.8rem;
 }
 
 :root[data-theme='light'] .bubble.user {
@@ -2819,4 +2820,328 @@ button.btn-danger:disabled {
 
 :root[data-theme='light'] .editor-actions {
   border-top-color: rgba(70, 89, 118, 0.12);
+}
+
+/* ---- Focus mode (ChatGPT/Claude-style chat) ---- */
+.focus-enter {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border-color: rgba(126, 168, 255, 0.35);
+  background: rgba(126, 168, 255, 0.12);
+  color: #cdd9f4;
+}
+.focus-enter:hover {
+  background: rgba(126, 168, 255, 0.2);
+  border-color: rgba(126, 168, 255, 0.5);
+}
+
+.focus-mode {
+  position: fixed;
+  inset: 0;
+  z-index: 28;
+  display: flex;
+  background:
+    radial-gradient(circle at top, rgba(124, 247, 194, 0.08), transparent 42%),
+    linear-gradient(180deg, #070b17 0%, #05070d 100%);
+  color: #eef3ff;
+}
+
+.focus-sidebar {
+  width: 264px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 12px;
+  border-right: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(8, 11, 20, 0.5);
+}
+.focus-sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 6px 4px;
+}
+.focus-brand {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #cdd9f4;
+}
+.focus-icon-btn {
+  border: 0;
+  background: transparent;
+  color: #9cadcf;
+  padding: 6px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.focus-icon-btn:hover {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: transparent;
+  transform: none;
+}
+.focus-new-chat {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-start;
+  width: 100%;
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-weight: 600;
+  border-color: rgba(124, 247, 194, 0.3);
+  background: rgba(124, 247, 194, 0.12);
+  color: #9bf4cd;
+}
+.focus-new-chat:hover {
+  background: rgba(124, 247, 194, 0.18);
+  border-color: rgba(124, 247, 194, 0.45);
+}
+.focus-thread-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+}
+.focus-empty-list {
+  padding: 8px 6px;
+  font-size: 13px;
+}
+.focus-thread-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #c4d0ea;
+  border-radius: 10px;
+  padding: 9px 10px;
+  font-size: 13px;
+}
+.focus-thread-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: transparent;
+  transform: none;
+}
+.focus-thread-item.active {
+  background: rgba(255, 255, 255, 0.08);
+  color: #eef3ff;
+}
+.focus-thread-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--thread-color, #7cf7c2);
+  flex-shrink: 0;
+}
+.focus-thread-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.focus-sidebar-foot {
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  padding-top: 10px;
+}
+.focus-sidebar-foot .quiet {
+  width: 100%;
+  justify-content: center;
+  font-size: 13px;
+}
+
+.focus-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.focus-topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.focus-title-input {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+  border: 1px solid transparent;
+  background: transparent;
+  font-size: 15px;
+  font-weight: 600;
+  color: #eef3ff;
+  padding: 6px 8px;
+  border-radius: 10px;
+}
+.focus-title-input:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.focus-title-input:focus {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(124, 247, 194, 0.3);
+  outline: none;
+  box-shadow: none;
+}
+.focus-topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.focus-model-select {
+  width: auto;
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  max-width: 220px;
+}
+.focus-exit {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  padding: 7px 12px;
+  border-radius: 10px;
+  color: #9cadcf;
+}
+
+.focus-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scroll-behavior: smooth;
+}
+.focus-column {
+  width: 100%;
+  max-width: 768px;
+  margin: 0 auto;
+  padding: 26px 24px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.focus-composer-bar {
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+.focus-composer-bar .focus-column {
+  padding: 14px 24px 22px;
+  gap: 0;
+}
+
+.focus-column .chat-message {
+  font-size: 15px;
+  border-radius: 18px;
+}
+.focus-column .chat-message.user {
+  align-self: flex-end;
+  max-width: 85%;
+}
+.focus-column .chat-message.assistant {
+  align-self: stretch;
+  background: transparent;
+  border-color: transparent;
+  padding: 1.8rem
+}
+.focus-column .chat-message.assistant::before {
+  opacity: 0;
+}
+
+.focus-greeting {
+  text-align: center;
+  padding: 16vh 0 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+.focus-conversation-empty {
+  flex: 1;
+  display: grid;
+  place-items: center;
+}
+.focus-greeting h1 {
+  font-size: 32px;
+  font-weight: 600;
+  margin: 0;
+  background: linear-gradient(120deg, #eef3ff, #9bf4cd);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.focus-greeting-sub {
+  color: #8a9abf;
+  font-size: 14px;
+  margin: 0;
+}
+.focus-new-chat-lg {
+  width: auto;
+  padding: 10px 18px;
+  margin-top: 8px;
+}
+
+.focus-composer-bar .mini-chat-composer {
+  border-top: 0;
+  gap: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 20px;
+  padding: 12px 14px;
+  background: rgba(9, 12, 22, 0.72);
+  box-shadow: 0 8px 30px rgba(2, 4, 10, 0.35);
+}
+.focus-composer-bar .mini-chat-composer textarea {
+  font-size: 15px;
+  background: transparent;
+  border: 0;
+  padding: 4px;
+}
+.focus-composer-bar .mini-chat-composer textarea:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+:root[data-theme='light'] .focus-mode {
+  background: linear-gradient(180deg, #f4f7fc, #eef2f8);
+  color: #162033;
+}
+:root[data-theme='light'] .focus-sidebar {
+  background: rgba(255, 255, 255, 0.62);
+  border-color: rgba(24, 37, 63, 0.1);
+}
+:root[data-theme='light'] .focus-topbar,
+:root[data-theme='light'] .focus-composer-bar {
+  border-color: rgba(24, 37, 63, 0.1);
+}
+:root[data-theme='light'] .focus-title-input {
+  color: #162033;
+}
+:root[data-theme='light'] .focus-thread-item {
+  color: #2a3852;
+}
+:root[data-theme='light'] .focus-thread-item.active {
+  background: rgba(24, 37, 63, 0.07);
+  color: #132033;
+}
+:root[data-theme='light'] .focus-greeting h1 {
+  background: linear-gradient(120deg, #162033, #159a6f);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+:root[data-theme='light'] .focus-composer-bar .mini-chat-composer {
+  background: rgba(255, 255, 255, 0.88);
+  border-color: rgba(24, 37, 63, 0.14);
+}
+
+@media (max-width: 760px) {
+  .focus-sidebar { width: 216px; }
+  .focus-column { padding-left: 16px; padding-right: 16px; }
 }
