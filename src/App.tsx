@@ -217,6 +217,7 @@ export default function App() {
   const [focusMode, setFocusMode] = useState(false);
   const [focusSidebarOpen, setFocusSidebarOpen] = useState(true);
   const [focusParamsOpen, setFocusParamsOpen] = useState(false);
+  const [navMenuOpen, setNavMenuOpen] = useState(false);
   const [providerMenuOpen, setProviderMenuOpen] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
@@ -573,10 +574,10 @@ export default function App() {
       if (threadEditorOpen) { closeThreadEditor(); return; }
       if (nodePreviewModal) { setNodePreviewModal(null); return; }
       if (focusMode) { setFocusMode(false); return; }
+      if (navMenuOpen) { setNavMenuOpen(false); return; }
       if (rightPanelOpen) { setRightPanelOpen(false); return; }
       if (forkDraft) { cancelForkSelection(); return; }
       if (contextLinkMode) { setContextLinkMode(null); return; }
-      if (state.selectedThreadId) { deselectNode(); }
     };
     window.addEventListener('keydown', onKeyDown, true);
     document.addEventListener('keydown', onKeyDown, true);
@@ -2138,6 +2139,18 @@ export default function App() {
               <input className="focus-title-input" value={activeThread.title} onChange={(e) => updateTitle(activeThread.id, e.target.value)} placeholder="Untitled thread" aria-label="Thread title" />
             ) : <span className="focus-title-input focus-title-placeholder" />}
             <div className="focus-topbar-right">
+              {settings.providerConfigs.length > 1 && activeProviderConfig ? (
+                <select
+                  className="focus-provider-select"
+                  value={activeProviderConfig.id}
+                  onChange={(e) => changeSettingsProvider(e.target.value)}
+                  aria-label="AI Provider"
+                >
+                  {settings.providerConfigs.map((config) => (
+                    <option key={config.id} value={config.id}>{config.label}</option>
+                  ))}
+                </select>
+              ) : null}
               {settings.providerConfigs.length > 0 && activeProviderConfig ? (
                 <select className="focus-model-select" value={activeProviderConfig.model} onChange={(e) => updateProviderConfig(activeProviderConfig.id, { model: e.target.value })} aria-label="Model">
                   {settingsModels.length === 0 ? <option value={activeProviderConfig.model}>{activeProviderConfig.model || 'no model'}</option> : settingsModels.map((m) => <option key={m} value={m}>{m}</option>)}
@@ -2317,31 +2330,23 @@ export default function App() {
               <circle cx="20" cy="17.1" r="1.8" fill="currentColor"/>
             </svg>
           </div>
-          <div>
+          <div className="topbar-title-text">
             <p className="eyebrow">Loomspace</p>
-            <h1>{state.title}</h1>
+            <input
+              className="workspace-title-input"
+              value={state.title}
+              onChange={(event) => setState((current) => ({ ...current, title: event.target.value }))}
+              aria-label="Workspace name"
+              placeholder="Untitled workspace"
+            />
           </div>
         </div>
         <div className="topbar-actions">
-          <div className="layout-toggles">
-            <button type="button" className={`layout-toggle icon-btn ${leftPanelOpen ? 'active' : ''}`} aria-pressed={leftPanelOpen} onClick={() => setLeftPanelOpen((open) => !open)} aria-label="Toggle left panel" title="Toggle left panel"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><rect x="1.5" y="2.5" width="4.5" height="11" fill="currentColor" stroke="none"/></svg></button>
-            <button type="button" className={`layout-toggle icon-btn ${bottomPanelOpen ? 'active' : ''}`} aria-pressed={bottomPanelOpen} onClick={() => setBottomPanelOpen((open) => !open)} aria-label="Toggle bottom panel" title="Toggle bottom panel"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><rect x="1.5" y="9.5" width="13" height="4" fill="currentColor" stroke="none"/></svg></button>
-            <button type="button" className={`layout-toggle icon-btn ${rightPanelOpen ? 'active' : ''}`} aria-pressed={rightPanelOpen} onClick={() => setRightPanelOpen((open) => !open)} aria-label="Toggle right panel (chat)" title="Toggle chat panel"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><rect x="10" y="2.5" width="4.5" height="11" fill="currentColor" stroke="none"/></svg></button>
+          <div className="nav-group nav-group-view" role="group" aria-label="Panels and view">
           </div>
-          <button type="button" className="focus-enter" onClick={enterFocusMode} aria-label="Enter focus mode" title="Focus mode — distraction-free chat"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M2 6V3.5A1.5 1.5 0 0 1 3.5 2H6"/><path d="M14 6V3.5A1.5 1.5 0 0 0 12.5 2H10"/><path d="M2 10v2.5A1.5 1.5 0 0 0 3.5 14H6"/><path d="M14 10v2.5a1.5 1.5 0 0 1-1.5 1.5H10"/></svg> Focus</button>
-          <button onClick={() => openThreadEditor('create')}><svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="6.5" y1="1.5" x2="6.5" y2="11.5"/><line x1="1.5" y1="6.5" x2="11.5" y2="6.5"/></svg> New thread</button>
-          <div className="zoom-control" aria-label="Canvas zoom controls">
-            <button type="button" onClick={() => zoomFromButton(-1)} aria-label="Zoom out">−</button>
-            <button type="button" onClick={resetView} className="topbar-reset-view" aria-label="Center canvas" title="Center canvas">100%</button>
-            <button type="button" onClick={() => zoomFromButton(1)} aria-label="Zoom in">+</button>
-          </div>
-          <button
-            type="button"
-            className="theme-toggle"
-            onClick={() => setThemeMode((mode) => (mode === 'auto' ? 'light' : mode === 'light' ? 'dark' : 'auto'))}
-            aria-label={`Theme: ${themeMode}`}
-            title={`Theme: ${themeMode}`}
-          >
+          <span className="nav-sep nav-sep-compact" aria-hidden="true" />
+          <button type="button" className="nav-btn nav-btn-icon nav-btn-ai" onClick={() => openProviderSetup()} aria-label="AI settings and profiles" title="AI settings & profiles"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.2 9.3 5.5 13.6 6.8 9.3 8.1 8 12.4 6.7 8.1 2.4 6.8 6.7 5.5z"/></svg><span className="nav-label">AI</span></button>
+          <button type="button" className="nav-btn nav-btn-icon" onClick={() => setThemeMode((mode) => (mode === 'auto' ? 'light' : mode === 'light' ? 'dark' : 'auto'))} aria-label={`Theme: ${themeMode}`} title={`Theme: ${themeMode} — click to change`}>
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               {themeMode === 'dark' ? (
                 <path d="M13.5 10.2A5.8 5.8 0 0 1 5.8 2.5 6.2 6.2 0 1 0 13.5 10.2Z"/>
@@ -2349,11 +2354,23 @@ export default function App() {
                 <><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.2M8 13.3v1.2M1.5 8h1.2M13.3 8h1.2M3.4 3.4l.85.85M11.75 11.75l.85.85M3.4 12.6l.85-.85M11.75 4.25l.85-.85"/></>
               )}
             </svg>
-            <span>{themeMode === 'auto' ? 'Auto' : themeMode === 'light' ? 'Light' : 'Dark'}</span>
           </button>
-          <button type="button" onClick={confirmResetWorkspace} className="quiet workspace-reset" aria-label="Reset workspace" title="Reset workspace (provider profiles are kept)">
-            Reset workspace
-          </button>
+          <button type="button" className="nav-btn nav-btn-icon nav-btn-danger" onClick={confirmResetWorkspace} aria-label="Reset workspace" title="Reset workspace (AI profiles are kept)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12.8 8a4.8 4.8 0 1 1-1.5-3.5"/><path d="M13 2.2v2.6h-2.6"/></svg></button>
+          <span className="nav-sep nav-sep-compact" aria-hidden="true" />
+          <button type="button" className="nav-btn nav-btn-focus" onClick={() => enterFocusMode()} aria-label="Enter focus mode" title="Focus mode — distraction-free chat"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M2 6V3.5A1.5 1.5 0 0 1 3.5 2H6"/><path d="M14 6V3.5A1.5 1.5 0 0 0 12.5 2H10"/><path d="M2 10v2.5A1.5 1.5 0 0 0 3.5 14H6"/><path d="M14 10v2.5a1.5 1.5 0 0 1-1.5 1.5H10"/></svg><span className="nav-label">Focus</span></button>
+          <button type="button" className="nav-btn nav-btn-primary nav-btn-new" onClick={() => openThreadEditor('create')} aria-label="New thread" title="New thread"><svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="6.5" y1="1.5" x2="6.5" y2="11.5"/><line x1="1.5" y1="6.5" x2="11.5" y2="6.5"/></svg><span className="nav-label">New thread</span></button>
+          <div className="nav-menu-wrap">
+            <button type="button" className="nav-btn nav-btn-icon nav-menu-trigger" aria-expanded={navMenuOpen} aria-label="More actions" title="More actions" onClick={() => setNavMenuOpen((open) => !open)}>⋯</button>
+            {navMenuOpen ? (
+              <div className="nav-menu" role="menu" aria-label="More actions">
+                <button type="button" role="menuitem" onClick={() => { setNavMenuOpen(false); openProviderSetup(); }}>AI settings and profiles</button>
+                <button type="button" role="menuitem" onClick={() => { setNavMenuOpen(false); setThemeMode((mode) => (mode === 'auto' ? 'light' : mode === 'light' ? 'dark' : 'auto')); }}>Theme</button>
+                <button type="button" role="menuitem" onClick={() => { setNavMenuOpen(false); confirmResetWorkspace(); }}>Reset workspace</button>
+                <button type="button" role="menuitem" onClick={() => { setNavMenuOpen(false); enterFocusMode(); }}>Focus mode</button>
+                <button type="button" role="menuitem" onClick={() => { setNavMenuOpen(false); openThreadEditor('create'); }}>New thread</button>
+              </div>
+            ) : null}
+          </div>
         </div>
       </header>
 
@@ -2473,12 +2490,6 @@ export default function App() {
         </aside>
 
         <section className="canvas-panel">
-          <div className="canvas-toolbar">
-            <span>{state.densityOverlay ? 'Threadlines on' : 'Threadlines off'}</span>
-            <span>{Math.round(state.zoom * 100)}%</span>
-            <span>{metrics.saturation * 100 < 50 ? 'light weave' : 'dense weave'}</span>
-          </div>
-
           {forkDraft && forkSourceThread ? (
             <div className="fork-selection-banner">
               <div className="fork-selection-copy">
@@ -2893,6 +2904,32 @@ export default function App() {
           <div className="resize-handle resize-handle-bottom" role="separator" aria-orientation="horizontal" aria-label="Resize bottom panel" onPointerDown={(event) => beginPanelResize('bottom', event)} onPointerMove={movePanelResize} onPointerUp={endPanelResize} onPointerCancel={endPanelResize} />
         ) : null}
       </main>
+      <footer className="status-bar" aria-label="Workspace status">
+        <div className="status-group status-left">
+          <span>{state.densityOverlay ? 'Threadlines on' : 'Threadlines off'}</span>
+          <span>{metrics.saturation * 100 < 50 ? 'light weave' : 'dense weave'}</span>
+        </div>
+        <div className="status-group status-center" aria-label="Canvas zoom controls">
+          <button type="button" className="status-btn" onClick={() => zoomFromButton(-1)} aria-label="Zoom out">−</button>
+          <button type="button" className="status-zoom" onClick={resetView} aria-label="Recenter and reset zoom" title="Recenter / reset zoom">{Math.round(state.zoom * 100)}%</button>
+          <button type="button" className="status-btn" onClick={() => zoomFromButton(1)} aria-label="Zoom in">+</button>
+        </div>
+        <div className="status-group status-right">
+          <span>{Math.round(state.zoom * 100)}%</span>
+          <span>{metrics.threadCount} threads</span>
+          <div className="status-group status-panels" role="group" aria-label="Panel controls">
+            <button type="button" className={`status-btn status-panel-btn ${leftPanelOpen ? 'active' : ''}`} aria-pressed={leftPanelOpen} onClick={() => setLeftPanelOpen((open) => !open)} aria-label="Toggle threads panel" title="Threads panel">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><rect x="1.5" y="2.5" width="4.5" height="11" fill="currentColor" stroke="none"/></svg>
+            </button>
+            <button type="button" className={`status-btn status-panel-btn ${bottomPanelOpen ? 'active' : ''}`} aria-pressed={bottomPanelOpen} onClick={() => setBottomPanelOpen((open) => !open)} aria-label="Toggle bottom panel" title="Bottom panel">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><rect x="1.5" y="9.5" width="13" height="4" fill="currentColor" stroke="none"/></svg>
+            </button>
+            <button type="button" className={`status-btn status-panel-btn ${rightPanelOpen ? 'active' : ''}`} aria-pressed={rightPanelOpen} onClick={() => setRightPanelOpen((open) => !open)} aria-label="Toggle chat panel" title="Chat panel">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><rect x="10" y="2.5" width="4.5" height="11" fill="currentColor" stroke="none"/></svg>
+            </button>
+          </div>
+        </div>
+      </footer>
       </>
       )}
 
