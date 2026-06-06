@@ -95,6 +95,7 @@ function resolveThemeMode(mode: ThemeMode): 'light' | 'dark' {
 
 
 const TTS_SETTINGS_KEY = 'loomspace.tts.v1';
+const ONBOARDING_SESSION_KEY = 'loomspace.onboarding.dismissed.v1';
 
 function loadTtsSettings(): { voiceURI: string; rate: number } {
   try {
@@ -238,6 +239,14 @@ export default function App() {
   const [contextLinkPointer, setContextLinkPointer] = useState<{ x: number; y: number } | null>(null);
   const [contextLinkSnapTarget, setContextLinkSnapTarget] = useState<{ threadId: string; nodeId: string } | null>(null);
   const [aiSettingsModalOpen, setAiSettingsModalOpen] = useState(false);
+  const [onboardingState, setOnboardingState] = useState<'active' | 'providerSkipped' | 'dismissed'>(() => {
+    try {
+      if (sessionStorage.getItem(ONBOARDING_SESSION_KEY) === '1') return 'dismissed';
+    } catch {
+      // Ignore storage failures; onboarding can still run for this page load.
+    }
+    return state.threads.length === 0 && settings.providerConfigs.length === 0 ? 'active' : 'dismissed';
+  });
   const [settingsEditorConfigId, setSettingsEditorConfigId] = useState<string | null>(null);
   const rightPanelMessagesRef = useRef<HTMLDivElement>(null);
   const rightPanelEndRef = useRef<HTMLDivElement>(null);
@@ -409,6 +418,22 @@ export default function App() {
         : 'locked'
       : 'none'
     : 'none';
+  const hasConfiguredProvider = settings.providerConfigs.some(
+    (config) => config.model.trim() && (config.apiKey.trim() || config.hasEncryptedApiKey),
+  );
+  const onboardingStep =
+    onboardingState === 'dismissed' || state.threads.length > 0
+      ? null
+      : onboardingState === 'active' && !hasConfiguredProvider
+        ? 'provider'
+        : 'thread';
+  const onboardingVisible =
+    onboardingStep !== null &&
+    !focusMode &&
+    !passphraseModal &&
+    !aiSettingsModalOpen &&
+    !threadEditorOpen &&
+    !nodePreviewModal;
 
   useEffect(() => {
     if (activeProviderConfig?.hasEncryptedApiKey && !activeProviderConfig.apiKey.trim() && !passphraseModal) {
@@ -570,9 +595,10 @@ export default function App() {
       e.preventDefault();
       e.stopPropagation();
       if (passphraseModal && !passphraseModal.busy) { closePassphraseModal(); return; }
-      if (aiSettingsModalOpen) { setAiSettingsModalOpen(false); return; }
+      if (aiSettingsModalOpen) { closeAiSettings(); return; }
       if (threadEditorOpen) { closeThreadEditor(); return; }
       if (nodePreviewModal) { setNodePreviewModal(null); return; }
+      if (onboardingVisible) { dismissOnboarding(); return; }
       if (focusMode) { setFocusMode(false); return; }
       if (navMenuOpen) { setNavMenuOpen(false); return; }
       if (rightPanelOpen) { setRightPanelOpen(false); return; }
@@ -585,7 +611,7 @@ export default function App() {
       window.removeEventListener('keydown', onKeyDown, true);
       document.removeEventListener('keydown', onKeyDown, true);
     };
-  }, [passphraseModal, aiSettingsModalOpen, threadEditorOpen, nodePreviewModal, rightPanelOpen, contextLinkMode, forkDraft, focusMode, state.selectedThreadId]);
+  }, [passphraseModal, aiSettingsModalOpen, threadEditorOpen, nodePreviewModal, onboardingVisible, rightPanelOpen, contextLinkMode, forkDraft, focusMode, state.selectedThreadId]);
 
   function clampViewport(next?: Partial<Pick<LoomspaceState, 'panX' | 'panY' | 'zoom'>>) {
     const viewport = viewportRef.current;
@@ -1486,6 +1512,19 @@ export default function App() {
   function closePassphraseModal() {
     setPassphraseModal(null);
   }
+  function dismissOnboarding() {
+    setOnboardingState('dismissed');
+    try {
+      sessionStorage.setItem(ONBOARDING_SESSION_KEY, '1');
+    } catch {
+      // Ignore storage failures; dismissal still applies until refresh.
+    }
+  }
+
+  function closeAiSettings() {
+    setAiSettingsModalOpen(false);
+    setSettingsEditorConfigId(null);
+  }
 
   function confirmResetWorkspace() {
     const confirmed = window.confirm(
@@ -2345,7 +2384,7 @@ export default function App() {
           <div className="nav-group nav-group-view" role="group" aria-label="Panels and view">
           </div>
           <span className="nav-sep nav-sep-compact" aria-hidden="true" />
-          <button type="button" className="nav-btn nav-btn-icon nav-btn-ai" onClick={() => openProviderSetup()} aria-label="AI settings and profiles" title="AI settings & profiles"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.2 9.3 5.5 13.6 6.8 9.3 8.1 8 12.4 6.7 8.1 2.4 6.8 6.7 5.5z"/></svg><span className="nav-label">AI</span></button>
+          <button type="button" className="nav-btn nav-btn-ai" onClick={() => openProviderSetup()} aria-label="AI settings and profiles" title="AI settings & profiles"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.2 9.3 5.5 13.6 6.8 9.3 8.1 8 12.4 6.7 8.1 2.4 6.8 6.7 5.5z"/></svg><span className="nav-label">AI</span></button>
           <button type="button" className="nav-btn nav-btn-icon" onClick={() => setThemeMode((mode) => (mode === 'auto' ? 'light' : mode === 'light' ? 'dark' : 'auto'))} aria-label={`Theme: ${themeMode}`} title={`Theme: ${themeMode} — click to change`}>
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               {themeMode === 'dark' ? (
@@ -2933,6 +2972,60 @@ export default function App() {
       </>
       )}
 
+      {onboardingVisible ? (
+        <div className="chat-modal-backdrop" onClick={dismissOnboarding}>
+          <section className="chat-modal onboarding-modal" onClick={(event) => event.stopPropagation()}>
+            <header className="chat-modal-header">
+              <div>
+                <p className="eyebrow">Welcome</p>
+                <h2>{onboardingStep === 'provider' ? 'Set up your AI provider' : 'Create your first thread'}</h2>
+              </div>
+              <button type="button" className="quiet" onClick={dismissOnboarding} aria-label="Skip onboarding">
+                ×
+              </button>
+            </header>
+            <div className="chat-modal-body onboarding-body">
+              <div className="onboarding-steps" aria-hidden="true">
+                <span className={`onboarding-step ${onboardingStep === 'provider' ? 'active' : 'done'}`}>1 · AI provider</span>
+                <span className={`onboarding-step ${onboardingStep === 'thread' ? 'active' : 'pending'}`}>2 · Thread</span>
+              </div>
+              {onboardingStep === 'provider' ? (
+                <>
+                  <div className="onboarding-copy">
+                    <p>Pick a provider, add an API key, and choose the model this workspace should use when you send a message.</p>
+                    <p className="muted">You can skip this and wire AI up later from the AI button in the top bar.</p>
+                  </div>
+                  <div className="onboarding-actions">
+                    <button type="button" onClick={() => openProviderSetup()}>
+                      Set up AI provider
+                    </button>
+                    <button type="button" className="quiet" onClick={() => setOnboardingState('providerSkipped')}>
+                      Skip for now
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="onboarding-copy">
+                    <p>Name the first thread so the canvas has somewhere to start. Threads are provider-agnostic, so you can create one before AI is ready.</p>
+                    {!hasConfiguredProvider ? (
+                      <p className="muted">You skipped AI setup for now. Use the AI button any time to connect a provider later.</p>
+                    ) : null}
+                  </div>
+                  <div className="onboarding-actions">
+                    <button type="button" onClick={() => openThreadEditor('create')}>
+                      Create thread
+                    </button>
+                    <button type="button" className="quiet" onClick={dismissOnboarding}>
+                      Skip for now
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </section>
+        </div>
+      ) : null}
       {nodePreviewModal ? (
         <div className="chat-modal-backdrop" onClick={() => setNodePreviewModal(null)}>
           <section className="chat-modal node-preview-modal" onClick={(e) => e.stopPropagation()}>
@@ -2957,14 +3050,14 @@ export default function App() {
 
 
       {aiSettingsModalOpen ? (
-        <div className="chat-modal-backdrop" onClick={() => { setAiSettingsModalOpen(false); setSettingsEditorConfigId(null); }}>
+        <div className="chat-modal-backdrop" onClick={closeAiSettings}>
           <section className="ai-settings-modal" onClick={(event) => event.stopPropagation()}>
             <header className="chat-modal-header">
               <div>
                 <p className="eyebrow">AI settings</p>
                 <h2>Manage AI profiles</h2>
               </div>
-              <button type="button" className="quiet" onClick={() => { setAiSettingsModalOpen(false); setSettingsEditorConfigId(null); }} aria-label="Close AI settings">
+              <button type="button" className="quiet" onClick={closeAiSettings} aria-label="Close AI settings">
                 ×
               </button>
             </header>
