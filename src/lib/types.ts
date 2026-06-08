@@ -81,6 +81,17 @@ export interface ThreadLane {
   infoOpen: boolean;
 }
 
+export interface GenerationParams {
+  temperature?: number;
+  topP?: number;
+  topK?: number;
+  maxTokens?: number;
+  frequencyPenalty?: number;
+  presencePenalty?: number;
+  seed?: number;
+  stop?: string[];
+}
+
 export interface AIProviderConfig {
   id: string;
   kind: AIProvider;
@@ -89,6 +100,7 @@ export interface AIProviderConfig {
   apiKey: string;
   hasEncryptedApiKey: boolean;
   baseUrl?: string;
+  params?: GenerationParams;
 }
 
 export interface LoomspaceState {
@@ -119,6 +131,16 @@ export interface FabricMetrics {
 
 export interface PersistedWorkspace {
   state: LoomspaceState;
+}
+
+export interface PersistedWorkspaceEntry {
+  id: string;
+  state: LoomspaceState;
+}
+
+export interface PersistedWorkspaceStore {
+  activeWorkspaceId: string;
+  workspaces: PersistedWorkspaceEntry[];
 }
 
 export interface ThreadUsageSummary {

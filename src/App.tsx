@@ -1,44 +1,42 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent, type WheelEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type PointerEvent, type SetStateAction, type WheelEvent } from 'react';
 import Markdown from 'react-markdown';
 import {
   PROVIDERS,
+  PARAM_SUPPORT,
   appendContextInjection,
+  clearProviderSecret,
   computeMetrics,
   createChatNode,
   createContextNode,
+  createWorkspaceEntry,
   createProviderConfig,
   createThread,
   deleteProviderConfig,
   estimateCost,
+  fetchProviderModels,
   getModelWindow,
   loadModelCache,
   loadSettings,
-  loadWorkspace,
+  loadWorkspaceStore,
   providerInfo,
+  resolveBaseUrl,
+  resetWorkspaceState,
   saveModelCache,
-  saveWorkspace,
+  saveProviderSecret,
+  saveSettings,
+  saveWorkspaceStore,
   summarize,
   summarizeThreadUsage,
   threadWithActiveNode,
   threadWithInfo,
+  unlockProviderSecret,
   updateThreadDetails,
   updateThreadTitle,
 } from './lib/store';
 import {
-  apiChat,
-  apiFetchModels,
-  apiLoadWorkspace,
-  apiSaveWorkspace,
-  apiUpsertProfile,
-  apiDeleteProfile,
-  apiStoreKey,
-  apiClearKey,
-  apiListProfiles,
-  type ServerProfile,
-} from './lib/api';
-import {
   createTextMessage,
   createMixedMessage,
+  decodeBase64Text,
   getMessageText,
   hasAttachments,
   getAttachmentsByType,
@@ -50,10 +48,12 @@ import {
 import type {
   AIProvider,
   AIProviderConfig,
+  GenerationParams,
   AISettings,
   ChatMessage,
   ForkDraft,
   LoomspaceState,
+  PersistedWorkspaceStore,
   ThreadChatNode,
   ThreadContextNode,
   ThreadLane,
@@ -75,6 +75,102 @@ const MAX_ZOOM = 1.6;
 const EDGE_PADDING = 80;
 const CANVAS_MIN_WIDTH = 4000;
 const CANVAS_MIN_HEIGHT = 2400;
+const WORKSPACE_SAVE_DEBOUNCE_MS = 400;
+
+const PANEL_SIZE_KEY = 'loomspace.panels.v1';
+const MIN_PANEL_W = 220;
+const MIN_CANVAS_W = 320;
+const MIN_BOTTOM_H = 120;
+const MAX_BOTTOM_H = 600;
+
+const THEME_MODE_KEY = 'loomspace.theme.v1';
+type ThemeMode = 'auto' | 'light' | 'dark';
+
+function loadThemeMode(): ThemeMode {
+  const stored = localStorage.getItem(THEME_MODE_KEY);
+  return stored === 'light' || stored === 'dark' || stored === 'auto' ? stored : 'auto';
+}
+
+function resolveThemeMode(mode: ThemeMode): 'light' | 'dark' {
+  if (mode !== 'auto') return mode;
+  return window.matchMedia?.('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+}
+
+
+const TTS_SETTINGS_KEY = 'loomspace.tts.v1';
+const ONBOARDING_SESSION_KEY = 'loomspace.onboarding.dismissed.v1';
+
+function loadTtsSettings(): { voiceURI: string; rate: number } {
+  try {
+    const raw = localStorage.getItem(TTS_SETTINGS_KEY);
+    if (!raw) return { voiceURI: '', rate: 1 };
+    const parsed = JSON.parse(raw) as Partial<{ voiceURI: string; rate: number }>;
+    return {
+      voiceURI: typeof parsed.voiceURI === 'string' ? parsed.voiceURI : '',
+      rate: clamp(Number(parsed.rate) || 1, 0.75, 1.35),
+    };
+  } catch {
+    return { voiceURI: '', rate: 1 };
+  }
+}
+
+function cleanTextForSpeech(text: string) {
+  return text
+    .replace(/```(\w+)?\n[\s\S]*?```/g, (_, lang) => ` Code block${lang ? ` in ${lang}` : ''}. `)
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' image ')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+    .replace(/^\s{0,3}>\s?/gm, '')
+    .replace(/^\s*[-*+]\s+/gm, '')
+    .replace(/^\s*\d+\.\s+/gm, '')
+    .replace(/[*_~]{1,3}/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function splitTextForSpeech(text: string, maxLength = 220) {
+  const sentences = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g) ?? [text];
+  const chunks: string[] = [];
+  let current = '';
+  for (const sentence of sentences) {
+    const next = `${current}${current ? ' ' : ''}${sentence.trim()}`.trim();
+    if (next.length <= maxLength) {
+      current = next;
+      continue;
+    }
+    if (current) chunks.push(current);
+    if (sentence.length <= maxLength) {
+      current = sentence.trim();
+      continue;
+    }
+    for (let i = 0; i < sentence.length; i += maxLength) chunks.push(sentence.slice(i, i + maxLength).trim());
+    current = '';
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+function maxSideWidth(reserved = 0) {
+  const viewport = typeof window === 'undefined' ? 1280 : window.innerWidth;
+  return Math.max(MIN_PANEL_W, Math.round(viewport - MIN_CANVAS_W - reserved));
+}
+
+function loadPanelSizes(): { left: number; right: number; bottom: number } {
+  const fallback = { left: 300, right: 400, bottom: 260 };
+  try {
+    const raw = localStorage.getItem(PANEL_SIZE_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw) as Partial<{ left: number; right: number; bottom: number }>;
+    return {
+      left: clamp(Number(parsed.left) || fallback.left, MIN_PANEL_W, maxSideWidth()),
+      right: clamp(Number(parsed.right) || fallback.right, MIN_PANEL_W, maxSideWidth()),
+      bottom: clamp(Number(parsed.bottom) || fallback.bottom, MIN_BOTTOM_H, MAX_BOTTOM_H),
+    };
+  } catch {
+    return fallback;
+  }
+}
 
 interface ThreadDraft {
   title: string;
@@ -88,34 +184,105 @@ const DEFAULT_THREAD_DRAFT: ThreadDraft = {
 
 type ModelCache = Record<string, string[]>;
 
+interface ComposerState {
+  draft: string;
+  attachments: MediaAttachment[];
+}
+
+const EMPTY_COMPOSER_STATE: ComposerState = { draft: '', attachments: [] };
+
+function composerStateKey(threadId: string, nodeId?: string | null): string {
+  return `${threadId}::${nodeId ?? 'root'}`;
+}
+
 function providerModelCacheKey(config: AIProviderConfig): string {
   const baseUrl = config.baseUrl?.trim().toLowerCase() ?? '';
   return `provider:${config.kind}:${baseUrl}`;
 }
 
+function sameProviderModelSource(left: AIProviderConfig, right: AIProviderConfig): boolean {
+  const leftBaseUrl = left.baseUrl?.trim().toLowerCase() ?? '';
+  const rightBaseUrl = right.baseUrl?.trim().toLowerCase() ?? '';
+  return left.kind === right.kind && leftBaseUrl === rightBaseUrl;
+}
+
 export default function App() {
-  const [state, setState] = useState<LoomspaceState>(() => loadWorkspace());
+  const [workspaceStore, setWorkspaceStore] = useState<PersistedWorkspaceStore>(() => loadWorkspaceStore());
+  const activeWorkspaceEntry = useMemo(
+    () => workspaceStore.workspaces.find((entry) => entry.id === workspaceStore.activeWorkspaceId) ?? workspaceStore.workspaces[0],
+    [workspaceStore],
+  );
+  const state = activeWorkspaceEntry.state;
+  const setState = (nextState: SetStateAction<LoomspaceState>) => {
+    setWorkspaceStore((current) => {
+      const activeIndex = current.workspaces.findIndex((entry) => entry.id === current.activeWorkspaceId);
+      const fallbackIndex = activeIndex === -1 ? 0 : activeIndex;
+      const activeEntry = current.workspaces[fallbackIndex];
+      if (!activeEntry) return current;
+      const currentState = activeEntry.state;
+      const resolvedState = typeof nextState === 'function'
+        ? (nextState as (value: LoomspaceState) => LoomspaceState)(currentState)
+        : nextState;
+      const workspaces = current.workspaces.slice();
+      workspaces[fallbackIndex] = { id: resolvedState.workspaceId, state: resolvedState };
+      return {
+        activeWorkspaceId: resolvedState.workspaceId,
+        workspaces,
+      };
+    });
+  };
   const [settings, setSettings] = useState<AISettings>(() => loadSettings());
-  const [composerDraft, setComposerDraft] = useState('');
-  const [composerAttachments, setComposerAttachments] = useState<MediaAttachment[]>([]);
+  const [composerStates, setComposerStates] = useState<Record<string, ComposerState>>({});
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [providerError, setProviderError] = useState<string | null>(null);
   const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
-  const [saveKeyModal, setSaveKeyModal] = useState<{ apiKey: string; busy: boolean; targetConfigId: string } | null>(null);
+  const [passphraseModal, setPassphraseModal] = useState<{ mode: 'encrypt' | 'unlock'; passphrase: string; busy: boolean; pendingKey?: string; targetConfigId?: string } | null>(null);
   const [savingSettings, setSavingSettings] = useState(false);
-  const [chatModalOpen, setChatModalOpen] = useState(false);
-  const [miniChatOpen, setMiniChatOpen] = useState(false);
-  const [miniChatMaximized, setMiniChatMaximized] = useState(false);
+  const [rightPanelOpen, setRightPanelOpen] = useState(false);
+  const [rightPanelMaximized, setRightPanelMaximized] = useState(false);
+  const [focusMode, setFocusMode] = useState(false);
+  const [focusSidebarOpen, setFocusSidebarOpen] = useState(true);
+  const [focusParamsOpen, setFocusParamsOpen] = useState(false);
+  const [navMenuOpen, setNavMenuOpen] = useState(false);
+  const [providerMenuOpen, setProviderMenuOpen] = useState(false);
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
+  const [panelSizes, setPanelSizes] = useState(loadPanelSizes);
+  const [themeMode, setThemeMode] = useState<ThemeMode>(loadThemeMode);
+  const [ttsVoices, setTtsVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [ttsSettings, setTtsSettings] = useState(loadTtsSettings);
+  const [panelResizing, setPanelResizing] = useState(false);
+  const ttsQueueRef = useRef<{ messageId: string; chunks: string[]; index: number; keepAlive: number | null } | null>(null);
+  const panelDragRef = useRef<{ kind: 'left' | 'right' | 'bottom'; origin: number; size: number } | null>(null);
   const [contextLinkMode, setContextLinkMode] = useState<{
+    intent: 'link' | 'fork';
     sourceThreadId: string;
     dotNodeId: string;
     selectedNodes: Array<{ nodeId: string; parts: { user: boolean; assistant: boolean } }>;
     side: 'left' | 'right';
   } | null>(null);
+  const [contextLinkPointer, setContextLinkPointer] = useState<{ x: number; y: number } | null>(null);
+  const [contextLinkSnapTarget, setContextLinkSnapTarget] = useState<{ threadId: string; nodeId: string } | null>(null);
   const [aiSettingsModalOpen, setAiSettingsModalOpen] = useState(false);
-  const miniChatMessagesRef = useRef<HTMLDivElement>(null);
+  const [workspaceManagerOpen, setWorkspaceManagerOpen] = useState(false);
+  const [workspaceDraftTitle, setWorkspaceDraftTitle] = useState('');
+  const [onboardingState, setOnboardingState] = useState<'active' | 'providerSkipped' | 'dismissed'>(() => {
+    try {
+      if (sessionStorage.getItem(ONBOARDING_SESSION_KEY) === '1') return 'dismissed';
+    } catch {
+      // Ignore storage failures; onboarding can still run for this page load.
+    }
+    return state.threads.length === 0 && settings.providerConfigs.length === 0 ? 'active' : 'dismissed';
+  });
+  const [settingsEditorConfigId, setSettingsEditorConfigId] = useState<string | null>(null);
+  const rightPanelMessagesRef = useRef<HTMLDivElement>(null);
+  const rightPanelEndRef = useRef<HTMLDivElement>(null);
+  const focusMessagesRef = useRef<HTMLDivElement>(null);
+  const focusEndRef = useRef<HTMLDivElement>(null);
   const [threadEditorOpen, setThreadEditorOpen] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [leftPanelOpen, setLeftPanelOpen] = useState(false);
+  const [bottomPanelOpen, setBottomPanelOpen] = useState(false);
   const [threadEditorMode, setThreadEditorMode] = useState<'create' | 'edit'>('create');
   const [threadEditorDraft, setThreadEditorDraft] = useState<ThreadDraft>(DEFAULT_THREAD_DRAFT);
   const [threadEditorTargetId, setThreadEditorTargetId] = useState<string | null>(null);
@@ -123,7 +290,10 @@ export default function App() {
   const [nodePreviewModal, setNodePreviewModal] = useState<{ title: string; messages: ChatMessage[] } | null>(null);
   const [deleteMode, setDeleteMode] = useState<{ nodeId: string; parts: { user: boolean; assistant: boolean } } | null>(null);
   const [modelCache, setModelCache] = useState<ModelCache>(() => loadModelCache());
-  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsLoadingConfigId, setModelsLoadingConfigId] = useState<string | null>(null);
+  const settingsRef = useRef(settings);
+  const workspaceStoreRef = useRef(workspaceStore);
+  const previousWorkspaceIdRef = useRef(state.workspaceId);
   const viewportRef = useRef<HTMLDivElement>(null);
   const panGesture = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
   const pointerMap = useRef<Map<number, { x: number; y: number }>>(new Map());
@@ -134,44 +304,66 @@ export default function App() {
   const ctrlHeld = useRef(false);
   const [panMode, setPanMode] = useState<'idle' | 'ready' | 'panning'>('idle');
 
-  useEffect(() => { saveWorkspace(state); void apiSaveWorkspace(state.workspaceId, { state }); }, [state]);
-  useEffect(() => { /* profiles are saved to server on each mutation, not batch */ }, [settings]);
-  useEffect(() => saveModelCache(modelCache), [modelCache]);
-
-  // On mount: load profiles from server and merge into settings state.
-  // Also try to load workspace from server (server is source of truth).
   useEffect(() => {
-    apiListProfiles().then((profiles) => {
-      setSettings((current) => ({
-        ...current,
-        providerConfigs: profiles.map((p) => ({
-          id: p.id,
-          kind: p.kind,
-          label: p.label,
-          model: p.model,
-          baseUrl: p.baseUrl,
-          apiKey: '',
-          hasEncryptedApiKey: p.hasKey,
-        })),
-        activeProviderConfigId:
-          profiles.find((p) => p.id === current.activeProviderConfigId)
-            ? current.activeProviderConfigId
-            : (profiles[0]?.id ?? current.activeProviderConfigId),
-      }));
-    }).catch(() => { /* server not reachable; continue with local settings */ });
-
-    apiLoadWorkspace(loadWorkspace().workspaceId).then((serverWs) => {
-      if (serverWs && typeof serverWs === 'object' && 'state' in serverWs) {
-        setState((current) => {
-          const ws = serverWs as { state: LoomspaceState };
-          // Only replace if server version is newer
-          if ((ws.state?.version ?? 0) > current.version) return ws.state;
-          return current;
-        });
+    const applyTheme = () => {
+      const resolved = resolveThemeMode(themeMode);
+      document.documentElement.dataset.theme = resolved;
+      document.documentElement.style.colorScheme = resolved;
+      let meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+      if (!meta) {
+        meta = document.createElement('meta');
+        meta.name = 'theme-color';
+        document.head.appendChild(meta);
       }
-    }).catch(() => { /* ignore */ });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+      meta.content = resolved === 'light' ? '#f5f7fb' : '#070b17';
+    };
+    localStorage.setItem(THEME_MODE_KEY, themeMode);
+    applyTheme();
+    if (themeMode !== 'auto') return;
+    const media = window.matchMedia?.('(prefers-color-scheme: light)');
+    media?.addEventListener('change', applyTheme);
+    return () => media?.removeEventListener('change', applyTheme);
+  }, [themeMode]);
+
+  useEffect(() => {
+    workspaceStoreRef.current = workspaceStore;
+    const handle = window.setTimeout(() => saveWorkspaceStore(workspaceStore), WORKSPACE_SAVE_DEBOUNCE_MS);
+    return () => window.clearTimeout(handle);
+  }, [workspaceStore]);
+  useEffect(() => {
+    const flush = () => saveWorkspaceStore(workspaceStoreRef.current);
+    window.addEventListener('pagehide', flush);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      flush();
+    };
   }, []);
+  useEffect(() => {
+    settingsRef.current = settings;
+    saveSettings(settings);
+  }, [settings]);
+  useEffect(() => saveModelCache(modelCache), [modelCache]);
+  useEffect(() => {
+    const previousWorkspaceId = previousWorkspaceIdRef.current;
+    if (previousWorkspaceId === state.workspaceId) return;
+    previousWorkspaceIdRef.current = state.workspaceId;
+    setComposerStates({});
+    setContextLinkMode(null);
+    setContextLinkPointer(null);
+    setContextLinkSnapTarget(null);
+    setForkDraft(null);
+    setDeleteMode(null);
+    setNodePreviewModal(null);
+    setThreadEditorOpen(false);
+    setThreadEditorTargetId(null);
+    setThreadEditorDraft(DEFAULT_THREAD_DRAFT);
+    setProviderMenuOpen(false);
+    setRightPanelOpen(false);
+    setSettingsNotice(null);
+    setError(null);
+    setCopiedMessageId(null);
+    stopSpeaking();
+  }, [state.workspaceId]);
 
   useEffect(() => {
     const validConfigIds = new Set(settings.providerConfigs.map((config) => config.id));
@@ -228,22 +420,135 @@ export default function App() {
     return () => el.removeEventListener('wheel', block);
   }, []);
 
+  useEffect(() => {
+    const synth = window.speechSynthesis;
+    if (!synth) return;
+    const loadVoices = () => {
+      const voices = synth.getVoices();
+      setTtsVoices(voices);
+      return voices;
+    };
+    loadVoices();
+    const timers = [100, 500, 1500].map((delay) => window.setTimeout(loadVoices, delay));
+    synth.addEventListener?.('voiceschanged', loadVoices);
+    synth.onvoiceschanged = loadVoices;
+    return () => {
+      if (ttsQueueRef.current?.keepAlive) window.clearInterval(ttsQueueRef.current.keepAlive);
+      ttsQueueRef.current = null;
+      synth.cancel();
+      timers.forEach((timer) => window.clearTimeout(timer));
+      synth.removeEventListener?.('voiceschanged', loadVoices);
+      synth.onvoiceschanged = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem(TTS_SETTINGS_KEY, JSON.stringify(ttsSettings));
+  }, [ttsSettings]);
+
+  const workspaces = workspaceStore.workspaces;
+  const workspaceCount = workspaces.length;
+  const activeWorkspaceId = state.workspaceId;
   const metrics = useMemo(() => computeMetrics(state), [state]);
   const activeThread = state.threads.find((thread) => thread.id === state.selectedThreadId) ?? null;
   const activeNode =
     activeThread?.nodes.find((node) => node.id === state.selectedNodeId) ??
     (activeThread ? activeThread.nodes.find((node) => node.id === activeThread.activeNodeId) ?? null : null);
-  const activeNodeIsChat = activeNode?.kind === 'chat';
+  const composerKey = activeThread ? composerStateKey(activeThread.id, activeNode?.id ?? activeThread.activeNodeId) : null;
+  const composerState = composerKey ? composerStates[composerKey] ?? EMPTY_COMPOSER_STATE : EMPTY_COMPOSER_STATE;
+  const composerDraft = composerState.draft;
+  const composerAttachments = composerState.attachments;
   const activeProviderConfig =
     settings.providerConfigs.find((config) => config.id === settings.activeProviderConfigId) ?? settings.providerConfigs[0] ?? null;
   const settingsLockState = activeProviderConfig ? (activeProviderConfig.hasEncryptedApiKey ? (activeProviderConfig.apiKey.trim() ? 'unlocked' : 'locked') : 'none') : 'none';
 
-  // No auto-prompt for key unlock needed — keys live on the server
+  const settingsEditorConfig =
+    settings.providerConfigs.find((config) => config.id === settingsEditorConfigId) ?? activeProviderConfig;
+  const settingsEditorLockState = settingsEditorConfig
+    ? settingsEditorConfig.hasEncryptedApiKey
+      ? settingsEditorConfig.apiKey.trim()
+        ? 'unlocked'
+        : 'locked'
+      : 'none'
+    : 'none';
+  const hasConfiguredProvider = settings.providerConfigs.some(
+    (config) => config.model.trim() && (config.apiKey.trim() || config.hasEncryptedApiKey),
+  );
+  const onboardingStep =
+    onboardingState === 'dismissed' || state.threads.length > 0
+      ? null
+      : onboardingState === 'active' && !hasConfiguredProvider
+        ? 'provider'
+        : 'thread';
+  const onboardingVisible =
+    onboardingStep !== null &&
+    !focusMode &&
+    !passphraseModal &&
+    !aiSettingsModalOpen &&
+    !threadEditorOpen &&
+    !nodePreviewModal;
+
+  useEffect(() => {
+    if (activeProviderConfig?.hasEncryptedApiKey && !activeProviderConfig.apiKey.trim() && !passphraseModal) {
+      setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: activeProviderConfig.id });
+    }
+  }, [activeProviderConfig, passphraseModal]);
 
   const settingsModels = useMemo(
     () => modelsForConfig(modelCache, activeProviderConfig, activeProviderConfig?.model ?? ''),
     [modelCache, activeProviderConfig],
   );
+
+  const messageUsage = useMemo(() => {
+    const map = new Map<string, { input: number; output: number; model: string; cost: number }>();
+    if (!activeThread) return map;
+    for (const node of activeThread.nodes) {
+      if (node.kind !== 'chat' || !node.usage) continue;
+      const record = {
+        input: node.usage.inputTokens,
+        output: node.usage.outputTokens,
+        model: node.model,
+        cost: node.usage.estimatedCostUsd ?? 0,
+      };
+      for (const message of node.messages) map.set(message.id, record);
+    }
+    return map;
+  }, [activeThread]);
+  const settingsEditorModels = useMemo(
+    () => modelsForConfig(modelCache, settingsEditorConfig, settingsEditorConfig?.model ?? ''),
+    [modelCache, settingsEditorConfig],
+  );
+
+  useEffect(() => {
+    if (!forkDraft) return;
+    if (contextLinkMode?.intent !== 'fork' || contextLinkMode.sourceThreadId !== forkDraft.sourceThreadId) {
+      setForkDraft(null);
+      return;
+    }
+    if (forkDraft.selectedNodes !== contextLinkMode.selectedNodes) {
+      setForkDraft({ ...forkDraft, selectedNodes: contextLinkMode.selectedNodes });
+    }
+  }, [contextLinkMode, forkDraft]);
+
+  useEffect(() => {
+    if (contextLinkMode?.intent === 'link') return;
+    if (contextLinkPointer !== null) setContextLinkPointer(null);
+    if (contextLinkSnapTarget !== null) setContextLinkSnapTarget(null);
+  }, [contextLinkMode?.intent, contextLinkPointer, contextLinkSnapTarget]);
+
+  const forkSourceThread = forkDraft ? state.threads.find((thread) => thread.id === forkDraft.sourceThreadId) ?? null : null;
+  const forkSelectionMessageCount = forkSourceThread && forkDraft ? countSelectedMessages(forkSourceThread, forkDraft.selectedNodes) : 0;
+  const forkSelectionPieceCount = forkDraft?.selectedNodes.length ?? 0;
+
+  function clientToCanvasPoint(clientX: number, clientY: number) {
+    const viewport = viewportRef.current;
+    if (!viewport) return null;
+    const rect = viewport.getBoundingClientRect();
+    return {
+      x: (clientX - rect.left - state.panX) / state.zoom,
+      y: (clientY - rect.top - state.panY) / state.zoom,
+    };
+  }
 
   const canvasWidth = Math.max(
     CANVAS_MIN_WIDTH,
@@ -272,6 +577,29 @@ export default function App() {
 
   const canvasHeight = Math.max(CANVAS_MIN_HEIGHT, ...lanes.map((lane) => lane.height));
 
+  const contextLinkPreview = useMemo(() => {
+    if (contextLinkMode?.intent !== 'link') return null;
+    const sourceLane = lanes.find((lane) => lane.thread.id === contextLinkMode.sourceThreadId);
+    if (!sourceLane) return null;
+    const sourceEntry = sourceLane.nodes.find((entry) => entry.node.id === contextLinkMode.dotNodeId);
+    if (!sourceEntry) return null;
+    const sourceX = sourceLane.centerX + (contextLinkMode.side === 'right' ? 22 : -22);
+    const sourceY = sourceEntry.top + nodeHeight(sourceLane.thread, sourceEntry.node) / 2;
+    const target = contextLinkSnapTarget
+      ? (() => {
+          const lane = lanes.find((entry) => entry.thread.id === contextLinkSnapTarget.threadId);
+          const entry = lane?.nodes.find((item) => item.node.id === contextLinkSnapTarget.nodeId);
+          if (!lane || !entry) return null;
+          return {
+            x: lane.centerX,
+            y: entry.top + nodeHeight(lane.thread, entry.node) / 2,
+          };
+        })()
+      : contextLinkPointer;
+    if (!target) return null;
+    return { sourceX, sourceY, targetX: target.x, targetY: target.y, snapped: contextLinkSnapTarget !== null };
+  }, [contextLinkMode, contextLinkPointer, contextLinkSnapTarget, lanes]);
+
   useEffect(() => {
     clampViewport();
   }, [canvasWidth, canvasHeight]);
@@ -286,11 +614,32 @@ export default function App() {
     resetView();
   }, []);
 
+  function scrollChatToBottom(behavior: ScrollBehavior = 'auto') {
+    const messages = focusMode ? focusMessagesRef.current : rightPanelOpen ? rightPanelMessagesRef.current : null;
+    const anchor = focusMode ? focusEndRef.current : rightPanelOpen ? rightPanelEndRef.current : null;
+    if (!messages || !anchor) return;
+    const scroll = () => {
+      anchor.scrollIntoView({ block: 'end', behavior });
+      messages.scrollTop = messages.scrollHeight;
+    };
+    scroll();
+    requestAnimationFrame(() => {
+      scroll();
+      requestAnimationFrame(scroll);
+    });
+  }
+
   useEffect(() => {
-    if (miniChatOpen && miniChatMessagesRef.current) {
-      miniChatMessagesRef.current.scrollTop = miniChatMessagesRef.current.scrollHeight;
-    }
-  }, [activeThread?.context.length, miniChatOpen]);
+    scrollChatToBottom('smooth');
+  }, [activeThread?.context.length, rightPanelOpen, focusMode]);
+
+  useEffect(() => {
+    const messages = focusMode ? focusMessagesRef.current : rightPanelOpen ? rightPanelMessagesRef.current : null;
+    if (!messages || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => scrollChatToBottom());
+    for (const child of Array.from(messages.children)) observer.observe(child);
+    return () => observer.disconnect();
+  }, [activeThread?.id, activeThread?.context.length, rightPanelOpen, focusMode]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -298,13 +647,16 @@ export default function App() {
       if (!isEscape) return;
       e.preventDefault();
       e.stopPropagation();
-      if (aiSettingsModalOpen) { setAiSettingsModalOpen(false); return; }
+      if (passphraseModal && !passphraseModal.busy) { closePassphraseModal(); return; }
+      if (aiSettingsModalOpen) { closeAiSettings(); return; }
       if (threadEditorOpen) { closeThreadEditor(); return; }
       if (nodePreviewModal) { setNodePreviewModal(null); return; }
-      if (chatModalOpen) { setChatModalOpen(false); return; }
-      if (miniChatOpen) { setMiniChatOpen(false); return; }
+      if (onboardingVisible) { dismissOnboarding(); return; }
+      if (focusMode) { setFocusMode(false); return; }
+      if (navMenuOpen) { setNavMenuOpen(false); return; }
+      if (rightPanelOpen) { setRightPanelOpen(false); return; }
+      if (forkDraft) { cancelForkSelection(); return; }
       if (contextLinkMode) { setContextLinkMode(null); return; }
-      if (state.selectedThreadId) { deselectNode(); }
     };
     window.addEventListener('keydown', onKeyDown, true);
     document.addEventListener('keydown', onKeyDown, true);
@@ -312,7 +664,7 @@ export default function App() {
       window.removeEventListener('keydown', onKeyDown, true);
       document.removeEventListener('keydown', onKeyDown, true);
     };
-  }, [aiSettingsModalOpen, threadEditorOpen, nodePreviewModal, chatModalOpen, miniChatOpen, contextLinkMode, state.selectedThreadId]);
+  }, [passphraseModal, aiSettingsModalOpen, threadEditorOpen, nodePreviewModal, onboardingVisible, rightPanelOpen, contextLinkMode, forkDraft, focusMode, state.selectedThreadId]);
 
   function clampViewport(next?: Partial<Pick<LoomspaceState, 'panX' | 'panY' | 'zoom'>>) {
     const viewport = viewportRef.current;
@@ -328,10 +680,36 @@ export default function App() {
     setState((current) => ({ ...current, ...nextBounds, zoom }));
   }
 
+  function threadLaneHeight(thread: ThreadLane) {
+    let cursorTop = TOP_PAD;
+    for (const node of thread.nodes) {
+      cursorTop += nodeHeight(thread, node) + NODE_GAP;
+    }
+    return cursorTop + 72;
+  }
+
+  function focusCanvasOnThread(threads: ThreadLane[], thread: ThreadLane, threadIndex: number, zoom: number) {
+    const viewport = viewportRef.current;
+    const width = viewport?.clientWidth ?? window.innerWidth;
+    const height = viewport?.clientHeight ?? window.innerHeight;
+    const threadCount = threads.length;
+    const nextCanvasWidth = Math.max(
+      CANVAS_MIN_WIDTH,
+      LEFT_PAD * 2 + Math.max(0, threadCount - 1) * (LANE_WIDTH + LANE_GAP) + LANE_WIDTH,
+    );
+    const nextCanvasHeight = Math.max(CANVAS_MIN_HEIGHT, ...threads.map(threadLaneHeight));
+    const threadGroupWidth = threadCount * LANE_WIDTH + Math.max(0, threadCount - 1) * LANE_GAP;
+    const groupLeft = nextCanvasWidth / 2 - threadGroupWidth / 2;
+    const centerX = groupLeft + threadIndex * (LANE_WIDTH + LANE_GAP) + LANE_WIDTH / 2;
+    const centerY = threadLaneHeight(thread) / 2;
+    const panX = width / 2 - centerX * zoom;
+    const panY = height / 2 - centerY * zoom;
+    return boundedPan(panX, panY, zoom, width, height, nextCanvasWidth, nextCanvasHeight);
+  }
+
   function selectThread(threadId: string, nodeId?: string | null) {
-    setChatModalOpen(true);
-    setMiniChatOpen(false);
-    setSidebarOpen(false);
+    setRightPanelOpen(true);
+    setLeftPanelOpen(false);
     setState((current) => ({
       ...current,
       selectedThreadId: threadId,
@@ -354,7 +732,7 @@ export default function App() {
   }
 
   function openThreadEditor(mode: 'create' | 'edit', thread?: ThreadLane) {
-    setSidebarOpen(false);
+    setLeftPanelOpen(false);
     setThreadEditorMode(mode);
     setThreadEditorTargetId(thread?.id ?? null);
     setThreadEditorDraft(
@@ -374,16 +752,8 @@ export default function App() {
       sourceThreadColor: thread.color,
       selectedNodes: forkSelection,
     });
-    setContextLinkMode({ sourceThreadId: thread.id, dotNodeId: nodeId, selectedNodes: forkSelection, side });
-    setThreadEditorMode('create');
-    setThreadEditorTargetId(null);
-    setThreadEditorDraft({
-      title: `Fork of ${thread.title}`,
-      description: thread.description,
-    });
-    setChatModalOpen(false);
-    setMiniChatOpen(false);
-    setThreadEditorOpen(true);
+    setContextLinkMode({ intent: 'fork', sourceThreadId: thread.id, dotNodeId: nodeId, selectedNodes: forkSelection, side });
+    setRightPanelOpen(false);
   }
 
   function closeThreadEditor() {
@@ -421,42 +791,87 @@ export default function App() {
     return injectedMessages;
   }
 
+  function countSelectedMessages(sourceThread: ThreadLane, selectedNodes: ForkDraft['selectedNodes']) {
+    let count = 0;
+    for (const node of sourceThread.nodes) {
+      if (node.kind !== 'chat' && node.kind !== 'context') continue;
+      const selection = selectedNodes.find((s) => s.nodeId === node.id);
+      if (!selection) continue;
+      for (const msg of node.messages) {
+        if (msg.role === 'user' && selection.parts.user) count += 1;
+        if (msg.role === 'assistant' && selection.parts.assistant) count += 1;
+      }
+    }
+    return count;
+  }
+
+  function buildForkThread(baseThread: ThreadLane, sourceThread: ThreadLane, selectedNodes: ForkDraft['selectedNodes']) {
+    const injectedMessages = collectSelectedMessages(sourceThread, selectedNodes);
+    if (injectedMessages.length === 0) return baseThread;
+    const contextNode = createContextNode(sourceThread, selectedNodes.map((entry) => entry.nodeId), injectedMessages);
+    return appendContextInjection(baseThread, contextNode, injectedMessages);
+  }
+
+  function cancelForkSelection() {
+    setForkDraft(null);
+    setContextLinkMode(null);
+  }
+
+  function commitForkSelection() {
+    if (!forkDraft) return;
+    const sourceThread = state.threads.find((entry) => entry.id === forkDraft.sourceThreadId);
+    if (!sourceThread) {
+      cancelForkSelection();
+      return;
+    }
+    const selectedCount = countSelectedMessages(sourceThread, forkDraft.selectedNodes);
+    if (selectedCount === 0) return;
+    const baseThread = createThread(`Fork of ${forkDraft.sourceThreadTitle}`, sourceThread.description, state.threads.length);
+    const thread = buildForkThread(baseThread, sourceThread, forkDraft.selectedNodes);
+    setState((current) => {
+      const nextThreads = [...current.threads, thread];
+      return {
+        ...current,
+        version: current.version + 1,
+        threads: nextThreads,
+        selectedThreadId: thread.id,
+        selectedNodeId: thread.activeNodeId,
+        ...focusCanvasOnThread(nextThreads, thread, current.threads.length, current.zoom),
+      };
+    });
+    setRightPanelOpen(true);
+    cancelForkSelection();
+    setError(null);
+  }
+
   function submitThreadEditor() {
     const title = threadEditorDraft.title.trim() || 'Untitled thread';
-    const description = threadEditorDraft.description.trim() || 'A new lane for a project idea and its AI chat context.';
+    const description = threadEditorDraft.description.trim();
 
     if (threadEditorMode === 'create') {
-      const baseThread = createThread(title, description, state.threads.length, {
-        initialModel: activeProviderConfig?.model,
-      });
+      const baseThread = createThread(title, description, state.threads.length);
 
       const thread = forkDraft && forkDraft.selectedNodes.length > 0
         ? (() => {
             const sourceThread = state.threads.find((entry) => entry.id === forkDraft.sourceThreadId);
             if (!sourceThread) return baseThread;
-            const injectedMessages = collectSelectedMessages(sourceThread, forkDraft.selectedNodes);
-            if (injectedMessages.length === 0) return baseThread;
-            const contextNode = createContextNode(sourceThread, forkDraft.selectedNodes.map((entry) => entry.nodeId), injectedMessages);
-            return {
-              ...baseThread,
-              context: [...injectedMessages],
-              nodes: [baseThread.nodes[0], contextNode],
-              activeNodeId: baseThread.activeNodeId,
-            };
+            return buildForkThread(baseThread, sourceThread, forkDraft.selectedNodes);
           })()
         : baseThread;
 
-      setState((current) => ({
-        ...current,
-        version: current.version + 1,
-        threads: [...current.threads, thread],
-        selectedThreadId: thread.id,
-        selectedNodeId: thread.activeNodeId,
-        panX: current.threads.length === 0 ? current.panX : current.panX - 40,
-      }));
-      setChatModalOpen(false);
-      setMiniChatOpen(true);
-      setContextLinkMode(null);
+      setState((current) => {
+        const nextThreads = [...current.threads, thread];
+        return {
+          ...current,
+          version: current.version + 1,
+          threads: nextThreads,
+          selectedThreadId: thread.id,
+          selectedNodeId: thread.activeNodeId,
+          ...focusCanvasOnThread(nextThreads, thread, current.threads.length, current.zoom),
+        };
+      });
+      setRightPanelOpen(true);
+      cancelForkSelection();
     } else if (threadEditorTargetId) {
       setState((current) => ({
         ...current,
@@ -471,33 +886,69 @@ export default function App() {
     setError(null);
   }
 
-async function sendMessage(closeAfter = false) {
-    if (!activeThread || !activeNodeIsChat || (!composerDraft.trim() && composerAttachments.length === 0) || sending) return;
+  function ensureSendableConfig(verb: 'send' | 'retry'): AIProviderConfig | null {
     const activeConfig = activeProviderConfig;
     if (!activeConfig) {
-      setError('Pick an AI profile first.');
+      if (verb === 'send') {
+        setError('Add an AI profile to start chatting.');
+        openProviderSetup();
+      } else {
+        setError('Pick an AI profile first.');
+      }
+      return null;
+    }
+    if (!activeConfig.apiKey.trim()) {
+      const message = activeConfig.hasEncryptedApiKey ? 'Unlock this AI profile, or save a new encrypted key.' : 'Add your API key to this profile first.';
+      setError(message);
+      if (activeConfig.hasEncryptedApiKey) {
+        setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: activeConfig.id });
+      } else {
+        setProviderError(message);
+        openProviderSetup(activeConfig.id);
+      }
+      return null;
+    }
+    if (!activeConfig.model.trim()) {
+      const message = `Select a model for this AI profile before ${verb === 'send' ? 'sending' : 'retrying'}.`;
+      setError(message);
+      setProviderError(message);
+      openProviderSetup(activeConfig.id);
+      return null;
+    }
+    return activeConfig;
+  }
+
+
+  async function sendMessage(closeAfter = false) {
+    if (sending) return;
+    if (!activeThread) {
+      setError('Select or create a thread before sending.');
       return;
     }
-    if (!activeConfig.hasEncryptedApiKey) {
-      setError('No API key saved for this profile. Open AI Settings and save your key.');
-      setSaveKeyModal({ apiKey: '', busy: false, targetConfigId: activeConfig.id });
+    const activeConfig = ensureSendableConfig('send');
+    if (!activeConfig) return;
+
+    const sourceComposerKey = composerKey;
+    const composerStateForSend = composerState;
+    const userText = composerStateForSend.draft.trim();
+    if (!userText && composerStateForSend.attachments.length === 0) {
+      setError('Write a message or attach a file before sending.');
       return;
     }
 
-    const userText = composerDraft.trim();
-const userMessage: ChatMessage = {
+    const userMessage: ChatMessage = {
       id: `msg-${crypto.randomUUID()}`,
       role: 'user',
-      content: createMixedMessage(userText, composerAttachments),
-      text: userText // Keep for backward compatibility
+      content: createMixedMessage(userText, composerStateForSend.attachments),
+      text: userText,
     };
     const pendingChatNode = createChatNode('Thinking…', [userMessage], activeConfig.model, undefined, 'pending');
+    const pendingComposerKey = composerStateKey(activeThread.id, pendingChatNode.id);
 
     setSending(true);
     setError(null);
-    setComposerDraft('');
-if (closeAfter) setMiniChatOpen(false);
-    setComposerAttachments([]);
+    updateComposerState(sourceComposerKey, () => EMPTY_COMPOSER_STATE);
+    if (closeAfter) setRightPanelOpen(false);
     setState((current) => ({
       ...current,
       version: current.version + 1,
@@ -517,22 +968,12 @@ if (closeAfter) setMiniChatOpen(false);
     }));
 
     try {
-      const formattedMessages = [...activeThread.context, userMessage].map((m) =>
-        activeConfig.kind === 'anthropic' ? formatMessageForAnthropic(m) : formatMessageForOpenAI(m),
-      );
-      const { assistantText, usage: rawUsage } = await apiChat({
-        profileId: activeConfig.id,
-        messages: formattedMessages,
-        systemPrompt: SYSTEM_PROMPT(activeThread),
-      });
-      const usage: TokenUsage | undefined = rawUsage
-        ? { ...rawUsage, estimatedCostUsd: estimateCost(activeConfig.model, rawUsage) }
-        : undefined;
+      const { assistantText, usage } = await requestAiReply(activeConfig, activeThread, [...activeThread.context, userMessage]);
       const assistantMessage: ChatMessage = {
         id: `msg-${crypto.randomUUID().slice(0, 8)}`,
         role: 'assistant',
         content: createTextMessage(assistantText),
-        text: assistantText // Keep for backward compatibility
+        text: assistantText,
       };
 
       setState((current) => ({
@@ -560,7 +1001,6 @@ if (closeAfter) setMiniChatOpen(false);
         selectedThreadId: activeThread.id,
         selectedNodeId: pendingChatNode.id,
       }));
-      // mini chat already closed if closeAfter was set
     } catch (err) {
       setState((current) => ({
         ...current,
@@ -577,8 +1017,192 @@ if (closeAfter) setMiniChatOpen(false);
           };
         }),
       }));
+      updateComposerState(pendingComposerKey, () => composerStateForSend);
       setError(err instanceof Error ? err.message : 'AI request failed');
-      setComposerDraft(userText);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function copyText(value: string, messageId: string) {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopiedMessageId(messageId);
+      window.setTimeout(() => setCopiedMessageId((current) => (current === messageId ? null : current)), 1400);
+    } catch {
+      setError('Clipboard access was blocked by the browser.');
+    }
+  }
+
+  function stopSpeaking() {
+    const synth = window.speechSynthesis;
+    if (ttsQueueRef.current?.keepAlive) window.clearInterval(ttsQueueRef.current.keepAlive);
+    ttsQueueRef.current = null;
+    synth?.cancel();
+    setSpeakingMessageId(null);
+  }
+
+  function listenToMessage(messageId: string, value: string) {
+    const synth = window.speechSynthesis;
+    if (!synth || typeof SpeechSynthesisUtterance === 'undefined') {
+      setError('Speech playback is not available in this browser.');
+      return;
+    }
+    if (speakingMessageId === messageId) {
+      stopSpeaking();
+      return;
+    }
+    const spokenText = cleanTextForSpeech(value);
+    if (!spokenText) {
+      setError('No text to speak.');
+      return;
+    }
+
+    stopSpeaking();
+    const voices = synth.getVoices();
+    if (voices.length > 0 && ttsVoices.length === 0) setTtsVoices(voices);
+    const voice = voices.find((candidate) => candidate.voiceURI === ttsSettings.voiceURI)
+      ?? ttsVoices.find((candidate) => candidate.voiceURI === ttsSettings.voiceURI)
+      ?? voices.find((candidate) => candidate.default)
+      ?? ttsVoices.find((candidate) => candidate.default)
+      ?? null;
+    const chunks = splitTextForSpeech(spokenText);
+    ttsQueueRef.current = {
+      messageId,
+      chunks,
+      index: 0,
+      keepAlive: window.setInterval(() => {
+        if (!synth.paused) synth.resume();
+      }, 5000),
+    };
+    setSpeakingMessageId(messageId);
+
+    const speakNext = () => {
+      const queue = ttsQueueRef.current;
+      if (!queue || queue.messageId !== messageId) return;
+      const text = queue.chunks[queue.index++];
+      if (!text) {
+        stopSpeaking();
+        return;
+      }
+      const utterance = new SpeechSynthesisUtterance(text);
+      if (voice) {
+        try {
+          utterance.voice = voice;
+          utterance.lang = voice.lang;
+        } catch {
+          // Some browser engines reject stale/non-native voice objects; default voice is safer than failing playback.
+        }
+      }
+      utterance.rate = ttsSettings.rate;
+      utterance.onend = speakNext;
+      utterance.onerror = (event) => {
+        stopSpeaking();
+        setError(`Speech playback failed${event.error ? `: ${event.error}` : ''}.`);
+      };
+      try {
+        synth.speak(utterance);
+        synth.resume();
+      } catch (err) {
+        stopSpeaking();
+        setError(err instanceof Error ? err.message : 'Speech playback failed.');
+      }
+    };
+    speakNext();
+  }
+
+  async function retryAssistantMessage(messageId: string) {
+    if (!activeThread || sending) return;
+    const activeConfig = ensureSendableConfig('retry');
+    if (!activeConfig) return;
+
+    const assistantIndex = activeThread.context.findIndex((message) => message.id === messageId && message.role === 'assistant');
+    if (assistantIndex !== activeThread.context.length - 1) {
+      setError('Only the latest assistant response can be retried safely.');
+      return;
+    }
+    const sourceNode = activeThread.nodes.find((node): node is ThreadChatNode => node.kind === 'chat' && node.messages.some((message) => message.id === messageId));
+    const userMessage = sourceNode?.messages.find((message) => message.role === 'user') ?? [...activeThread.context.slice(0, assistantIndex)].reverse().find((message) => message.role === 'user');
+    if (!sourceNode || !userMessage) {
+      setError('Could not find the prompt for this response.');
+      return;
+    }
+
+    const requestMessages = activeThread.context.slice(0, assistantIndex);
+    setSending(true);
+    setError(null);
+    setState((current) => ({
+      ...current,
+      version: current.version + 1,
+      threads: current.threads.map((thread) =>
+        thread.id === activeThread.id
+          ? {
+              ...thread,
+              context: requestMessages,
+              nodes: thread.nodes.map((node) =>
+                node.id === sourceNode.id && node.kind === 'chat'
+                  ? { ...node, summary: 'Thinking…', messages: [userMessage], usage: undefined, status: 'pending' }
+                  : node,
+              ),
+              activeNodeId: sourceNode.id,
+            }
+          : thread,
+      ),
+      selectedThreadId: activeThread.id,
+      selectedNodeId: sourceNode.id,
+    }));
+
+    try {
+      const { assistantText, usage } = await requestAiReply(activeConfig, activeThread, requestMessages);
+      const assistantMessage: ChatMessage = {
+        id: messageId,
+        role: 'assistant',
+        content: createTextMessage(assistantText),
+        text: assistantText,
+      };
+      setState((current) => ({
+        ...current,
+        version: current.version + 1,
+        threads: current.threads.map((thread) =>
+          thread.id === activeThread.id
+            ? {
+                ...thread,
+                context: [...requestMessages, assistantMessage],
+                nodes: thread.nodes.map((node) =>
+                  node.id === sourceNode.id && node.kind === 'chat'
+                    ? {
+                        ...node,
+                        summary: summarize(`${getMessageText(userMessage) || userMessage.text || ''} → ${assistantText}`, 52),
+                        messages: [userMessage, assistantMessage],
+                        usage,
+                        status: 'unread',
+                      }
+                    : node,
+                ),
+                activeNodeId: sourceNode.id,
+              }
+            : thread,
+        ),
+        selectedThreadId: activeThread.id,
+        selectedNodeId: sourceNode.id,
+      }));
+    } catch (err) {
+      setState((current) => ({
+        ...current,
+        version: current.version + 1,
+        threads: current.threads.map((thread) =>
+          thread.id === activeThread.id
+            ? {
+                ...thread,
+                context: activeThread.context,
+                nodes: thread.nodes.map((node) =>
+                  node.id === sourceNode.id && node.kind === 'chat' ? { ...sourceNode, status: 'error' } : node,
+                ),
+              }
+            : thread,
+        ),
+      }));
+      setError(err instanceof Error ? err.message : 'AI retry failed');
     } finally {
       setSending(false);
     }
@@ -625,7 +1249,7 @@ if (closeAfter) setMiniChatOpen(false);
   function deselectNode() {
     setState((current) => ({ ...current, selectedThreadId: null, selectedNodeId: null }));
     setContextLinkMode(null);
-    setMiniChatOpen(false);
+    setRightPanelOpen(false);
     setDeleteMode(null);
   }
 
@@ -633,17 +1257,13 @@ if (closeAfter) setMiniChatOpen(false);
     setState((current) => {
       const remainingThreads = current.threads.filter((thread) => thread.id !== threadId);
       if (remainingThreads.length === 0) {
-        const fallbackThread = createThread(
-          'New thread',
-          'A new lane for a project idea and its AI chat context.',
-          0,
-          { initialModel: activeProviderConfig?.model ?? '' },
-        );
+        const fallbackThread = createThread('New thread', '', 0);
         return {
           ...current,
           threads: [fallbackThread],
           selectedThreadId: fallbackThread.id,
           selectedNodeId: fallbackThread.activeNodeId,
+          ...focusCanvasOnThread([fallbackThread], fallbackThread, 0, current.zoom),
         };
       }
 
@@ -663,9 +1283,11 @@ if (closeAfter) setMiniChatOpen(false);
       };
     });
 
+    clearComposerStatesForThread(threadId);
+
     setContextLinkMode((mode) => (mode?.sourceThreadId === threadId ? null : mode));
     setDeleteMode(null);
-    setMiniChatOpen(false);
+    setRightPanelOpen(false);
   }
 
   function enterDeleteMode(threadId: string, nodeId: string) {
@@ -712,7 +1334,7 @@ if (closeAfter) setMiniChatOpen(false);
               const remainingChatNodes = newNodes.filter((n): n is ThreadChatNode => n.kind === 'chat');
 
               if (remainingChatNodes.length === 0) {
-                const replacementChatNode = createChatNode('AI chat ready', [], node.model || '');
+                const replacementChatNode = createChatNode('', [], node.model || '');
                 const nodesWithReplacement = [...newNodes, replacementChatNode];
                 return {
                   ...thread,
@@ -759,15 +1381,12 @@ if (closeAfter) setMiniChatOpen(false);
     setDeleteMode(null);
   }
 
-  function enterContextLinkMode(thread: ThreadLane, nodeId: string, side: 'left' | 'right') {
-    const selectableNodes = thread.nodes.filter((n) => (n.kind === 'chat' && n.messages.length > 0) || n.kind === 'context');
-    const idx = selectableNodes.findIndex((n) => n.id === nodeId);
-    if (idx < 0) return;
-    const selectedNodes = selectableNodes.slice(0, idx + 1).map((n) => ({
-      nodeId: n.id,
-      parts: { user: true, assistant: true },
-    }));
-    setContextLinkMode({ sourceThreadId: thread.id, dotNodeId: nodeId, selectedNodes, side });
+  function enterContextLinkMode(thread: ThreadLane, nodeId: string, side: 'left' | 'right', anchor?: { clientX: number; clientY: number }) {
+    const selectedNodes = buildContextSelection(thread, nodeId);
+    if (!selectedNodes) return;
+    setContextLinkPointer(anchor ? clientToCanvasPoint(anchor.clientX, anchor.clientY) : null);
+    setContextLinkSnapTarget(null);
+    setContextLinkMode({ intent: 'link', sourceThreadId: thread.id, dotNodeId: nodeId, selectedNodes, side });
   }
 
   function toggleContextNode(nodeId: string) {
@@ -792,29 +1411,16 @@ if (closeAfter) setMiniChatOpen(false);
   }
 
   function injectContextTo(destThreadId: string) {
-    if (!contextLinkMode) return;
+    if (!contextLinkMode || contextLinkMode.intent !== 'link') return;
     const sourceThread = state.threads.find((t) => t.id === contextLinkMode.sourceThreadId);
     if (!sourceThread) return;
 
-    const injectedMessages: ChatMessage[] = [];
-    for (const node of sourceThread.nodes) {
-      if (node.kind !== 'chat' && node.kind !== 'context') continue;
-      const selection = contextLinkMode.selectedNodes.find((s) => s.nodeId === node.id);
-      if (!selection) continue;
-      for (const msg of node.messages) {
-        if (msg.role === 'user' && !selection.parts.user) continue;
-        if (msg.role === 'assistant' && !selection.parts.assistant) continue;
-        injectedMessages.push({
-          ...msg,
-          id: `injected-${crypto.randomUUID().slice(0, 8)}`,
-          injectedFromThreadId: sourceThread.id,
-          injectedFromColor: sourceThread.color,
-        });
-      }
-    }
+    const injectedMessages = collectSelectedMessages(sourceThread, contextLinkMode.selectedNodes);
 
     if (injectedMessages.length === 0) {
       setContextLinkMode(null);
+      setContextLinkPointer(null);
+      setContextLinkSnapTarget(null);
       return;
     }
 
@@ -831,74 +1437,240 @@ if (closeAfter) setMiniChatOpen(false);
     }));
 
     setContextLinkMode(null);
+    setContextLinkPointer(null);
+    setContextLinkSnapTarget(null);
   }
 
   function updateProviderConfig(configId: string, patch: Partial<AIProviderConfig>) {
+    setProviderError(null);
+    setSettingsNotice(null);
     setSettings((current) => ({
       ...current,
       providerConfigs: current.providerConfigs.map((config) => (config.id === configId ? { ...config, ...patch } : config)),
     }));
   }
 
-  function requestSaveKey() {
-    if (!activeProviderConfig) return;
-    setSaveKeyModal({ apiKey: '', busy: false, targetConfigId: activeProviderConfig.id });
+  function updateProviderParams(configId: string, patch: Partial<GenerationParams>) {
+    const config = settings.providerConfigs.find((entry) => entry.id === configId);
+    const next: GenerationParams = { ...(config?.params ?? {}), ...patch };
+    (Object.keys(next) as Array<keyof GenerationParams>).forEach((key) => {
+      if (next[key] === undefined) delete next[key];
+    });
+    updateProviderConfig(configId, { params: next });
+  }
+
+  function updateComposerState(key: string | null, updater: (current: ComposerState) => ComposerState) {
+    if (!key) return;
+    setComposerStates((current) => {
+      const nextState = updater(current[key] ?? EMPTY_COMPOSER_STATE);
+      if (nextState.draft.length === 0 && nextState.attachments.length === 0) {
+        if (!(key in current)) return current;
+        const next = { ...current };
+        delete next[key];
+        return next;
+      }
+      return { ...current, [key]: nextState };
+    });
+  }
+
+  function clearComposerStatesForThread(threadId: string) {
+    const prefix = `${threadId}::`;
+    setComposerStates((current) => {
+      let changed = false;
+      const next: Record<string, ComposerState> = {};
+      Object.entries(current).forEach(([key, value]) => {
+        if (key.startsWith(prefix)) {
+          changed = true;
+          return;
+        }
+        next[key] = value;
+      });
+      return changed ? next : current;
+    });
+  }
+
+  function requestSaveKey(configId: string) {
+    const targetConfig = settings.providerConfigs.find((config) => config.id === configId) ?? null;
+    const targetConfigId = targetConfig?.id ?? configId;
+    const candidate = targetConfig?.apiKey.trim() ?? '';
+    if (!candidate) {
+      if (targetConfig?.hasEncryptedApiKey) {
+        setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId });
+      } else {
+        setProviderError('Enter your API key first.');
+      }
+      return;
+    }
+    setError(null);
+    setPassphraseModal({ mode: 'encrypt', passphrase: '', busy: false, pendingKey: candidate, targetConfigId });
+  }
+
+  function deleteSavedKey(configId: string) {
+    const targetConfig = settings.providerConfigs.find((config) => config.id === configId) ?? null;
+    if (!targetConfig) return;
+    const confirmed = targetConfig.hasEncryptedApiKey ? window.confirm('Delete the saved encrypted key from this browser?') : true;
+    if (!confirmed) return;
+    clearProviderSecret(targetConfig.id);
+    updateProviderConfig(targetConfig.id, { apiKey: '', hasEncryptedApiKey: false });
+    setSettingsNotice('Saved key deleted from this browser.');
+    setProviderError(null);
     setError(null);
   }
 
-  async function deleteSavedKey() {
-    if (!activeProviderConfig) return;
-    const confirmed = window.confirm('Delete the saved API key from the server?');
-    if (!confirmed) return;
-    try {
-      await apiClearKey(activeProviderConfig.id);
-      updateProviderConfig(activeProviderConfig.id, { hasEncryptedApiKey: false });
-      setSettingsNotice('API key deleted from server.');
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete key.');
-    }
-  }
-
-  async function submitSaveKeyModal() {
-    if (!saveKeyModal) return;
-    const { apiKey, targetConfigId } = saveKeyModal;
-    if (!apiKey.trim()) {
-      setError('Enter your API key.');
+  async function submitPassphraseModal() {
+    if (!passphraseModal) return;
+    const passphrase = passphraseModal.passphrase;
+    if (!passphrase.trim()) {
+      const message = 'Enter a passphrase.';
+      setError(message);
+      setProviderError(message);
       return;
     }
-    setSaveKeyModal({ ...saveKeyModal, busy: true });
+    const configId = passphraseModal.targetConfigId ?? activeProviderConfig?.id;
+    if (!configId) return;
+    setPassphraseModal({ ...passphraseModal, busy: true });
     setError(null);
     setSavingSettings(true);
     try {
-      await apiStoreKey(targetConfigId, apiKey.trim());
-      updateProviderConfig(targetConfigId, { hasEncryptedApiKey: true });
-      setSettings((current) => ({ ...current, activeProviderConfigId: targetConfigId }));
-      setSettingsNotice('API key saved to server.');
-      setSaveKeyModal(null);
+      if (passphraseModal.mode === 'unlock') {
+        const apiKey = await unlockProviderSecret(configId, passphrase);
+        const targetConfig = settingsRef.current.providerConfigs.find((config) => config.id === configId) ?? null;
+        updateProviderConfig(configId, { apiKey, hasEncryptedApiKey: true });
+        setSettingsNotice('Key unlocked — loaded in memory for this session.');
+        if (targetConfig) {
+          await fetchModelsForConfig({ ...targetConfig, apiKey, hasEncryptedApiKey: true }, { requireKey: false, updateSelectedModel: true });
+        }
+      } else {
+        const keyToSave = passphraseModal.pendingKey?.trim() ?? settings.providerConfigs.find((config) => config.id === configId)?.apiKey.trim() ?? '';
+        if (!keyToSave) throw new Error('No key to save.');
+        await saveProviderSecret(configId, keyToSave, passphrase);
+        const targetConfig = settingsRef.current.providerConfigs.find((config) => config.id === configId) ?? null;
+        updateProviderConfig(configId, { apiKey: keyToSave, hasEncryptedApiKey: true });
+        setSettingsNotice('Key encrypted and saved. Loaded in memory for this session.');
+        if (targetConfig) {
+          await fetchModelsForConfig({ ...targetConfig, apiKey: keyToSave, hasEncryptedApiKey: true }, { requireKey: false, updateSelectedModel: true });
+        }
+      }
+      setPassphraseModal(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save key.');
-      setSaveKeyModal((current) => (current ? { ...current, busy: false } : current));
+      const message = err instanceof Error ? err.message : 'Passphrase action failed.';
+      setError(message);
+      setProviderError(message);
+      setPassphraseModal((current) => (current ? { ...current, busy: false } : current));
     } finally {
       setSavingSettings(false);
     }
   }
 
-  function closeSaveKeyModal() {
-    setSaveKeyModal(null);
+  function closePassphraseModal() {
+    setPassphraseModal(null);
+  }
+  function dismissOnboarding() {
+    setOnboardingState('dismissed');
+    try {
+      sessionStorage.setItem(ONBOARDING_SESSION_KEY, '1');
+    } catch {
+      // Ignore storage failures; dismissal still applies until refresh.
+    }
+  }
+
+  function openWorkspaceManager() {
+    setWorkspaceDraftTitle('');
+    setNavMenuOpen(false);
+    setWorkspaceManagerOpen(true);
+  }
+
+  function closeWorkspaceManager() {
+    setWorkspaceDraftTitle('');
+    setWorkspaceManagerOpen(false);
+  }
+
+  function closeWorkspaceManagerAfterAction() {
+    window.setTimeout(() => {
+      setWorkspaceDraftTitle('');
+      setWorkspaceManagerOpen(false);
+    }, 0);
+  }
+
+  function activateWorkspace(workspaceId: string) {
+    if (workspaceId === state.workspaceId) {
+      closeWorkspaceManagerAfterAction();
+      return;
+    }
+    setWorkspaceStore((current) =>
+      current.workspaces.some((entry) => entry.id === workspaceId)
+        ? { ...current, activeWorkspaceId: workspaceId }
+        : current,
+    );
+    closeWorkspaceManagerAfterAction();
+  }
+
+  function createWorkspaceFromManager() {
+    const workspace = createWorkspaceEntry(workspaceDraftTitle);
+    setWorkspaceStore((current) => ({
+      activeWorkspaceId: workspace.id,
+      workspaces: [...current.workspaces, workspace],
+    }));
+    closeWorkspaceManagerAfterAction();
+  }
+
+  function deleteWorkspace(workspaceId: string) {
+    if (workspaceCount <= 1) return;
+    const target = workspaces.find((entry) => entry.id === workspaceId);
+    if (!target) return;
+    const title = target.state.title.trim() || 'Untitled workspace';
+    const confirmed = window.confirm(
+      `Delete workspace "${title}"?\n\nThis removes its threads, messages, and canvas layout from this browser. Your AI provider profiles and remaining workspaces stay intact.`,
+    );
+    if (!confirmed) return;
+    setWorkspaceStore((current) => {
+      const index = current.workspaces.findIndex((entry) => entry.id === workspaceId);
+      if (index === -1 || current.workspaces.length <= 1) return current;
+      const remaining = current.workspaces.filter((entry) => entry.id !== workspaceId);
+      const nextActiveWorkspaceId = current.activeWorkspaceId === workspaceId
+        ? remaining[Math.min(index, remaining.length - 1)].id
+        : current.activeWorkspaceId;
+      return {
+        activeWorkspaceId: nextActiveWorkspaceId,
+        workspaces: remaining,
+      };
+    });
+  }
+
+  function closeAiSettings() {
+    setAiSettingsModalOpen(false);
+    setSettingsEditorConfigId(null);
+  }
+
+  function confirmResetWorkspace() {
+    const title = state.title.trim() || 'Untitled workspace';
+    const confirmed = window.confirm(
+      `Reset workspace "${title}"?\n\nThis clears its threads, messages, nodes, and canvas layout in this browser. Your AI provider profiles and other workspaces will be kept.`,
+    );
+    if (!confirmed) return;
+    resetWorkspace();
   }
 
   function resetWorkspace() {
-    localStorage.removeItem('loomspace.workspace.v7');
-    setState(loadWorkspace());
-    setSettings(loadSettings());
-    setComposerDraft('');
-    setSaveKeyModal(null);
+    setState(resetWorkspaceState(state));
+    setComposerStates({});
+    setPassphraseModal(null);
     setSettingsNotice(null);
+    setProviderError(null);
     setError(null);
-    setModelCache({});
-    setChatModalOpen(false);
     setThreadEditorOpen(false);
+    setThreadEditorTargetId(null);
+    setThreadEditorDraft(DEFAULT_THREAD_DRAFT);
+    setRightPanelOpen(false);
+    setProviderMenuOpen(false);
+    setContextLinkMode(null);
+    setContextLinkPointer(null);
+    setContextLinkSnapTarget(null);
+    setForkDraft(null);
+    setDeleteMode(null);
+    setNodePreviewModal(null);
+    setCopiedMessageId(null);
+    stopSpeaking();
   }
 
   function changeSettingsProvider(providerConfigId: string) {
@@ -915,45 +1687,155 @@ if (closeAfter) setMiniChatOpen(false);
     }));
   }
 
-  async function deleteProfile(configId: string) {
-    const target = settings.providerConfigs.find((config) => config.id === configId);
-    if (!target) return;
-    const confirmed = window.confirm(`Delete AI profile "${target.label}"? Its saved key will also be removed from the server.`);
-    if (!confirmed) return;
-    try {
-      await apiDeleteProfile(configId);
-    } catch { /* best-effort */ }
-    const next = deleteProviderConfig(settings, configId);
-    setSettings(next);
+  function addProviderProfile() {
+    const next = createProviderConfig('openai');
+    setSettings((current) => ({
+      ...current,
+      providerConfigs: [...current.providerConfigs, next],
+    }));
+    setSettingsEditorConfigId(next.id);
+    setLeftPanelOpen(false);
+    setProviderMenuOpen(false);
+    setAiSettingsModalOpen(true);
+    setSettingsNotice(null);
+    setProviderError(null);
+  }
+
+  function openProviderSetup(configId?: string) {
+    setLeftPanelOpen(false);
+    setProviderMenuOpen(false);
+    if (settings.providerConfigs.length === 0) {
+      addProviderProfile();
+      return;
+    }
+    setSettingsEditorConfigId(configId ?? activeProviderConfig?.id ?? settings.providerConfigs[0]?.id ?? null);
+    setAiSettingsModalOpen(true);
+  }
+
+  function removeProfile(target: AIProviderConfig) {
+    setSettings(deleteProviderConfig(settings, target.id));
     setModelCache((current) => {
       const copy = { ...current };
-      delete copy[configId];
+      delete copy[target.id];
       return copy;
     });
     setSettingsNotice(`Deleted AI profile "${target.label}".`);
+    setProviderError(null);
     setError(null);
+  }
+
+  function deleteProfile(configId: string) {
+    const target = settings.providerConfigs.find((config) => config.id === configId);
+    if (!target) return;
+    const confirmed = window.confirm(`Delete AI profile "${target.label}"? Its saved key will be removed from this browser.`);
+    if (!confirmed) return;
+    removeProfile(target);
+  }
+
+  async function fetchModelsForConfig(
+    config: AIProviderConfig,
+    options: { requireKey?: boolean; updateSelectedModel?: boolean } = {},
+  ) {
+    if (!config.apiKey.trim()) {
+      if (options.requireKey !== false) {
+        const message = config.hasEncryptedApiKey ? 'Unlock this provider config first so we can list models.' : 'Add your API key to list models.';
+        setProviderError(message);
+        if (config.hasEncryptedApiKey) {
+          setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: config.id });
+        }
+      }
+      return false;
+    }
+
+    setModelsLoadingConfigId(config.id);
+    setProviderError(null);
+    setSettingsNotice(null);
+    try {
+      const ids = await fetchProviderModels(config);
+      const currentConfig = settingsRef.current.providerConfigs.find((entry) => entry.id === config.id) ?? null;
+      if (!currentConfig || !sameProviderModelSource(currentConfig, config)) return false;
+
+      const providerKey = providerModelCacheKey(config);
+      const sourceConfigIds = settingsRef.current.providerConfigs
+        .filter((entry) => sameProviderModelSource(entry, config))
+        .map((entry) => entry.id);
+
+      setModelCache((current) => {
+        const next = { ...current };
+        for (const id of sourceConfigIds) delete next[id];
+        delete next[providerKey];
+        if (ids.length > 0) {
+          next[config.id] = ids;
+          next[providerKey] = ids;
+        }
+        return next;
+      });
+
+      if (options.updateSelectedModel !== false) {
+        setSettings((current) => {
+          let changed = false;
+          const providerConfigs = current.providerConfigs.map((entry) => {
+            if (!sameProviderModelSource(entry, config)) return entry;
+            if (ids.length === 0) {
+              if (!entry.model) return entry;
+              changed = true;
+              return { ...entry, model: '' };
+            }
+            if (ids.includes(entry.model)) return entry;
+            changed = true;
+            return { ...entry, model: ids[0] };
+          });
+          return changed ? { ...current, providerConfigs } : current;
+        });
+      }
+
+      setSettingsNotice(ids.length === 0 ? `No models returned for ${config.label}.` : `Loaded ${ids.length} models for ${config.label}.`);
+      return true;
+    } catch (err) {
+      setProviderError(err instanceof Error ? err.message : `Failed to list models for ${config.label}`);
+      return false;
+    } finally {
+      setModelsLoadingConfigId((current) => (current === config.id ? null : current));
+    }
   }
 
   async function refreshModels(providerConfigId: string) {
     const config = settings.providerConfigs.find((entry) => entry.id === providerConfigId);
     if (!config) return;
-    if (!config.hasEncryptedApiKey) {
-      setError('Save an API key for this profile first.');
-      setSaveKeyModal({ apiKey: '', busy: false, targetConfigId: config.id });
-      return;
+    await fetchModelsForConfig(config, { requireKey: true, updateSelectedModel: true });
+  }
+
+  useEffect(() => {
+    try { localStorage.setItem(PANEL_SIZE_KEY, JSON.stringify(panelSizes)); } catch { /* storage may be unavailable */ }
+  }, [panelSizes]);
+
+  function beginPanelResize(kind: 'left' | 'right' | 'bottom', event: PointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    if (kind === 'right' && rightPanelMaximized) setRightPanelMaximized(false);
+    panelDragRef.current = { kind, origin: kind === 'bottom' ? event.clientY : event.clientX, size: panelSizes[kind] };
+    setPanelResizing(true);
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function movePanelResize(event: PointerEvent<HTMLDivElement>) {
+    const drag = panelDragRef.current;
+    if (!drag) return;
+    if (drag.kind === 'left') {
+      const max = maxSideWidth(rightPanelOpen && !rightPanelMaximized ? panelSizes.right : 0);
+      setPanelSizes((sizes) => ({ ...sizes, left: clamp(drag.size + (event.clientX - drag.origin), MIN_PANEL_W, max) }));
+    } else if (drag.kind === 'right') {
+      const max = maxSideWidth(leftPanelOpen ? panelSizes.left : 0);
+      setPanelSizes((sizes) => ({ ...sizes, right: clamp(drag.size + (drag.origin - event.clientX), MIN_PANEL_W, max) }));
+    } else {
+      setPanelSizes((sizes) => ({ ...sizes, bottom: clamp(drag.size + (drag.origin - event.clientY), MIN_BOTTOM_H, MAX_BOTTOM_H) }));
     }
-    setModelsLoading(true);
-    setError(null);
-    try {
-      const ids = await apiFetchModels(providerConfigId);
-      const providerKey = providerModelCacheKey(config);
-      setModelCache((current) => ({ ...current, [providerConfigId]: ids, [providerKey]: ids }));
-      setSettingsNotice(`Loaded ${ids.length} models for ${config.label}.`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : `Failed to list models for ${config.label}`);
-    } finally {
-      setModelsLoading(false);
-    }
+  }
+
+  function endPanelResize(event: PointerEvent<HTMLDivElement>) {
+    if (!panelDragRef.current) return;
+    panelDragRef.current = null;
+    setPanelResizing(false);
+    try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* capture may already be gone */ }
   }
 
   function beginPan(event: PointerEvent<HTMLDivElement>) {
@@ -984,6 +1866,20 @@ if (closeAfter) setMiniChatOpen(false);
 
   function movePan(event: PointerEvent<HTMLDivElement>) {
     pointerMap.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+
+    if (contextLinkMode?.intent === 'link') {
+      const pointer = clientToCanvasPoint(event.clientX, event.clientY);
+      if (pointer) setContextLinkPointer(pointer);
+      const target = event.target instanceof Element ? event.target.closest('[data-thread-id][data-node-id]') : null;
+      if (target instanceof HTMLElement) {
+        const threadId = target.dataset.threadId;
+        const nodeId = target.dataset.nodeId;
+        if (threadId && nodeId && threadId !== contextLinkMode.sourceThreadId) setContextLinkSnapTarget({ threadId, nodeId });
+        else setContextLinkSnapTarget(null);
+      } else {
+        setContextLinkSnapTarget(null);
+      }
+    }
 
     if (pinchState.current && pointerMap.current.size === 2) {
       const [p1, p2] = [...pointerMap.current.values()];
@@ -1089,47 +1985,584 @@ if (closeAfter) setMiniChatOpen(false);
   }
 
   const selectedThreadUsage = activeThread ? summarizeThreadUsage(activeThread) : null;
-  const remainingContext = activeThread && selectedThreadUsage && activeProviderConfig
+  const remainingContext = activeThread && selectedThreadUsage && activeProviderConfig?.model.trim()
     ? Math.max(getModelWindow(activeProviderConfig.model) - selectedThreadUsage.totalTokens, 0)
     : 0;
+  const settingsEditorModelsLoading = settingsEditorConfig ? modelsLoadingConfigId === settingsEditorConfig.id : false;
+  const settingsEditorHasCachedModels = settingsEditorConfig ? Boolean(modelCache[settingsEditorConfig.id] ?? modelCache[providerModelCacheKey(settingsEditorConfig)]) : false;
+
+  const renderNodeFooter = (title: string, messages: ChatMessage[]) => (
+    <div className="node-footer">
+      {messages.length > 0 ? (
+        <button
+          type="button"
+          className="node-expand-toggle"
+          onClick={(e) => {
+            e.stopPropagation();
+            if (e.detail > 1) return;
+            if (readMoreTimerRef.current) window.clearTimeout(readMoreTimerRef.current);
+            const openedAt = Date.now();
+            readMoreTimerRef.current = window.setTimeout(() => {
+              readMoreTimerRef.current = null;
+              if (Date.now() < suppressReadMoreUntil.current || suppressReadMoreUntil.current > openedAt) return;
+              setNodePreviewModal({ title, messages });
+            }, 320);
+          }}
+          onDoubleClick={(e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            suppressReadMoreUntil.current = Date.now() + 400;
+            if (readMoreTimerRef.current) {
+              window.clearTimeout(readMoreTimerRef.current);
+              readMoreTimerRef.current = null;
+            }
+          }}
+        >
+          Read more
+        </button>
+      ) : null}
+    </div>
+  );
+
+  const renderNodeDeleteCorner = (thread: ThreadLane, node: ThreadNode, isSelected: boolean) =>
+    isSelected && !contextLinkMode ? (
+      <button
+        type="button"
+        className="node-delete-corner"
+        aria-label="Delete node"
+        title="Delete node"
+        onClick={(e) => { e.stopPropagation(); enterDeleteMode(thread.id, node.id); }}
+      >
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 3 14 13 14 13 6"/><line x1="1" y1="3" x2="15" y2="3"/><line x1="7" y1="7" x2="7" y2="11"/></svg>
+      </button>
+    ) : null;
+
+  const renderContextSelectOverlay = (nodeId: string, ctxPart: { parts: { user: boolean; assistant: boolean } } | null) =>
+    ctxPart ? (
+      <div className="context-select-overlay" onClick={(e) => e.stopPropagation()}>
+        <button type="button" className={`context-select-half user ${ctxPart.parts.user ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(nodeId, 'user'); }}>
+          <span>User prompt</span>
+          <span className="context-select-check">{ctxPart.parts.user ? '✓' : '○'}</span>
+        </button>
+        <button type="button" className={`context-select-half assistant ${ctxPart.parts.assistant ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(nodeId, 'assistant'); }}>
+          <span>Asst response</span>
+          <span className="context-select-check">{ctxPart.parts.assistant ? '✓' : '○'}</span>
+        </button>
+      </div>
+    ) : null;
+
+  const renderDeleteOverlay = (thread: ThreadLane, nodeId: string) =>
+    deleteMode && deleteMode.nodeId === nodeId ? (
+      <div className="delete-select-overlay" onClick={(e) => e.stopPropagation()}>
+        {deleteMode.parts.user && (
+          <button type="button" className="delete-select-half user active" onClick={(e) => { e.stopPropagation(); toggleDeletePart('user'); }}>
+            <span>User prompt</span>
+            <span className="delete-select-check">✓</span>
+          </button>
+        )}
+        {deleteMode.parts.assistant && (
+          <button type="button" className="delete-select-half assistant active" onClick={(e) => { e.stopPropagation(); toggleDeletePart('assistant'); }}>
+            <span>Asst response</span>
+            <span className="delete-select-check">✓</span>
+          </button>
+        )}
+        <button type="button" className="delete-confirm-btn" onClick={(e) => { e.stopPropagation(); confirmDeleteNode(thread.id); }}>
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 3 14 13 14 13 6"/><line x1="1" y1="3" x2="15" y2="3"/><line x1="7" y1="7" x2="7" y2="11"/></svg>
+          Delete
+        </button>
+      </div>
+    ) : null;
+
+  const renderActionDots = (thread: ThreadLane, node: ThreadNode, isLast: boolean) => {
+    const handleSideDot = (side: 'left' | 'right') => (e: React.MouseEvent) => {
+      e.stopPropagation();
+      if (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id && contextLinkMode.side === side) {
+        if (contextLinkMode.selectedNodes.length <= 1) setContextLinkMode(null);
+        else setContextLinkMode({ ...contextLinkMode, selectedNodes: [{ nodeId: node.id, parts: { user: true, assistant: true } }] });
+      } else {
+        enterContextLinkMode(thread, node.id, side, { clientX: e.clientX, clientY: e.clientY });
+      }
+    };
+    const handleForkDot = (side: 'left' | 'right') => (e: React.MouseEvent) => {
+      e.stopPropagation();
+      openForkThreadEditor(thread, node.id, side);
+    };
+    return (
+      <>
+        <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: -36 }} />
+        <div className="action-dot-group action-left" style={{ top: 0, left: -52, height: CHAT_HEIGHT }}>
+          <button type="button" className="action-dot" aria-label="Inject context left" onClick={handleSideDot('left')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M7 9l-1 1a3 3 0 0 1-4.24-4.24l2-2a3 3 0 0 1 4.24 4.24"/><path d="M9 7l1-1a3 3 0 0 1 4.24 4.24l-2 2a3 3 0 0 1-4.24-4.24"/></svg><span>Link</span></button>
+          <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDot('left')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="4" cy="3" r="1.5"/><circle cx="4" cy="13" r="1.5"/><circle cx="12" cy="8" r="1.5"/><path d="M5.5 3h2a2 2 0 0 1 2 2v1.5"/><path d="M5.5 13h2a2 2 0 0 0 2-2V9.5"/></svg><span>Fork</span></button>
+        </div>
+        <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: NODE_WIDTH }} />
+        <div className="action-dot-group action-right" style={{ top: 0, left: NODE_WIDTH + 10, height: CHAT_HEIGHT }}>
+          <button type="button" className="action-dot" aria-label="Inject context right" onClick={handleSideDot('right')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M7 9l-1 1a3 3 0 0 1-4.24-4.24l2-2a3 3 0 0 1 4.24 4.24"/><path d="M9 7l1-1a3 3 0 0 1 4.24 4.24l-2 2a3 3 0 0 1-4.24-4.24"/></svg><span>Link</span></button>
+          <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDot('right')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="4" cy="3" r="1.5"/><circle cx="4" cy="13" r="1.5"/><circle cx="12" cy="8" r="1.5"/><path d="M5.5 3h2a2 2 0 0 1 2 2v1.5"/><path d="M5.5 13h2a2 2 0 0 0 2-2V9.5"/></svg><span>Fork</span></button>
+        </div>
+        {isLast && (<>
+          <div className="action-line-v" style={{ top: CHAT_HEIGHT, left: NODE_WIDTH / 2 }} />
+          <button type="button" className="action-node-ghost" style={{ top: CHAT_HEIGHT + 36, left: 0 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setRightPanelOpen(true); }}>
+            <span>Open chat</span>
+          </button>
+        </>)}
+      </>
+    );
+  };
+
+  const renderChatMessage = (message: ChatMessage, isLatestAssistant: boolean) => {
+    const usage = messageUsage.get(message.id);
+    const messageText = getMessageText(message) || message.text || '';
+    return (
+      <article
+        key={message.id}
+        className={`bubble chat-message ${message.role} ${message.injectedFromThreadId ? 'injected' : ''}`}
+        style={message.injectedFromColor ? {
+          '--inject-bg': hexToRgba(message.injectedFromColor, 0.07),
+          '--inject-border': hexToRgba(message.injectedFromColor, 0.3),
+        } as React.CSSProperties : undefined}
+      >
+        <div className="chat-message-topline">
+          <strong>{message.role === 'assistant' ? 'AI' : message.role}</strong>
+          <div className="chat-message-actions">
+            <button type="button" onClick={() => copyText(messageText, message.id)} aria-label="Copy message">{copiedMessageId === message.id ? 'Copied' : 'Copy'}</button>
+            <button type="button" onClick={() => listenToMessage(message.id, messageText)} aria-label={speakingMessageId === message.id ? 'Stop reading message' : 'Read message aloud'}>{speakingMessageId === message.id ? 'Stop' : 'Listen'}</button>
+            {isLatestAssistant ? <button type="button" onClick={() => retryAssistantMessage(message.id)} disabled={sending} aria-label="Retry response">Retry</button> : null}
+          </div>
+        </div>
+        <FormattedMessage text={messageText} rich={message.role === 'assistant'} />
+        {hasAttachments(message) && (
+          <div className="message-attachments">
+            {getAttachmentsByType(message, 'image').map(att => (
+              <img key={att.id} src={att.preview} alt={att.filename} className="message-image" />
+            ))}
+            {getAttachmentsByType(message, 'document').map(att => (
+              <div key={att.id} className="message-document">📄 {att.filename}</div>
+            ))}
+          </div>
+        )}
+        {usage ? (
+          <div className="bubble-meta">
+            {message.role === 'assistant'
+              ? `${usage.output.toLocaleString()} tokens out · ${usage.model}${usage.cost ? ` · $${usage.cost.toFixed(4)}` : ''}`
+              : `${usage.input.toLocaleString()} tokens in`}
+          </div>
+        ) : null}
+      </article>
+    );
+  };
+
+  const renderComposer = (opts: { fileInputId: string; placeholder: string; onEscape: () => void; autoFocus?: boolean }) => (
+    <div className="mini-chat-composer">
+      <textarea
+        autoFocus={opts.autoFocus}
+        value={composerDraft}
+        onChange={(e) => updateComposerState(composerKey, (current) => ({ ...current, draft: e.target.value }))}
+        placeholder={opts.placeholder}
+        rows={3}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') { e.preventDefault(); opts.onEscape(); return; }
+          if (e.key !== 'Enter') return;
+          if (e.shiftKey) return;
+          e.preventDefault();
+          if (e.ctrlKey || e.metaKey) { sendMessage(true); } else { sendMessage(); }
+        }}
+      />
+      {composerAttachments.length > 0 && (
+        <div className="composer-attachments">
+          {composerAttachments.map(att => (
+            <div key={att.id} className="attachment-preview">
+              {att.type === 'image' ? (
+                <img src={att.preview} alt={att.filename} className="attachment-thumbnail" />
+              ) : (
+                <div className="document-preview">📄 {att.filename}</div>
+              )}
+              <button onClick={() => updateComposerState(composerKey, (current) => ({ ...current, attachments: current.attachments.filter((attachment) => attachment.id !== att.id) }))} className="remove-attachment">×</button>
+            </div>
+          ))}
+        </div>
+      )}
+      {settingsLockState === 'locked' ? <p className="muted">Unlock the active AI profile to send a message.</p> : null}
+      {error ? <p className="error">{error}</p> : null}
+      <div className="mini-chat-actions">
+        <input
+          type="file"
+          id={opts.fileInputId}
+          multiple
+          accept="image/*,application/pdf,text/plain,text/markdown"
+          onChange={async (e) => {
+            if (!e.target.files) return;
+            const newAttachments: MediaAttachment[] = [];
+            const errors: string[] = [];
+            for (const file of Array.from(e.target.files)) {
+              const validation = validateFile(file);
+              if (!validation.valid) {
+                errors.push(`${file.name}: ${validation.error}`);
+                continue;
+              }
+              if (file.type === 'image/png' || file.type === 'image/jpeg') {
+                const byteCheck = await verifyImageBytes(file);
+                if (!byteCheck.valid) {
+                  errors.push(byteCheck.error!);
+                  continue;
+                }
+              }
+              try {
+                const attachment = await processFile(file);
+                newAttachments.push(attachment);
+              } catch {
+                errors.push(`Failed to process ${file.name}`);
+              }
+            }
+            if (errors.length > 0) setError(errors.join('\n'));
+            if (newAttachments.length > 0) updateComposerState(composerKey, (current) => ({ ...current, attachments: [...current.attachments, ...newAttachments] }));
+            e.target.value = '';
+          }}
+          style={{ display: 'none' }}
+        />
+        <label htmlFor={opts.fileInputId} className="file-upload-button mini-chat-attach">📎</label>
+        <button
+          className="mini-chat-send"
+          onClick={() => sendMessage()}
+          disabled={sending}
+        >
+          {sending ? 'Thinking…' : !activeProviderConfig ? 'Add AI profile' : settingsLockState === 'locked' ? 'Unlock to send' : 'Send'}
+        </button>
+      </div>
+    </div>
+  );
+
+  function focusNewThread() {
+    const baseThread = createThread('New chat', '', state.threads.length);
+    setState((current) => {
+      const nextThreads = [...current.threads, baseThread];
+      return {
+        ...current,
+        version: current.version + 1,
+        threads: nextThreads,
+        selectedThreadId: baseThread.id,
+        selectedNodeId: baseThread.activeNodeId,
+        ...focusCanvasOnThread(nextThreads, baseThread, current.threads.length, current.zoom),
+      };
+    });
+    setError(null);
+  }
+
+  function enterFocusMode() {
+    if (!activeThread && state.threads.length > 0) {
+      const last = state.threads[state.threads.length - 1];
+      setState((current) => ({ ...current, selectedThreadId: last.id, selectedNodeId: last.activeNodeId }));
+    }
+    setFocusMode(true);
+  }
+
+  const renderFocusMode = () => {
+    const hour = new Date().getHours();
+    const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+    return (
+      <div className="focus-mode">
+        {focusSidebarOpen ? (
+          <aside className="focus-sidebar">
+            <div className="focus-sidebar-head">
+              <span className="focus-brand">Loomspace</span>
+              <button type="button" className="focus-icon-btn" onClick={() => setFocusSidebarOpen(false)} aria-label="Collapse sidebar" title="Collapse sidebar">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 3 4 8 9 13"/></svg>
+              </button>
+            </div>
+            <button type="button" className="focus-new-chat" onClick={focusNewThread}>
+              <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="6.5" y1="1.5" x2="6.5" y2="11.5"/><line x1="1.5" y1="6.5" x2="11.5" y2="6.5"/></svg>
+              New chat
+            </button>
+            <div className="focus-thread-list">
+              {state.threads.length === 0 ? (
+                <p className="muted focus-empty-list">No chats yet.</p>
+              ) : (
+                state.threads.slice().reverse().map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    className={`focus-thread-item ${t.id === activeThread?.id ? 'active' : ''}`}
+                    onClick={() => setState((current) => ({ ...current, selectedThreadId: t.id, selectedNodeId: t.activeNodeId }))}
+                    style={{ '--thread-color': t.color } as React.CSSProperties}
+                  >
+                    <span className="focus-thread-dot" aria-hidden="true" />
+                    <span className="focus-thread-name">{t.title || 'Untitled thread'}</span>
+                  </button>
+                ))
+              )}
+            </div>
+            <div className="focus-sidebar-foot">
+              <button type="button" className="quiet" onClick={() => openProviderSetup()}>AI profiles</button>
+            </div>
+          </aside>
+        ) : null}
+        <div className="focus-main">
+          <header className="focus-topbar">
+            {!focusSidebarOpen ? (
+              <button type="button" className="focus-icon-btn" onClick={() => setFocusSidebarOpen(true)} aria-label="Show sidebar" title="Show sidebar">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><line x1="2" y1="4" x2="14" y2="4"/><line x1="2" y1="8" x2="14" y2="8"/><line x1="2" y1="12" x2="14" y2="12"/></svg>
+              </button>
+            ) : null}
+            {activeThread ? (
+              <input className="focus-title-input" value={activeThread.title} onChange={(e) => updateTitle(activeThread.id, e.target.value)} placeholder="Untitled thread" aria-label="Thread title" />
+            ) : <span className="focus-title-input focus-title-placeholder" />}
+            <div className="focus-topbar-right">
+              {settings.providerConfigs.length > 1 && activeProviderConfig ? (
+                <select
+                  className="focus-provider-select"
+                  value={activeProviderConfig.id}
+                  onChange={(e) => changeSettingsProvider(e.target.value)}
+                  aria-label="AI Provider"
+                >
+                  {settings.providerConfigs.map((config) => (
+                    <option key={config.id} value={config.id}>{config.label}</option>
+                  ))}
+                </select>
+              ) : null}
+              {settings.providerConfigs.length > 0 && activeProviderConfig ? (
+                <select className="focus-model-select" value={activeProviderConfig.model} onChange={(e) => updateProviderConfig(activeProviderConfig.id, { model: e.target.value })} aria-label="Model">
+                  {settingsModels.length === 0 ? <option value={activeProviderConfig.model}>{activeProviderConfig.model || 'no model'}</option> : settingsModels.map((m) => <option key={m} value={m}>{m}</option>)}
+                </select>
+              ) : (
+                <button type="button" className="quiet focus-add-profile" onClick={() => openProviderSetup()}>Add AI profile</button>
+              )}
+              {activeProviderConfig ? (
+                <div className="focus-params-wrap">
+                  <button type="button" className={`focus-tune ${focusParamsOpen ? 'active' : ''}`} onClick={() => setFocusParamsOpen((open) => !open)} aria-expanded={focusParamsOpen} aria-label="Model controls" title="Model controls">
+                    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><line x1="2.5" y1="5" x2="13.5" y2="5"/><line x1="2.5" y1="11" x2="13.5" y2="11"/><circle cx="6" cy="5" r="1.7"/><circle cx="10.5" cy="11" r="1.7"/></svg>
+                  </button>
+                  {focusParamsOpen ? (
+                    <div className="focus-params-popover">
+                      {renderModelParams(activeProviderConfig, { flat: true })}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+              <button type="button" className="focus-exit" onClick={() => setFocusMode(false)} aria-label="Exit focus mode" title="Exit focus mode (Esc)">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M9.5 2H14v4.5"/><path d="M14 2 8.5 7.5"/><path d="M6.5 14H2V9.5"/><path d="M2 14l5.5-5.5"/></svg>
+                <span>Exit</span>
+              </button>
+            </div>
+          </header>
+          {activeThread ? (
+            <>
+              <div className="focus-scroll" ref={focusMessagesRef}>
+                <div className="focus-column">
+                  {activeThread.context.length === 0 ? (
+                    <div className="focus-greeting">
+                      <h1>{greeting}</h1>
+                      <p className="focus-greeting-sub">Send a message to start this chat.</p>
+                    </div>
+                  ) : (
+                    activeThread.context.map((m) => renderChatMessage(m, m.role === 'assistant' && activeThread.context[activeThread.context.length - 1]?.id === m.id))
+                  )}
+                  <div ref={focusEndRef} className="chat-scroll-anchor" aria-hidden="true" />
+                </div>
+              </div>
+              <div className="focus-composer-bar">
+                <div className="focus-column">
+                  {renderComposer({ fileInputId: 'file-upload-focus', placeholder: 'Message your thread…', onEscape: () => setFocusMode(false), autoFocus: true })}
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="focus-conversation-empty">
+              <div className="focus-greeting">
+                <h1>{greeting}</h1>
+                <p className="focus-greeting-sub">Start a new chat to begin.</p>
+                <button type="button" className="focus-new-chat focus-new-chat-lg" onClick={focusNewThread}>
+                  <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="6.5" y1="1.5" x2="6.5" y2="11.5"/><line x1="1.5" y1="6.5" x2="11.5" y2="6.5"/></svg>
+                  New chat
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const renderModelParams = (config: AIProviderConfig, options: { flat?: boolean } = {}) => {
+    const supported = PARAM_SUPPORT[config.kind];
+    const numericKeys = supported.filter((key): key is Exclude<keyof GenerationParams, 'stop'> => key !== 'stop');
+    const activeCount = config.params ? Object.keys(config.params).length : 0;
+    const badge = activeCount > 0 ? <span className="model-params-count">{activeCount} set</span> : <span className="model-params-auto">defaults</span>;
+    const body = (
+      <div className="model-params-body">
+        {numericKeys.map((key) => {
+          const meta = PARAM_META[key];
+          const max = key === 'temperature' && config.kind === 'anthropic' ? 1 : meta.max;
+          const value = config.params?.[key];
+          const enabled = value !== undefined;
+          const current = value ?? meta.default;
+          return (
+            <div key={key} className={`param-row ${enabled ? 'active' : ''}`}>
+              <div className="param-row-head">
+                <label className="param-toggle">
+                  <input
+                    type="checkbox"
+                    checked={enabled}
+                    onChange={(event) => updateProviderParams(config.id, { [key]: event.target.checked ? Math.min(meta.default, max) : undefined } as Partial<GenerationParams>)}
+                  />
+                  <span className="param-name">{meta.label}</span>
+                </label>
+                <span className="param-state">{enabled ? current : 'Auto'}</span>
+              </div>
+              {enabled ? (
+                meta.control === 'range' ? (
+                  <input
+                    type="range"
+                    className="param-slider"
+                    min={meta.min}
+                    max={max}
+                    step={meta.step}
+                    value={current}
+                    onChange={(event) => updateProviderParams(config.id, { [key]: Number(event.target.value) } as Partial<GenerationParams>)}
+                  />
+                ) : (
+                  <input
+                    type="number"
+                    className="param-number"
+                    min={meta.min}
+                    max={max}
+                    step={meta.step}
+                    value={current}
+                    onChange={(event) => updateProviderParams(config.id, { [key]: event.target.value === '' ? undefined : Number(event.target.value) } as Partial<GenerationParams>)}
+                  />
+                )
+              ) : null}
+            </div>
+          );
+        })}
+        {supported.includes('stop') ? (
+          <label className="field param-stop">
+            Stop sequences
+            <input
+              value={(config.params?.stop ?? []).join(', ')}
+              placeholder="comma-separated, e.g. END, ###"
+              onChange={(event) => {
+                const stop = event.target.value.split(',').map((entry) => entry.trim()).filter(Boolean);
+                updateProviderParams(config.id, { stop: stop.length > 0 ? stop : undefined });
+              }}
+            />
+          </label>
+        ) : null}
+        {activeCount > 0 ? (
+          <button type="button" className="quiet model-params-reset" onClick={() => updateProviderConfig(config.id, { params: {} })}>
+            Reset to defaults
+          </button>
+        ) : null}
+      </div>
+    );
+    if (options.flat) {
+      return (
+        <div className="model-params model-params-flat">
+          <div className="model-params-flat-head">
+            <span>Model controls</span>
+            {badge}
+          </div>
+          {body}
+        </div>
+      );
+    }
+    return (
+      <details className="model-params">
+        <summary>
+          <span className="chat-dock-usage-caret" aria-hidden="true">▸</span>
+          <span>Advanced model controls</span>
+          {badge}
+        </summary>
+        {body}
+      </details>
+    );
+  };
+
+  const layoutStyle = {} as React.CSSProperties & Record<string, string>;
+  if (leftPanelOpen) layoutStyle['--left-w'] = `${panelSizes.left}px`;
+  if (rightPanelOpen) layoutStyle['--right-w'] = rightPanelMaximized ? `${maxSideWidth(leftPanelOpen ? panelSizes.left : 0)}px` : `${panelSizes.right}px`;
+  if (bottomPanelOpen) layoutStyle['--bottom-h'] = `${panelSizes.bottom}px`;
 
   return (
     <div className="app-shell">
+      {focusMode ? renderFocusMode() : (
+      <>
       <header className="topbar">
         <div className="topbar-title">
-          <button
-            type="button"
-            className="menu-toggle"
-            onClick={() => setSidebarOpen((open) => !open)}
-            aria-label="Toggle threads panel"
-          >
-            ☰
-          </button>
-          <div>
+          <div className="brand-mark" aria-hidden="true">
+            <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+              <path d="M6 8.5C9.5 3.5 18.2 3.8 21.6 8.9C24.9 13.8 22.5 22.8 14.2 23.5C6 24.2 1.9 14.4 6 8.5Z" fill="currentColor" opacity="0.13"/>
+              <path d="M8.2 15.2C10.4 11.6 14.2 9.7 19.9 9.7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+              <path d="M8.2 12.3C11.4 16.1 15.2 17.7 20 17.1" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+              <circle cx="8.2" cy="13.7" r="2.1" fill="currentColor"/>
+              <circle cx="20" cy="9.7" r="1.8" fill="currentColor"/>
+              <circle cx="20" cy="17.1" r="1.8" fill="currentColor"/>
+            </svg>
+          </div>
+          <div className="topbar-title-text">
             <p className="eyebrow">Loomspace</p>
-            <h1>{state.title}</h1>
+            <input
+              className="workspace-title-input"
+              value={state.title}
+              onChange={(event) => setState((current) => ({ ...current, title: event.target.value }))}
+              aria-label="Workspace name"
+              placeholder="Untitled workspace"
+            />
           </div>
         </div>
         <div className="topbar-actions">
-          <button onClick={() => openThreadEditor('create')}><svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="6.5" y1="1.5" x2="6.5" y2="11.5"/><line x1="1.5" y1="6.5" x2="11.5" y2="6.5"/></svg> New thread</button>
-          <button onClick={() => zoomFromButton(-1)} aria-label="Zoom out">−</button>
-          <button onClick={resetView} className="topbar-reset-view" aria-label="Reset view"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M2 8a6 6 0 1 0 1.17-3.6"/><polyline points="2 4 2 8 6 8"/></svg></button>
-          <button onClick={() => zoomFromButton(1)} aria-label="Zoom in">+</button>
-          <input
-            className="zoom-slider"
-            type="range"
-            min={Math.round(MIN_ZOOM * 100)}
-            max={Math.round(MAX_ZOOM * 100)}
-            value={Math.round(state.zoom * 100)}
-            onChange={(event) => setZoom(Number(event.target.value) / 100)}
-          />
-          <button onClick={() => { if (window.confirm('Reset the fabric?\n\nThis will permanently delete all threads and AI profiles from this browser. This cannot be undone.')) resetWorkspace(); }} className="quiet topbar-reset-fabric icon-btn" aria-label="Reset fabric"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 3 14 13 14 13 6"/><line x1="1" y1="3" x2="15" y2="3"/><line x1="6" y1="3" x2="6" y2="1"/><line x1="10" y1="3" x2="10" y2="1"/></svg></button>
+          <div className="nav-group nav-group-view" role="group" aria-label="Panels and view">
+          </div>
+          <span className="nav-sep nav-sep-compact" aria-hidden="true" />
+          <button
+            type="button"
+            className="nav-btn nav-btn-workspaces"
+            onClick={openWorkspaceManager}
+            aria-label="Manage workspaces"
+            title={`${workspaceCount} workspace${workspaceCount === 1 ? '' : 's'} saved in this browser`}
+          >
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <rect x="2.25" y="2.5" width="5.5" height="5.5" rx="1.1"/>
+              <rect x="8.25" y="2.5" width="5.5" height="5.5" rx="1.1"/>
+              <rect x="2.25" y="8.5" width="5.5" height="5.5" rx="1.1"/>
+              <rect x="8.25" y="8.5" width="5.5" height="5.5" rx="1.1"/>
+            </svg>
+            <span className="nav-label">Workspaces</span>
+          </button>
+          <button type="button" className="nav-btn nav-btn-ai" onClick={() => openProviderSetup()} aria-label="AI settings and profiles" title="AI settings & profiles"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.2 9.3 5.5 13.6 6.8 9.3 8.1 8 12.4 6.7 8.1 2.4 6.8 6.7 5.5z"/></svg><span className="nav-label">AI</span></button>
+          <button type="button" className="nav-btn nav-btn-icon" onClick={() => setThemeMode((mode) => (mode === 'auto' ? 'light' : mode === 'light' ? 'dark' : 'auto'))} aria-label={`Theme: ${themeMode}`} title={`Theme: ${themeMode} — click to change`}>
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              {themeMode === 'dark' ? (
+                <path d="M13.5 10.2A5.8 5.8 0 0 1 5.8 2.5 6.2 6.2 0 1 0 13.5 10.2Z"/>
+              ) : (
+                <><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.2M8 13.3v1.2M1.5 8h1.2M13.3 8h1.2M3.4 3.4l.85.85M11.75 11.75l.85.85M3.4 12.6l.85-.85M11.75 4.25l.85-.85"/></>
+              )}
+            </svg>
+          </button>
+          <button type="button" className="nav-btn nav-btn-icon nav-btn-danger" onClick={confirmResetWorkspace} aria-label="Reset workspace" title="Reset this workspace"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12.8 8a4.8 4.8 0 1 1-1.5-3.5"/><path d="M13 2.2v2.6h-2.6"/></svg></button>
+          <span className="nav-sep nav-sep-compact" aria-hidden="true" />
+          <button type="button" className="nav-btn nav-btn-focus" onClick={() => enterFocusMode()} aria-label="Enter focus mode" title="Focus mode — distraction-free chat"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M2 6V3.5A1.5 1.5 0 0 1 3.5 2H6"/><path d="M14 6V3.5A1.5 1.5 0 0 0 12.5 2H10"/><path d="M2 10v2.5A1.5 1.5 0 0 0 3.5 14H6"/><path d="M14 10v2.5a1.5 1.5 0 0 1-1.5 1.5H10"/></svg><span className="nav-label">Focus</span></button>
+          <button type="button" className="nav-btn nav-btn-primary nav-btn-new" onClick={() => openThreadEditor('create')} aria-label="New thread" title="New thread"><svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="6.5" y1="1.5" x2="6.5" y2="11.5"/><line x1="1.5" y1="6.5" x2="11.5" y2="6.5"/></svg><span className="nav-label">New thread</span></button>
+          <div className="nav-menu-wrap">
+            <button type="button" className="nav-btn nav-btn-icon nav-menu-trigger" aria-expanded={navMenuOpen} aria-label="More actions" title="More actions" onClick={() => setNavMenuOpen((open) => !open)}>⋯</button>
+            {navMenuOpen ? (
+              <div className="nav-menu" role="menu" aria-label="More actions">
+                <button type="button" role="menuitem" onClick={openWorkspaceManager}>Manage workspaces</button>
+                <button type="button" role="menuitem" onClick={() => { setNavMenuOpen(false); openProviderSetup(); }}>AI settings and profiles</button>
+                <button type="button" role="menuitem" onClick={() => { setNavMenuOpen(false); setThemeMode((mode) => (mode === 'auto' ? 'light' : mode === 'light' ? 'dark' : 'auto')); }}>Theme</button>
+                <button type="button" role="menuitem" onClick={() => { setNavMenuOpen(false); confirmResetWorkspace(); }}>Reset workspace</button>
+                <button type="button" role="menuitem" onClick={() => { setNavMenuOpen(false); enterFocusMode(); }}>Focus mode</button>
+                <button type="button" role="menuitem" onClick={() => { setNavMenuOpen(false); openThreadEditor('create'); }}>New thread</button>
+              </div>
+            ) : null}
+          </div>
         </div>
       </header>
 
-      <main className="layout">
-        {sidebarOpen ? <div className="sidebar-scrim" onClick={() => setSidebarOpen(false)} /> : null}
-        <aside className={`panel left ${sidebarOpen ? 'open' : ''}`}>
+      <main
+        className={`layout ${leftPanelOpen ? 'left-open' : ''} ${rightPanelOpen ? 'right-open' : ''} ${bottomPanelOpen ? 'bottom-open' : ''} ${panelResizing ? 'resizing' : ''}`}
+        style={layoutStyle}
+      >
+        {leftPanelOpen ? <div className="sidebar-scrim" onClick={() => setLeftPanelOpen(false)} /> : null}
+        <aside className={`panel left ${leftPanelOpen ? 'open' : ''}`}>
           {activeThread ? (
             <section className="inspector-card editor-summary">
               <div className="meta-row">
@@ -1161,10 +2594,7 @@ if (closeAfter) setMiniChatOpen(false);
               <button
                 type="button"
                 className="quiet"
-                onClick={() => {
-                  setSidebarOpen(false);
-                  setAiSettingsModalOpen(true);
-                }}
+                onClick={() => openProviderSetup()}
               >
                 Manage
               </button>
@@ -1175,16 +2605,7 @@ if (closeAfter) setMiniChatOpen(false);
                 <button
                   type="button"
                   className="profile-list-empty-cta"
-                  onClick={() => {
-                    const next = createProviderConfig('openai-compatible-custom', { label: 'New profile', model: '' });
-                    setSettings((current) => ({
-                      ...current,
-                      activeProviderConfigId: next.id,
-                      providerConfigs: [...current.providerConfigs, next],
-                    }));
-                    setSidebarOpen(false);
-                    setAiSettingsModalOpen(true);
-                  }}
+                  onClick={addProviderProfile}
                 >
                   Add AI profile
                 </button>
@@ -1204,7 +2625,7 @@ if (closeAfter) setMiniChatOpen(false);
                         key={config.id}
                         type="button"
                         className={`profile-chip ${isActive ? 'selected' : ''}`}
-                        onClick={() => changeSettingsProvider(config.id)}
+                        onClick={() => openProviderSetup(config.id)}
                       >
                         <span className="profile-chip-copy">
                           <strong>{config.label}</strong>
@@ -1218,19 +2639,7 @@ if (closeAfter) setMiniChatOpen(false);
                   })}
                 </div>
                 <div className="editor-actions left-aligned">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const next = createProviderConfig('openai-compatible-custom', { label: 'New profile', model: '' });
-                      setSettings((current) => ({
-                        ...current,
-                        activeProviderConfigId: next.id,
-                        providerConfigs: [...current.providerConfigs, next],
-                      }));
-                      setSidebarOpen(false);
-                      setAiSettingsModalOpen(true);
-                    }}
-                  >
+                  <button type="button" onClick={addProviderProfile}>
                     Add profile
                   </button>
                 </div>
@@ -1264,32 +2673,41 @@ if (closeAfter) setMiniChatOpen(false);
         </aside>
 
         <section className="canvas-panel">
-          <div className="canvas-toolbar">
-            <span>{state.densityOverlay ? 'Threadlines on' : 'Threadlines off'}</span>
-            <span>{Math.round(state.zoom * 100)}%</span>
-            <span>{metrics.saturation * 100 < 50 ? 'light weave' : 'dense weave'}</span>
-          </div>
+          {forkDraft && forkSourceThread ? (
+            <div className="fork-selection-banner">
+              <div className="fork-selection-copy">
+                <p className="eyebrow">Fork selection</p>
+                <h2>{forkSelectionMessageCount > 0 ? `${forkSelectionMessageCount} message${forkSelectionMessageCount === 1 ? '' : 's'} selected` : 'Select conversation pieces to fork'}</h2>
+                <p>{forkSelectionPieceCount} piece{forkSelectionPieceCount === 1 ? '' : 's'} selected. Use the user / assistant toggles to trim what carries over.</p>
+              </div>
+              <div className="fork-selection-actions">
+                <button type="button" onClick={cancelForkSelection}>Cancel</button>
+                <button type="button" disabled={forkSelectionMessageCount === 0} onClick={commitForkSelection}>Fork selected</button>
+              </div>
+            </div>
+          ) : null}
 
           <div className="canvas-area">
-          <div ref={viewportRef} className={`canvas-viewport ${state.densityOverlay ? 'overlay' : ''} pan-${panMode}`} onWheel={onWheel}>
-            <div
-              className="canvas-stage"
-              style={{
-                width: canvasWidth,
-                height: canvasHeight,
-                transform: `translate(${state.panX}px, ${state.panY}px) scale(${state.zoom})`,
-              }}
-              onPointerDown={beginPan}
-              onPointerMove={movePan}
-              onPointerUp={endPan}
-              onPointerLeave={endPan}
-              onPointerCancel={endPan}
-              onContextMenu={(e) => { if (e.button === 1) e.preventDefault(); }}
-              onClick={(e) => {
-                if (e.target !== e.currentTarget) return;
-                deselectNode();
-              }}
-            >
+            <div ref={viewportRef} className={`canvas-viewport ${state.densityOverlay ? 'overlay' : ''} pan-${panMode}`} onWheel={onWheel}>
+              <div
+                className="canvas-stage"
+                style={{
+                  width: canvasWidth,
+                  height: canvasHeight,
+                  transform: `translate(${state.panX}px, ${state.panY}px) scale(${state.zoom})`,
+                }}
+                onPointerDown={beginPan}
+                onPointerMove={movePan}
+                onPointerUp={endPan}
+                onPointerLeave={endPan}
+                onPointerCancel={endPan}
+                onContextMenu={(e) => { if (e.button === 1) e.preventDefault(); }}
+                onClick={(e) => {
+                  if (forkDraft) return;
+                  if (e.target !== e.currentTarget) return;
+                  deselectNode();
+                }}
+              >
               <svg className="edges-layer" viewBox={`0 0 ${canvasWidth} ${canvasHeight}`} preserveAspectRatio="none">
                 {lanes.map((lane) => {
                   const path = buildThreadPath(lane.centerX, lane.nodes.map((entry) => entry.node), lane.thread);
@@ -1330,25 +2748,17 @@ if (closeAfter) setMiniChatOpen(false);
                       );
                     })
                 )}
-                {contextLinkMode && (() => {
-                  const srcLane = lanes.find((l) => l.thread.id === contextLinkMode.sourceThreadId);
-                  if (!srcLane) return null;
-                  const selectedIds = new Set(contextLinkMode.selectedNodes.map((s) => s.nodeId));
-                  const sorted = srcLane.nodes
-                    .filter((e) => selectedIds.has(e.node.id))
-                    .sort((a, b) => a.top - b.top);
-                  if (sorted.length === 0) return null;
-                  const offset = contextLinkMode.side === 'right' ? 22 : -22;
-                  const srcX = srcLane.centerX + offset;
-                  return (
-                    <line
-                      key="ctx-preview"
-                      x1={srcX} y1={sorted[0].top + CHAT_HEIGHT / 2}
-                      x2={srcX} y2={sorted[sorted.length - 1].top + CHAT_HEIGHT / 2}
-                      className="context-link-preview"
-                    />
-                  );
-                })()}
+                {contextLinkPreview ? (
+                  <line
+                    key="ctx-preview"
+                    x1={contextLinkPreview.sourceX}
+                    y1={contextLinkPreview.sourceY}
+                    x2={contextLinkPreview.targetX}
+                    y2={contextLinkPreview.targetY}
+                    className={`context-link-preview${contextLinkPreview.snapped ? ' snapped' : ''}`}
+                  />
+                ) : null}
+
               </svg>
 
               {lanes.map((lane) => {
@@ -1363,6 +2773,9 @@ if (closeAfter) setMiniChatOpen(false);
                     {lane.nodes.map(({ node, top }, nodeIndex) => {
                       if (node.kind === 'title') {
                         const titleNode = node;
+                        const isSelected = thread.id === state.selectedThreadId && node.id === state.selectedNodeId;
+                        const isLast = nodeIndex === lane.nodes.length - 1;
+                        const titleHeight = TITLE_HEIGHT + (thread.infoOpen ? TITLE_INFO_EXTRA : 0);
                         return (
                           <div key={node.id} className={`title-node-wrap ${thread.infoOpen ? 'open' : ''}`} style={{ top }}>
                             <article className="title-node">
@@ -1385,6 +2798,14 @@ if (closeAfter) setMiniChatOpen(false);
                               </div>
                               {thread.infoOpen ? <p className="thread-popout">{titleNode.description}</p> : null}
                             </article>
+                            {!rightPanelOpen && isSelected && isLast ? (
+                              <>
+                                <div className="action-line-v" style={{ top: titleHeight, left: NODE_WIDTH / 2 }} />
+                                <button type="button" className="action-node-ghost" style={{ top: titleHeight + 36, left: 0 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setRightPanelOpen(true); }}>
+                                  <span>Open chat</span>
+                                </button>
+                              </>
+                            ) : null}
                           </div>
                         );
                       }
@@ -1397,27 +2818,17 @@ if (closeAfter) setMiniChatOpen(false);
                           : null;
                         const isContextSource = ctxPart !== null;
                         const isContextTarget = contextLinkMode !== null && thread.id !== contextLinkMode.sourceThreadId;
-                        const showDots = !miniChatOpen && (isSelected || (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id));
-
-                        const handleSideDotCtx = (side: 'left' | 'right') => (e: React.MouseEvent) => {
-                          e.stopPropagation();
-                          if (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id && contextLinkMode.side === side) {
-                            if (contextLinkMode.selectedNodes.length <= 1) setContextLinkMode(null);
-                            else setContextLinkMode({ ...contextLinkMode, selectedNodes: [{ nodeId: node.id, parts: { user: true, assistant: true } }] });
-                          } else {
-                            enterContextLinkMode(thread, node.id, side);
-                          }
-                        };
-
-                        const handleForkDotCtx = (side: 'left' | 'right') => (e: React.MouseEvent) => {
-                          e.stopPropagation();
-                          openForkThreadEditor(thread, node.id, side);
-                        };
-
+                        const isContextSnapTarget = contextLinkSnapTarget?.threadId === thread.id && contextLinkSnapTarget.nodeId === node.id;
+                        const showDots = !rightPanelOpen && (isSelected || (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id));
                         return (
-                          <div key={node.id} style={{ position: 'absolute', top, left: 0 }}>
+                          <div
+                            key={node.id}
+                            style={{ position: 'absolute', top, left: 0 }}
+                            data-thread-id={thread.id}
+                            data-node-id={node.id}
+                          >
                             <div
-                              className={`context-node ${isSelected ? 'selected' : ''} ${isContextSource ? 'context-source-selected' : ''} ${isContextTarget ? 'context-target' : ''}`}
+                              className={`context-node ${isSelected ? 'selected' : ''} ${isContextSource ? 'context-source-selected' : ''} ${isContextTarget ? 'context-target' : ''} ${isContextSnapTarget ? 'context-link-snap-target' : ''}`}
                               style={{ position: 'relative', '--ctx-color': ctxNode.sourceThreadColor, '--ctx-bg': hexToRgba(ctxNode.sourceThreadColor, 0.07), '--ctx-border': hexToRgba(ctxNode.sourceThreadColor, 0.35) } as React.CSSProperties}
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -1435,8 +2846,7 @@ if (closeAfter) setMiniChatOpen(false);
                                 if (contextLinkMode) return;
                                 selectNode(thread.id, node.id);
                                 if (nodeIndex === lane.nodes.length - 1) {
-                                  setChatModalOpen(false);
-                                  setMiniChatOpen(true);
+                                  setRightPanelOpen(true);
                                   return;
                                 }
                                 if (ctxNode.messages.length > 0) {
@@ -1449,100 +2859,12 @@ if (closeAfter) setMiniChatOpen(false);
                               </div>
                               <strong style={{ color: ctxNode.sourceThreadColor }}>{ctxNode.sourceThreadTitle}</strong>
                               <small>{ctxNode.messages.length} messages · {ctxNode.createdAt.slice(0, 10)}</small>
-                              <div className="node-footer">
-                                {ctxNode.messages.length > 0 ? (
-                                  <button
-                                    type="button"
-                                    className="node-expand-toggle"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      if (e.detail > 1) return;
-                                      if (readMoreTimerRef.current) window.clearTimeout(readMoreTimerRef.current);
-                                      const openedAt = Date.now();
-                                      readMoreTimerRef.current = window.setTimeout(() => {
-                                        readMoreTimerRef.current = null;
-                                        if (Date.now() < suppressReadMoreUntil.current || suppressReadMoreUntil.current > openedAt) return;
-                                        setNodePreviewModal({ title: ctxNode.sourceThreadTitle, messages: ctxNode.messages });
-                                      }, 320);
-                                    }}
-                                    onDoubleClick={(e) => {
-                                      e.stopPropagation();
-                                      e.preventDefault();
-                                      suppressReadMoreUntil.current = Date.now() + 400;
-                                      if (readMoreTimerRef.current) {
-                                        window.clearTimeout(readMoreTimerRef.current);
-                                        readMoreTimerRef.current = null;
-                                      }
-                                    }}
-                                  >
-                                    Read more
-                                  </button>
-                                ) : null}
-                              </div>
-                              {isSelected && !contextLinkMode ? (
-                                <button
-                                  type="button"
-                                  className="node-delete-corner"
-                                  aria-label="Delete node"
-                                  title="Delete node"
-                                  onClick={(e) => { e.stopPropagation(); enterDeleteMode(thread.id, node.id); }}
-                                >
-                                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 3 14 13 14 13 6"/><line x1="1" y1="3" x2="15" y2="3"/><line x1="7" y1="7" x2="7" y2="11"/></svg>
-                                </button>
-                              ) : null}
+                              {renderNodeFooter(ctxNode.sourceThreadTitle, ctxNode.messages)}
+                              {renderNodeDeleteCorner(thread, node, isSelected)}
                             </div>
-                            {isContextSource && ctxPart ? (
-                              <div className="context-select-overlay" onClick={(e) => e.stopPropagation()}>
-                                <button type="button" className={`context-select-half user ${ctxPart.parts.user ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(node.id, 'user'); }}>
-                                  <span>User prompt</span>
-                                  <span className="context-select-check">{ctxPart.parts.user ? '✓' : '○'}</span>
-                                </button>
-                                <button type="button" className={`context-select-half assistant ${ctxPart.parts.assistant ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(node.id, 'assistant'); }}>
-                                  <span>Asst response</span>
-                                  <span className="context-select-check">{ctxPart.parts.assistant ? '✓' : '○'}</span>
-                                </button>
-                              </div>
-                            ) : null}
-                            {deleteMode?.nodeId === node.id && (
-                              <div className="delete-select-overlay" onClick={(e) => e.stopPropagation()}>
-                                {deleteMode.parts.user && (
-                                  <button type="button" className="delete-select-half user active" onClick={(e) => { e.stopPropagation(); toggleDeletePart('user'); }}>
-                                    <span>User prompt</span>
-                                    <span className="delete-select-check">✓</span>
-                                  </button>
-                                )}
-                                {deleteMode.parts.assistant && (
-                                  <button type="button" className="delete-select-half assistant active" onClick={(e) => { e.stopPropagation(); toggleDeletePart('assistant'); }}>
-                                    <span>Asst response</span>
-                                    <span className="delete-select-check">✓</span>
-                                  </button>
-                                )}
-                                <button type="button" className="delete-confirm-btn" onClick={(e) => { e.stopPropagation(); confirmDeleteNode(thread.id); }}>
-                                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 3 14 13 14 13 6"/><line x1="1" y1="3" x2="15" y2="3"/><line x1="7" y1="7" x2="7" y2="11"/></svg>
-                                  Delete
-                                </button>
-                              </div>
-                            )}
-                            {showDots && (
-                              <>
-                                <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: -36 }} />
-                                <div className="action-dot-group action-left" style={{ top: 0, left: -52, height: CHAT_HEIGHT }}>
-                                  <button type="button" className="action-dot" aria-label="Inject context left" onClick={handleSideDotCtx('left')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M7 9l-1 1a3 3 0 0 1-4.24-4.24l2-2a3 3 0 0 1 4.24 4.24"/><path d="M9 7l1-1a3 3 0 0 1 4.24 4.24l-2 2a3 3 0 0 1-4.24-4.24"/></svg><span>Link</span></button>
-                                  <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDotCtx('left')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="4" cy="3" r="1.5"/><circle cx="4" cy="13" r="1.5"/><circle cx="12" cy="8" r="1.5"/><path d="M5.5 3h2a2 2 0 0 1 2 2v1.5"/><path d="M5.5 13h2a2 2 0 0 0 2-2V9.5"/></svg><span>Fork</span></button>
-                                </div>
-                                <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: NODE_WIDTH }} />
-                                <div className="action-dot-group action-right" style={{ top: 0, left: NODE_WIDTH + 10, height: CHAT_HEIGHT }}>
-                                  <button type="button" className="action-dot" aria-label="Inject context right" onClick={handleSideDotCtx('right')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M7 9l-1 1a3 3 0 0 1-4.24-4.24l2-2a3 3 0 0 1 4.24 4.24"/><path d="M9 7l1-1a3 3 0 0 1 4.24 4.24l-2 2a3 3 0 0 1-4.24-4.24"/></svg><span>Link</span></button>
-                                  <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDotCtx('right')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="4" cy="3" r="1.5"/><circle cx="4" cy="13" r="1.5"/><circle cx="12" cy="8" r="1.5"/><path d="M5.5 3h2a2 2 0 0 1 2 2v1.5"/><path d="M5.5 13h2a2 2 0 0 0 2-2V9.5"/></svg><span>Fork</span></button>
-                                </div>
-                                {nodeIndex === lane.nodes.length - 1 && (<>
-                                  <div className="action-line-v" style={{ top: CHAT_HEIGHT, left: NODE_WIDTH / 2 }} />
-                                  <button type="button" className="action-node-ghost" style={{ top: CHAT_HEIGHT + 36, left: 0 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setChatModalOpen(false); setMiniChatOpen(true); }}>
-                                    <span>Open chat</span>
-                                  </button>
-                                </>)}
-                              </>
-                            )}
+                            {renderContextSelectOverlay(node.id, ctxPart)}
+                            {renderDeleteOverlay(thread, node.id)}
+                            {showDots && renderActionDots(thread, node, nodeIndex === lane.nodes.length - 1)}
                           </div>
                         );
                       }
@@ -1553,28 +2875,19 @@ if (closeAfter) setMiniChatOpen(false);
                         ? contextLinkMode.selectedNodes.find((s) => s.nodeId === node.id) ?? null
                         : null;
                       const isContextSource = ctxPart !== null;
-                      const isContextTarget = contextLinkMode !== null && thread.id !== contextLinkMode.sourceThreadId;
-                      const showDots = !miniChatOpen && (isSelected || (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id));
-
-                      const handleSideDot = (side: 'left' | 'right') => (e: React.MouseEvent) => {
-                        e.stopPropagation();
-                        if (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id && contextLinkMode.side === side) {
-                          if (contextLinkMode.selectedNodes.length <= 1) setContextLinkMode(null);
-                          else setContextLinkMode({ ...contextLinkMode, selectedNodes: [{ nodeId: node.id, parts: { user: true, assistant: true } }] });
-                        } else {
-                          enterContextLinkMode(thread, node.id, side);
-                        }
-                      };
-
-                      const handleForkDot = (side: 'left' | 'right') => (e: React.MouseEvent) => {
-                        e.stopPropagation();
-                        openForkThreadEditor(thread, node.id, side);
-                      };
+                      const isContextTarget = contextLinkMode?.intent === 'link' && thread.id !== contextLinkMode.sourceThreadId;
+                      const isContextSnapTarget = contextLinkSnapTarget?.threadId === thread.id && contextLinkSnapTarget.nodeId === node.id;
+                      const showDots = !rightPanelOpen && (isSelected || (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id));
 
                       return (
-                        <div key={node.id} style={{ position: 'absolute', top, left: 0 }}>
+                        <div
+                          key={node.id}
+                          style={{ position: 'absolute', top, left: 0 }}
+                          data-thread-id={thread.id}
+                          data-node-id={node.id}
+                        >
                           <div
-                            className={`chat-node ${isSelected ? 'selected' : ''} ${chatNode.status === 'pending' ? 'sending' : ''} ${chatNode.status === 'unread' && !(miniChatOpen && thread.id === state.selectedThreadId) ? 'responded' : ''} ${isContextSource ? 'context-source-selected' : ''} ${isContextTarget ? 'context-target' : ''}`}
+                            className={`chat-node ${isSelected ? 'selected' : ''} ${chatNode.status === 'pending' ? 'sending' : ''} ${chatNode.status === 'unread' && !(rightPanelOpen && thread.id === state.selectedThreadId) ? 'responded' : ''} ${isContextSource ? 'context-source-selected' : ''} ${isContextTarget ? 'context-target' : ''} ${isContextSnapTarget ? 'context-link-snap-target' : ''}`}
                             style={{ position: 'relative', top: 0, left: 0 }}
                             onClick={(e) => {
                               e.stopPropagation();
@@ -1592,8 +2905,7 @@ if (closeAfter) setMiniChatOpen(false);
                               if (contextLinkMode) return;
                               selectNode(thread.id, node.id);
                               if (nodeIndex === lane.nodes.length - 1) {
-                                setChatModalOpen(false);
-                                setMiniChatOpen(true);
+                                setRightPanelOpen(true);
                                 return;
                               }
                               if (chatNode.messages.length > 0) {
@@ -1606,100 +2918,12 @@ if (closeAfter) setMiniChatOpen(false);
                             </div>
                             <strong>{chatNode.summary}</strong>
                             <small>{chatNode.model}</small>
-                            <div className="node-footer">
-                              {chatNode.messages.length > 0 ? (
-                                <button
-                                  type="button"
-                                  className="node-expand-toggle"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    if (e.detail > 1) return;
-                                    if (readMoreTimerRef.current) window.clearTimeout(readMoreTimerRef.current);
-                                    const openedAt = Date.now();
-                                    readMoreTimerRef.current = window.setTimeout(() => {
-                                      readMoreTimerRef.current = null;
-                                      if (Date.now() < suppressReadMoreUntil.current || suppressReadMoreUntil.current > openedAt) return;
-                                      setNodePreviewModal({ title: chatNode.summary, messages: chatNode.messages });
-                                    }, 320);
-                                  }}
-                                  onDoubleClick={(e) => {
-                                    e.stopPropagation();
-                                    e.preventDefault();
-                                    suppressReadMoreUntil.current = Date.now() + 400;
-                                    if (readMoreTimerRef.current) {
-                                      window.clearTimeout(readMoreTimerRef.current);
-                                      readMoreTimerRef.current = null;
-                                    }
-                                  }}
-                                >
-                                  Read more
-                                </button>
-                              ) : null}
-                            </div>
-                            {isSelected && !contextLinkMode ? (
-                              <button
-                                type="button"
-                                className="node-delete-corner"
-                                aria-label="Delete node"
-                                title="Delete node"
-                                onClick={(e) => { e.stopPropagation(); enterDeleteMode(thread.id, node.id); }}
-                              >
-                                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 3 14 13 14 13 6"/><line x1="1" y1="3" x2="15" y2="3"/><line x1="7" y1="7" x2="7" y2="11"/></svg>
-                              </button>
-                            ) : null}
+                            {renderNodeFooter(chatNode.summary, chatNode.messages)}
+                            {renderNodeDeleteCorner(thread, node, isSelected)}
                           </div>
-                          {isContextSource && ctxPart ? (
-                            <div className="context-select-overlay" onClick={(e) => e.stopPropagation()}>
-                              <button type="button" className={`context-select-half user ${ctxPart.parts.user ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(node.id, 'user'); }}>
-                                <span>User prompt</span>
-                                <span className="context-select-check">{ctxPart.parts.user ? '✓' : '○'}</span>
-                              </button>
-                              <button type="button" className={`context-select-half assistant ${ctxPart.parts.assistant ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); toggleContextPart(node.id, 'assistant'); }}>
-                                <span>Asst response</span>
-                                <span className="context-select-check">{ctxPart.parts.assistant ? '✓' : '○'}</span>
-                              </button>
-                            </div>
-                          ) : null}
-                          {deleteMode?.nodeId === node.id && (
-                            <div className="delete-select-overlay" onClick={(e) => e.stopPropagation()}>
-                              {deleteMode.parts.user && (
-                                <button type="button" className="delete-select-half user active" onClick={(e) => { e.stopPropagation(); toggleDeletePart('user'); }}>
-                                  <span>User prompt</span>
-                                  <span className="delete-select-check">✓</span>
-                                </button>
-                              )}
-                              {deleteMode.parts.assistant && (
-                                <button type="button" className="delete-select-half assistant active" onClick={(e) => { e.stopPropagation(); toggleDeletePart('assistant'); }}>
-                                  <span>Asst response</span>
-                                  <span className="delete-select-check">✓</span>
-                                </button>
-                              )}
-                              <button type="button" className="delete-confirm-btn" onClick={(e) => { e.stopPropagation(); confirmDeleteNode(thread.id); }}>
-                                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 3 14 13 14 13 6"/><line x1="1" y1="3" x2="15" y2="3"/><line x1="7" y1="7" x2="7" y2="11"/></svg>
-                                Delete
-                              </button>
-                            </div>
-                          )}
-                          {showDots && (
-                            <>
-                              <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: -36 }} />
-                              <div className="action-dot-group action-left" style={{ top: 0, left: -52, height: CHAT_HEIGHT }}>
-                                <button type="button" className="action-dot" aria-label="Inject context left" onClick={handleSideDot('left')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M7 9l-1 1a3 3 0 0 1-4.24-4.24l2-2a3 3 0 0 1 4.24 4.24"/><path d="M9 7l1-1a3 3 0 0 1 4.24 4.24l-2 2a3 3 0 0 1-4.24-4.24"/></svg><span>Link</span></button>
-                                <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDot('left')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="4" cy="3" r="1.5"/><circle cx="4" cy="13" r="1.5"/><circle cx="12" cy="8" r="1.5"/><path d="M5.5 3h2a2 2 0 0 1 2 2v1.5"/><path d="M5.5 13h2a2 2 0 0 0 2-2V9.5"/></svg><span>Fork</span></button>
-                              </div>
-                              <div className="action-line-h" style={{ top: CHAT_HEIGHT / 2, left: NODE_WIDTH }} />
-                              <div className="action-dot-group action-right" style={{ top: 0, left: NODE_WIDTH + 10, height: CHAT_HEIGHT }}>
-                                <button type="button" className="action-dot" aria-label="Inject context right" onClick={handleSideDot('right')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M7 9l-1 1a3 3 0 0 1-4.24-4.24l2-2a3 3 0 0 1 4.24 4.24"/><path d="M9 7l1-1a3 3 0 0 1 4.24 4.24l-2 2a3 3 0 0 1-4.24-4.24"/></svg><span>Link</span></button>
-                                <button type="button" className="fork-dot" aria-label="Fork into new thread" onClick={handleForkDot('right')}><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="4" cy="3" r="1.5"/><circle cx="4" cy="13" r="1.5"/><circle cx="12" cy="8" r="1.5"/><path d="M5.5 3h2a2 2 0 0 1 2 2v1.5"/><path d="M5.5 13h2a2 2 0 0 0 2-2V9.5"/></svg><span>Fork</span></button>
-                              </div>
-                              {nodeIndex === lane.nodes.length - 1 && (<>
-                                <div className="action-line-v" style={{ top: CHAT_HEIGHT, left: NODE_WIDTH / 2 }} />
-                                <button type="button" className="action-node-ghost" style={{ top: CHAT_HEIGHT + 36, left: 0 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setChatModalOpen(false); setMiniChatOpen(true); }}>
-                                  <span>Open chat</span>
-                                </button>
-                              </>)}
-                            </>
-                          )}
+                          {renderContextSelectOverlay(node.id, ctxPart)}
+                          {renderDeleteOverlay(thread, node.id)}
+                          {showDots && renderActionDots(thread, node, nodeIndex === lane.nodes.length - 1)}
                         </div>
                       );
                     })}
@@ -1708,95 +2932,244 @@ if (closeAfter) setMiniChatOpen(false);
               })}
             </div>
           </div>
-          {miniChatOpen && activeThread ? (
-            <div className={`mini-chat ${miniChatMaximized ? 'maximized' : ''}`}>
-              <div className="mini-chat-header">
-                <span className="mini-chat-title">{activeThread.title}</span>
-                <div className="mini-chat-header-actions">
-                  <button
-                    type="button"
-                    className="quiet mini-chat-maximize"
-                    onClick={() => setMiniChatMaximized((current) => !current)}
-                    aria-label={miniChatMaximized ? 'Restore mini chat size' : 'Maximize mini chat'}
-                    title={miniChatMaximized ? 'Restore' : 'Maximize'}
-                  >
-                    {miniChatMaximized ? '▢' : '□'}
-                  </button>
-                  <button type="button" className="quiet mini-chat-close" onClick={() => setMiniChatOpen(false)} aria-label="Close chat">×</button>
-                </div>
+          </div>
+        </section>
+        <section className="panel bottom">
+          {bottomPanelOpen ? (
+            <div className="bottom-dock">
+              <div className="bottom-dock-header">
+                <span className="bottom-dock-title">Panel</span>
+                <button type="button" className="quiet icon-btn bottom-dock-close" onClick={() => setBottomPanelOpen(false)} aria-label="Close bottom panel">×</button>
               </div>
-              <div className="mini-chat-messages" ref={miniChatMessagesRef}>
-                {activeThread.context.length === 0 ? (
-                  <p className="muted">No messages yet. Send the first one.</p>
-                ) : (
-                  activeThread.context.map((message) => (
-                    <div
-                      key={message.id}
-                      className={`bubble ${message.role} ${message.injectedFromThreadId ? 'injected' : ''}`}
-                      style={message.injectedFromColor ? {
-                        '--inject-bg': hexToRgba(message.injectedFromColor, 0.07),
-                        '--inject-border': hexToRgba(message.injectedFromColor, 0.3),
-                      } as React.CSSProperties : undefined}
-                    >
-                      <strong>{message.role === 'assistant' ? 'ai' : message.role}</strong>
-                      <FormattedMessage text={getMessageText(message) || message.text || ''} />
-                    </div>
-                  ))
-                )}
-              </div>
-              <div className="mini-chat-composer">
-                <textarea
-                  autoFocus
-                  value={composerDraft}
-                  onChange={(e) => setComposerDraft(e.target.value)}
-                  placeholder="Ask the thread something"
-                  rows={3}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Escape') { e.preventDefault(); setMiniChatOpen(false); return; }
-                    if (e.key !== 'Enter') return;
-                    if (e.shiftKey) return;
-                    e.preventDefault();
-                    if (e.ctrlKey || e.metaKey) { sendMessage(true); } else { sendMessage(); }
-                  }}
-                />
-                {error ? <p className="error">{error}</p> : null}
-                <div className="mini-chat-actions">
-                  {settings.providerConfigs.length === 0 ? (
-                    <button type="button" className="mini-chat-add-profile" onClick={() => setAiSettingsModalOpen(true)}>Add AI profile</button>
-                  ) : (
-                    <select
-                      value={activeProviderConfig?.id ?? ''}
-                      onChange={(e) => changeSettingsProvider(e.target.value)}
-                    >
-                      {settings.providerConfigs.map((config) => (
-                        <option key={config.id} value={config.id}>{config.label}</option>
-                      ))}
-                    </select>
-                  )}
-                  {activeProviderConfig ? (
-                    <select
-                      className="mini-chat-model"
-                      value={activeProviderConfig.model}
-                      onChange={(e) => updateProviderConfig(activeProviderConfig.id, { model: e.target.value })}
-                    >
-                      {settingsModels.map((m) => <option key={m} value={m}>{m}</option>)}
-                    </select>
-                  ) : null}
-                  <button
-                    className="mini-chat-send"
-                    onClick={() => sendMessage()}
-                    disabled={!composerDraft.trim() || sending || !activeProviderConfig?.apiKey.trim()}
-                  >
-                    {sending ? '…' : 'Send'}
-                  </button>
-                </div>
+              <div className="bottom-dock-body">
+                <p className="muted">Nothing here yet.</p>
               </div>
             </div>
           ) : null}
-          </div>
         </section>
+        <aside className="panel right">
+          {rightPanelOpen ? (
+            activeThread ? (
+              <div className="chat-dock">
+                <div className="mini-chat-header">
+                  <span className="mini-chat-title">{activeThread.title}</span>
+                  <div className="mini-chat-header-actions">
+                    <button type="button" className="quiet mini-chat-icon" onClick={() => openThreadEditor('edit', activeThread)} aria-label="Edit thread" title="Edit thread"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M11.5 2.5a1.5 1.5 0 0 1 2.12 2.12L5 13.24l-3 .76.76-3 8.74-8.5z"/></svg></button>
+                    <button type="button" className="quiet mini-chat-maximize" onClick={() => setRightPanelMaximized((current) => !current)} aria-label={rightPanelMaximized ? 'Restore chat panel width' : 'Widen chat panel'} title={rightPanelMaximized ? 'Restore' : 'Widen'}>{rightPanelMaximized ? '▢' : '□'}</button>
+                    <button type="button" className="quiet mini-chat-close" onClick={() => setRightPanelOpen(false)} aria-label="Close chat">×</button>
+                  </div>
+                </div>
+                <div className="chat-dock-meta">
+                  <div className="chat-dock-meta-bar">
+                    <button type="button" className="chat-dock-provider" onClick={() => setProviderMenuOpen((open) => !open)} aria-expanded={providerMenuOpen} aria-label="Thread AI provider" title="Thread AI provider">
+                      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="8" cy="8" r="2.5"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.05 3.05l1.41 1.41M11.54 11.54l1.41 1.41M3.05 12.95l1.41-1.41M11.54 4.46l1.41-1.41"/></svg>
+                      <span className="chat-dock-provider-label">{activeProviderConfig ? `${activeProviderConfig.label} · ${activeProviderConfig.model || 'no model'}` : 'No AI profile'}</span>
+                      <svg className={`chat-dock-caret ${providerMenuOpen ? 'open' : ''}`} width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><polyline points="2 4 5 7 8 4"/></svg>
+                    </button>
+                    <span className="pill chat-dock-context" title="Context tokens remaining">{remainingContext.toLocaleString()} left</span>
+                  </div>
+                  {providerMenuOpen ? (
+                    <div className="chat-dock-provider-menu">
+                      {settings.providerConfigs.length === 0 ? (
+                        <button type="button" className="mini-chat-add-profile" onClick={addProviderProfile}>Add AI profile to chat</button>
+                      ) : (
+                        <>
+                          <label className="chat-dock-field">
+                            <span>Profile</span>
+                            <select
+                              value={activeProviderConfig?.id ?? ''}
+                              onChange={(event) => {
+                                const nextConfigId = event.target.value;
+                                changeSettingsProvider(nextConfigId);
+                                const nextConfig = settings.providerConfigs.find((config) => config.id === nextConfigId);
+                                if (nextConfig?.hasEncryptedApiKey && !nextConfig.apiKey.trim()) {
+                                  setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: nextConfigId });
+                                }
+                              }}
+                            >
+                              {settings.providerConfigs.map((config) => (
+                                <option key={config.id} value={config.id}>{config.label}</option>
+                              ))}
+                            </select>
+                          </label>
+                          {activeProviderConfig ? (
+                            <label className="chat-dock-field">
+                              <span>Model</span>
+                              <select
+                                value={activeProviderConfig.model}
+                                onChange={(e) => updateProviderConfig(activeProviderConfig.id, { model: e.target.value })}
+                              >
+                                {settingsModels.map((m) => <option key={m} value={m}>{m}</option>)}
+                              </select>
+                            </label>
+                          ) : null}
+                          {activeProviderConfig ? renderModelParams(activeProviderConfig) : null}
+                          <button type="button" className="quiet chat-dock-manage" onClick={() => openProviderSetup()}>Manage profiles</button>
+                        </>
+                      )}
+                    </div>
+                  ) : null}
+                  {selectedThreadUsage ? (
+                    <details className="chat-dock-usage-summary">
+                      <summary>
+                        <span className="chat-dock-usage-caret" aria-hidden="true">▸</span>
+                        <span className="chat-dock-usage-headline"><strong>{selectedThreadUsage.totalTokens.toLocaleString()}</strong> tokens</span>
+                        <span className="chat-dock-usage-cost">${selectedThreadUsage.estimatedCostUsd.toFixed(4)}</span>
+                      </summary>
+                      <div className="usage-grid chat-dock-usage">
+                        <div><span>Input</span><strong>{selectedThreadUsage.inputTokens.toLocaleString()}</strong></div>
+                        <div><span>Output</span><strong>{selectedThreadUsage.outputTokens.toLocaleString()}</strong></div>
+                        <div><span>Total</span><strong>{selectedThreadUsage.totalTokens.toLocaleString()}</strong></div>
+                        <div><span>Cost est.</span><strong>${selectedThreadUsage.estimatedCostUsd.toFixed(4)}</strong></div>
+                      </div>
+                    </details>
+                  ) : null}
+                  {ttsVoices.length > 0 ? (
+                    <details className="chat-dock-tts">
+                      <summary>
+                        <span className="chat-dock-usage-caret" aria-hidden="true">▸</span>
+                        <span>Browser voice</span>
+                      </summary>
+                      <div className="chat-dock-tts-grid">
+                        <label className="chat-dock-field">
+                          <span>Voice</span>
+                          <select
+                            value={ttsSettings.voiceURI}
+                            onChange={(event) => setTtsSettings((current) => ({ ...current, voiceURI: event.target.value }))}
+                          >
+                            <option value="">Browser default</option>
+                            {ttsVoices.map((voice) => (
+                              <option key={voice.voiceURI} value={voice.voiceURI}>{voice.name} · {voice.lang}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="chat-dock-field">
+                          <span>Speed {ttsSettings.rate.toFixed(2)}×</span>
+                          <input
+                            type="range"
+                            min="0.75"
+                            max="1.35"
+                            step="0.05"
+                            value={ttsSettings.rate}
+                            onChange={(event) => setTtsSettings((current) => ({ ...current, rate: Number(event.target.value) }))}
+                          />
+                        </label>
+                      </div>
+                    </details>
+                  ) : null}
+                </div>
+                <div className="mini-chat-messages" ref={rightPanelMessagesRef}>
+                  {activeThread.context.length === 0 ? (
+                    <p className="muted">No messages yet. Send the first one.</p>
+                  ) : (
+                    activeThread.context.map((message) =>
+                      renderChatMessage(message, message.role === 'assistant' && activeThread.context[activeThread.context.length - 1]?.id === message.id),
+                    )
+                  )}
+                  <div ref={rightPanelEndRef} className="chat-scroll-anchor" aria-hidden="true" />
+                </div>
+                {renderComposer({ fileInputId: 'file-upload', placeholder: 'Ask the thread something', onEscape: () => setRightPanelOpen(false), autoFocus: true })}
+              </div>
+            ) : (
+              <div className="panel-empty">
+                <p className="muted">Select a thread to start chatting.</p>
+              </div>
+            )
+          ) : null}
+        </aside>
+        {leftPanelOpen ? (
+          <div className="resize-handle resize-handle-left" role="separator" aria-orientation="vertical" aria-label="Resize left panel" onPointerDown={(event) => beginPanelResize('left', event)} onPointerMove={movePanelResize} onPointerUp={endPanelResize} onPointerCancel={endPanelResize} />
+        ) : null}
+        {rightPanelOpen && !rightPanelMaximized ? (
+          <div className="resize-handle resize-handle-right" role="separator" aria-orientation="vertical" aria-label="Resize chat panel" onPointerDown={(event) => beginPanelResize('right', event)} onPointerMove={movePanelResize} onPointerUp={endPanelResize} onPointerCancel={endPanelResize} />
+        ) : null}
+        {bottomPanelOpen ? (
+          <div className="resize-handle resize-handle-bottom" role="separator" aria-orientation="horizontal" aria-label="Resize bottom panel" onPointerDown={(event) => beginPanelResize('bottom', event)} onPointerMove={movePanelResize} onPointerUp={endPanelResize} onPointerCancel={endPanelResize} />
+        ) : null}
       </main>
+      <footer className="status-bar" aria-label="Workspace status">
+        <div className="status-group status-left">
+          <span>{state.densityOverlay ? 'Threadlines on' : 'Threadlines off'}</span>
+          <span>{metrics.saturation * 100 < 50 ? 'light weave' : 'dense weave'}</span>
+        </div>
+        <div className="status-group status-center" aria-label="Canvas zoom controls">
+          <button type="button" className="status-btn" onClick={() => zoomFromButton(-1)} aria-label="Zoom out">−</button>
+          <button type="button" className="status-zoom" onClick={resetView} aria-label="Recenter and reset zoom" title="Recenter / reset zoom">{Math.round(state.zoom * 100)}%</button>
+          <button type="button" className="status-btn" onClick={() => zoomFromButton(1)} aria-label="Zoom in">+</button>
+        </div>
+        <div className="status-group status-right">
+          <span>{Math.round(state.zoom * 100)}%</span>
+          <span>{metrics.threadCount} threads</span>
+          <div className="status-group status-panels" role="group" aria-label="Panel controls">
+            <button type="button" className={`status-btn status-panel-btn ${leftPanelOpen ? 'active' : ''}`} aria-pressed={leftPanelOpen} onClick={() => setLeftPanelOpen((open) => !open)} aria-label="Toggle threads panel" title="Threads panel">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><rect x="1.5" y="2.5" width="4.5" height="11" fill="currentColor" stroke="none"/></svg>
+            </button>
+            <button type="button" className={`status-btn status-panel-btn ${bottomPanelOpen ? 'active' : ''}`} aria-pressed={bottomPanelOpen} onClick={() => setBottomPanelOpen((open) => !open)} aria-label="Toggle bottom panel" title="Bottom panel">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><rect x="1.5" y="9.5" width="13" height="4" fill="currentColor" stroke="none"/></svg>
+            </button>
+            <button type="button" className={`status-btn status-panel-btn ${rightPanelOpen ? 'active' : ''}`} aria-pressed={rightPanelOpen} onClick={() => setRightPanelOpen((open) => !open)} aria-label="Toggle chat panel" title="Chat panel">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><rect x="10" y="2.5" width="4.5" height="11" fill="currentColor" stroke="none"/></svg>
+            </button>
+          </div>
+        </div>
+      </footer>
+      </>
+      )}
 
+      {onboardingVisible ? (
+        <div className="chat-modal-backdrop" onClick={dismissOnboarding}>
+          <section className="chat-modal onboarding-modal" onClick={(event) => event.stopPropagation()}>
+            <header className="chat-modal-header">
+              <div>
+                <p className="eyebrow">Welcome</p>
+                <h2>{onboardingStep === 'provider' ? 'Set up your AI provider' : 'Create your first thread'}</h2>
+              </div>
+              <button type="button" className="quiet" onClick={dismissOnboarding} aria-label="Skip onboarding">
+                ×
+              </button>
+            </header>
+            <div className="chat-modal-body onboarding-body">
+              <div className="onboarding-steps" aria-hidden="true">
+                <span className={`onboarding-step ${onboardingStep === 'provider' ? 'active' : 'done'}`}>1 · AI provider</span>
+                <span className={`onboarding-step ${onboardingStep === 'thread' ? 'active' : 'pending'}`}>2 · Thread</span>
+              </div>
+              {onboardingStep === 'provider' ? (
+                <>
+                  <div className="onboarding-copy">
+                    <p>Pick a provider, add an API key, and choose the model this workspace should use when you send a message.</p>
+                    <p className="muted">You can skip this and wire AI up later from the AI button in the top bar.</p>
+                  </div>
+                  <div className="onboarding-actions">
+                    <button type="button" onClick={() => openProviderSetup()}>
+                      Set up AI provider
+                    </button>
+                    <button type="button" className="quiet" onClick={() => setOnboardingState('providerSkipped')}>
+                      Skip for now
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="onboarding-copy">
+                    <p>Name the first thread so the canvas has somewhere to start. Threads are provider-agnostic, so you can create one before AI is ready.</p>
+                    {!hasConfiguredProvider ? (
+                      <p className="muted">You skipped AI setup for now. Use the AI button any time to connect a provider later.</p>
+                    ) : null}
+                  </div>
+                  <div className="onboarding-actions">
+                    <button type="button" onClick={() => openThreadEditor('create')}>
+                      Create thread
+                    </button>
+                    <button type="button" className="quiet" onClick={dismissOnboarding}>
+                      Skip for now
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </section>
+        </div>
+      ) : null}
       {nodePreviewModal ? (
         <div className="chat-modal-backdrop" onClick={() => setNodePreviewModal(null)}>
           <section className="chat-modal node-preview-modal" onClick={(e) => e.stopPropagation()}>
@@ -1819,393 +3192,268 @@ if (closeAfter) setMiniChatOpen(false);
         </div>
       ) : null}
 
-      {chatModalOpen && activeThread ? (
-        <div className="chat-modal-backdrop" onClick={() => setChatModalOpen(false)}>
-          <section className="chat-modal" onClick={(event) => event.stopPropagation()}>
+
+      {workspaceManagerOpen ? (
+        <div className="chat-modal-backdrop" onClick={closeWorkspaceManager}>
+          <section className="chat-modal workspace-manager-modal" onClick={(event) => event.stopPropagation()}>
             <header className="chat-modal-header">
               <div>
-                <p className="eyebrow">Active thread</p>
-                <h2>{activeThread.title}</h2>
+                <p className="eyebrow">Workspaces</p>
+                <h2>Switch or create workspaces</h2>
               </div>
-              <button type="button" className="quiet" onClick={() => setChatModalOpen(false)} aria-label="Close chat panel">
+              <button type="button" className="quiet" onClick={closeWorkspaceManager} aria-label="Close workspace manager">
                 ×
               </button>
             </header>
-
-            <div className="chat-modal-body">
-              <article className="inspector-card">
-                <div className="meta-row">
+            <div className="chat-modal-body workspace-manager-body">
+              <section className="inspector-card workspace-manager-card">
+                <div className="workspace-manager-head">
                   <div>
-                    <h3>{activeThread.description}</h3>
-                    <p>{activeThread.nodes.length} nodes in this lane.</p>
+                    <h3>Saved in this browser</h3>
+                    <p>Each workspace keeps its own canvas, threads, and chat history.</p>
                   </div>
-                  <button className="quiet icon-btn" onClick={() => openThreadEditor('edit', activeThread)} aria-label="Edit thread"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M11.5 2.5a1.5 1.5 0 0 1 2.12 2.12L5 13.24l-3 .76.76-3 8.74-8.5z"/></svg></button>
+                  <span className="pill">{workspaceCount} total</span>
                 </div>
-                <div className="thread-meta-row stack">
-                  {settings.providerConfigs.length === 0 ? (
-                    <button type="button" onClick={() => setAiSettingsModalOpen(true)}>
-                      Add AI profile to chat
-                    </button>
-                  ) : (
-                    <label className="field compact">
-                      AI profile
-                      <select
-                        value={activeProviderConfig?.id ?? ''}
-                        onChange={(event) => {
-                          const nextConfigId = event.target.value;
-                          changeSettingsProvider(nextConfigId);
-                        }}
-                      >
-                        {settings.providerConfigs.map((config) => (
-                          <option key={config.id} value={config.id}>
-                            {config.label}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  )}
-                  <span className="pill">Model: {activeProviderConfig?.model ?? '—'}</span>
-                  <span className="pill">Context left: {activeThread ? remainingContext.toLocaleString() : '—'}</span>
-                  <button type="button" className="quiet icon-btn" onClick={() => setAiSettingsModalOpen(true)} aria-label="AI settings"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="8" cy="8" r="2.5"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.05 3.05l1.41 1.41M11.54 11.54l1.41 1.41M3.05 12.95l1.41-1.41M11.54 4.46l1.41-1.41"/></svg></button>
+                <div className="workspace-list">
+                  {workspaces.map((workspace) => {
+                    const isActive = workspace.id === activeWorkspaceId;
+                    const workspaceTitle = workspace.state.title.trim() || 'Untitled workspace';
+                    const threadCount = workspace.state.threads.length;
+                    return (
+                      <article key={workspace.id} className={`workspace-card ${isActive ? 'selected' : ''}`}>
+                        <button type="button" className="workspace-card-main" onClick={() => activateWorkspace(workspace.id)} aria-pressed={isActive}>
+                          <span className="workspace-card-title-row">
+                            <strong>{workspaceTitle}</strong>
+                            {isActive ? <span className="pill">Current</span> : null}
+                          </span>
+                          <span className="workspace-card-meta">
+                            <span>{threadCount} thread{threadCount === 1 ? '' : 's'}</span>
+                            <span>{Math.round(workspace.state.zoom * 100)}% zoom</span>
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          className="quiet btn-danger workspace-card-delete"
+                          onClick={() => deleteWorkspace(workspace.id)}
+                          disabled={workspaceCount <= 1}
+                          aria-label={`Delete ${workspaceTitle}`}
+                        >
+                          Delete
+                        </button>
+                      </article>
+                    );
+                  })}
                 </div>
-                {selectedThreadUsage ? (
-                  <div className="usage-grid">
-                    <div>
-                      <span>Input</span>
-                      <strong>{selectedThreadUsage.inputTokens.toLocaleString()}</strong>
-                    </div>
-                    <div>
-                      <span>Output</span>
-                      <strong>{selectedThreadUsage.outputTokens.toLocaleString()}</strong>
-                    </div>
-                    <div>
-                      <span>Total</span>
-                      <strong>{selectedThreadUsage.totalTokens.toLocaleString()}</strong>
-                    </div>
-                    <div>
-                      <span>Cost est.</span>
-                      <strong>${selectedThreadUsage.estimatedCostUsd.toFixed(4)}</strong>
-                    </div>
-                  </div>
-                ) : null}
-              </article>
-
-              <section className="chat-panel">
-                {activeThread.context.length === 0 ? (
-                  <p className="muted">No messages yet. Send the first one.</p>
-                ) : (
-                  activeThread.context.map((message) => (
-<div
-                      key={message.id}
-                      className={`bubble ${message.role} ${message.injectedFromThreadId ? 'injected' : ''}`}
-                      style={message.injectedFromColor ? {
-                        '--inject-bg': hexToRgba(message.injectedFromColor, 0.07),
-                        '--inject-border': hexToRgba(message.injectedFromColor, 0.3),
-                      } as React.CSSProperties : undefined}
-                    >
-                      <strong>{message.role === 'assistant' ? 'ai' : message.role}</strong>
-                      <FormattedMessage text={getMessageText(message) || message.text || ''} />
-                      {hasAttachments(message) && (
-                        <div className="message-attachments">
-                          {getAttachmentsByType(message, 'image').map(att => (
-                            <img key={att.id} src={att.preview} alt={att.filename} className="message-image" />
-                          ))}
-                          {getAttachmentsByType(message, 'document').map(att => (
-                            <div key={att.id} className="message-document">
-                              📄 {att.filename}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  ))
-                )}
+                <p className="muted workspace-manager-note">Rename the current workspace from the title field in the header.</p>
               </section>
-
-              {activeNodeIsChat ? (
-                <section className="inspector-card send-card">
-                  <h4>Send to AI</h4>
-                  <textarea
+              <form className="inspector-card workspace-create-card" onSubmit={(event) => { event.preventDefault(); createWorkspaceFromManager(); }}>
+                <h3>Create workspace</h3>
+                <label className="field">
+                  Workspace name
+                  <input
                     autoFocus
-                    value={composerDraft}
-                    onChange={(event) => setComposerDraft(event.target.value)}
-                    placeholder="Ask the thread something"
-                    rows={5}
-                    onKeyDown={(e) => {
-                      if (e.key !== 'Enter') return;
-                      if (e.shiftKey) return;
-                      e.preventDefault();
-                      if (e.ctrlKey || e.metaKey) { sendMessage(true); } else { sendMessage(); }
-                    }}
+                    value={workspaceDraftTitle}
+                    onChange={(event) => setWorkspaceDraftTitle(event.target.value)}
+                    placeholder="e.g. client sandbox"
                   />
-                  
-                  {/* File attachments display */}
-                  {composerAttachments.length > 0 && (
-                    <div className="composer-attachments">
-                      {composerAttachments.map(att => (
-                        <div key={att.id} className="attachment-preview">
-                          {att.type === 'image' ? (
-                            <img src={att.preview} alt={att.filename} className="attachment-thumbnail" />
-                          ) : (
-                            <div className="document-preview">📄 {att.filename}</div>
-                          )}
-                          <button 
-                            onClick={() => setComposerAttachments(prev => prev.filter(a => a.id !== att.id))}
-                            className="remove-attachment"
-                          >
-                            ×
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  
-                  {/* File upload */}
-                  <div className="file-upload-area">
-                    <input
-                      type="file"
-                      id="file-upload"
-                      multiple
-                      accept="image/*,application/pdf,text/plain,text/markdown"
-                      onChange={async (e) => {
-                        if (!e.target.files) return;
-                        const newAttachments: MediaAttachment[] = [];
-                        const errors: string[] = [];
-                        
-                        for (const file of Array.from(e.target.files)) {
-                          const validation = validateFile(file);
-                          if (!validation.valid) {
-                            errors.push(`${file.name}: ${validation.error}`);
-                            continue;
-                          }
-                          
-                          // Verify image magic bytes to catch MIME spoofing
-                          if (file.type === 'image/png' || file.type === 'image/jpeg') {
-                            const byteCheck = await verifyImageBytes(file);
-                            if (!byteCheck.valid) {
-                              errors.push(byteCheck.error!);
-                              continue;
-                            }
-                          }
-                          
-                          try {
-                            const attachment = await processFile(file);
-                            newAttachments.push(attachment);
-                          } catch {
-                            errors.push(`Failed to process ${file.name}`);
-                          }
-                        }
-                        
-                        if (errors.length > 0) {
-                          setError(errors.join('\n'));
-                        }
-                        if (newAttachments.length > 0) {
-                          setComposerAttachments(prev => [...prev, ...newAttachments]);
-                        }
-                        e.target.value = '';
-                      }}
-                      style={{ display: 'none' }}
-                    />
-                    <label htmlFor="file-upload" className="file-upload-button">
-                      📎 Attach files
-                    </label>
-                  </div>
-                  
-                  {settingsLockState === 'locked' ? <p className="muted">Unlock the active AI profile to send a message.</p> : null}
-                  {error ? <p className="error">{error}</p> : null}
-<button
-                    onClick={() => sendMessage()}
-                    disabled={(!composerDraft.trim() && composerAttachments.length === 0) || sending || !activeProviderConfig?.apiKey.trim()}
-                  >
-                    {sending ? 'Thinking…' : settingsLockState === 'locked' ? 'Unlock to send' : 'Send'}
+                </label>
+                <p className="muted">New workspaces start with an empty canvas and their own thread list.</p>
+                <div className="editor-actions left-aligned">
+                  <button type="submit">Create workspace</button>
+                  <button type="button" className="quiet" onClick={closeWorkspaceManager}>
+                    Cancel
                   </button>
-                </section>
-              ) : null}
-
-              {activeNode?.kind === 'chat' ? (
-                <section className={`inspector-card node-card ${sending && activeNode.id === activeThread.activeNodeId ? 'sending' : ''}`}>
-                  <h4>Selected node</h4>
-                  <p>{activeNode.summary}</p>
-                  <ul>
-                    <li>{activeNode.messages.length} messages</li>
-                    <li>{activeNode.createdAt.slice(0, 10)}</li>
-                    <li>{activeNode.model}</li>
-                    {activeNode.usage ? <li>{activeNode.usage.totalTokens.toLocaleString()} tokens</li> : null}
-                  </ul>
-                </section>
-              ) : null}
-
+                </div>
+              </form>
             </div>
           </section>
         </div>
       ) : null}
-
       {aiSettingsModalOpen ? (
-        <div className="chat-modal-backdrop" onClick={() => setAiSettingsModalOpen(false)}>
+        <div className="chat-modal-backdrop" onClick={closeAiSettings}>
           <section className="ai-settings-modal" onClick={(event) => event.stopPropagation()}>
             <header className="chat-modal-header">
               <div>
                 <p className="eyebrow">AI settings</p>
                 <h2>Manage AI profiles</h2>
               </div>
-              <button type="button" className="quiet" onClick={() => setAiSettingsModalOpen(false)} aria-label="Close AI settings">
+              <button type="button" className="quiet" onClick={closeAiSettings} aria-label="Close AI settings">
                 ×
               </button>
             </header>
             <div className="chat-modal-body">
               <section className="inspector-card settings-card">
-                <div className="settings-management-header">
-                  <div className="settings-management-row">
-                    <label className="field compact-inline">
-                      <span>Profile</span>
-                      <select
-                        autoFocus
-                        value={activeProviderConfig?.id ?? ''}
-                        onChange={(event) => changeSettingsProvider(event.target.value)}
-                      >
-                        {settings.providerConfigs.map((config) => (
-                          <option key={config.id} value={config.id}>
-                            {config.label}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <span className={`pill settings-pill ${settingsLockState}`}>
-                      {settingsLockState === 'none' ? 'no saved key' : settingsLockState === 'unlocked' ? 'unlocked' : 'locked'}
-                    </span>
-                  </div>
-                  <div className="editor-actions left-aligned">
+                <div className="profile-tabs" role="tablist" aria-label="AI profiles">
+                  {settings.providerConfigs.map((config) => (
                     <button
+                      key={config.id}
                       type="button"
-                      onClick={() => {
-                        const next = createProviderConfig('openai-compatible-custom', { label: 'New profile', model: '' });
-                        setSettings((current) => ({
-                          ...current,
-                          activeProviderConfigId: next.id,
-                          providerConfigs: [...current.providerConfigs, next],
-                        }));
-                      }}
+                      role="tab"
+                      aria-selected={config.id === settingsEditorConfig?.id}
+                      className={`profile-tab ${config.id === settingsEditorConfig?.id ? 'selected' : ''}`}
+                      onClick={() => setSettingsEditorConfigId(config.id)}
                     >
-                      New profile
+                      {config.label}
                     </button>
-                    <button
-                      type="button"
-                      className="quiet btn-danger"
-                      onClick={() => activeProviderConfig && deleteProfile(activeProviderConfig.id)}
-                      disabled={!activeProviderConfig}
-                    >
-                      Delete profile
-                    </button>
-                  </div>
+                  ))}
+                  <button type="button" className="profile-tab profile-tab-add" onClick={addProviderProfile} aria-label="Add AI profile">
+                    + New
+                  </button>
                 </div>
-                {activeProviderConfig ? (
-                  <>
-                    <label className="field">
-                      Provider type
-                      <select
-                        value={activeProviderConfig.kind}
-                        onChange={(event) => {
-                          const kind = event.target.value as AIProvider;
-                          const info = providerInfo(kind);
-                          updateProviderConfig(activeProviderConfig.id, {
-                            kind,
-                            label: activeProviderConfig.label || info.label,
-                            model: '',
-                            baseUrl: info.baseUrl,
-                          });
-                          setSettings((current) => ({ ...current, activeProviderConfigId: activeProviderConfig.id }));
-                        }}
-                      >
-                        {PROVIDERS.map((entry) => (
-                          <option key={entry.id} value={entry.id}>
-                            {entry.label}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="field">
-                      Label
-                      <input
-                        value={activeProviderConfig.label}
-                        onChange={(event) => updateProviderConfig(activeProviderConfig.id, { label: event.target.value })}
-                        placeholder="Profile name"
-                      />
-                    </label>
-                    {activeProviderConfig.kind === 'openai-compatible-custom' ? (
+                {settingsEditorConfig ? (
+                  <div className="settings-editor">
+                    <div className="settings-section">
+                      <h3 className="settings-section-title">Connection</h3>
                       <label className="field">
-                        Base URL
+                        Provider
+                        <select
+                          autoFocus
+                          value={settingsEditorConfig.kind}
+                          onChange={(event) => {
+                            const kind = event.target.value as AIProvider;
+                            const info = providerInfo(kind);
+                            const patch = {
+                              kind,
+                              label: autoProfileLabel(kind, settingsEditorConfig.label),
+                              model: '',
+                              baseUrl: info.baseUrl,
+                            };
+                            updateProviderConfig(settingsEditorConfig.id, patch);
+                            void fetchModelsForConfig({ ...settingsEditorConfig, ...patch }, { requireKey: false, updateSelectedModel: true });
+                          }}
+                        >
+                          {PROVIDERS.map((entry) => (
+                            <option key={entry.id} value={entry.id}>
+                              {entry.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      {settingsEditorConfig.kind === 'openai-compatible-custom' ? (
+                        <>
+                          <label className="field">
+                            Profile name
+                            <input
+                              value={settingsEditorConfig.label}
+                              onChange={(event) => updateProviderConfig(settingsEditorConfig.id, { label: event.target.value })}
+                              placeholder="e.g. Local Llama"
+                            />
+                          </label>
+                          <label className="field">
+                            Base URL
+                            <input
+                              value={settingsEditorConfig.baseUrl ?? ''}
+                              onChange={(event) => updateProviderConfig(settingsEditorConfig.id, { baseUrl: event.target.value })}
+                              onBlur={(event) => {
+                                void fetchModelsForConfig(
+                                  { ...settingsEditorConfig, baseUrl: event.target.value },
+                                  { requireKey: false, updateSelectedModel: true },
+                                );
+                              }}
+                              placeholder="https://api.example.com/v1"
+                              autoComplete="off"
+                              spellCheck={false}
+                            />
+                          </label>
+                        </>
+                      ) : null}
+                      <label className="field">
+                        <span className="field-label-row">
+                          <span>{providerInfo(settingsEditorConfig.kind).label} API key</span>
+                          <span className={`pill settings-pill ${settingsEditorLockState}`}>
+                            {settingsEditorLockState === 'none' ? 'no saved key' : settingsEditorLockState === 'unlocked' ? 'unlocked' : 'locked'}
+                          </span>
+                        </span>
                         <input
-                          value={activeProviderConfig.baseUrl ?? ''}
-                          onChange={(event) => updateProviderConfig(activeProviderConfig.id, { baseUrl: event.target.value })}
-                          placeholder="https://api.example.com/v1"
+                          type="password"
+                          value={settingsEditorConfig.apiKey}
+                          onChange={(event) => updateProviderConfig(settingsEditorConfig.id, { apiKey: event.target.value })}
+                          onBlur={(event) => {
+                            void fetchModelsForConfig(
+                              { ...settingsEditorConfig, apiKey: event.target.value },
+                              { requireKey: false, updateSelectedModel: true },
+                            );
+                          }}
+                          placeholder={settingsEditorConfig.hasEncryptedApiKey && !settingsEditorConfig.apiKey ? 'saved key — tap Unlock to load' : apiKeyPlaceholder(settingsEditorConfig.kind)}
                           autoComplete="off"
                           spellCheck={false}
                         />
+                        {providerKeyLink(settingsEditorConfig.kind) ? (
+                          <a
+                            className="key-signup-link"
+                            href={providerKeyLink(settingsEditorConfig.kind)!.href}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            {providerKeyLink(settingsEditorConfig.kind)!.label} →
+                          </a>
+                        ) : null}
                       </label>
-                    ) : null}
-                    <label className="field">
-                      Model
-                      <select
-                        value={activeProviderConfig.model}
-                        onChange={(event) => updateProviderConfig(activeProviderConfig.id, { model: event.target.value })}
-                      >
-                        {settingsModels.map((model) => (
-                          <option key={model} value={model}>
-                            {model}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <div className="editor-actions left-aligned">
-                      <button
-                        type="button"
-                        onClick={() => refreshModels(activeProviderConfig.id)}
-                        disabled={modelsLoading || !activeProviderConfig.apiKey.trim()}
-                      >
-                        {modelsLoading ? 'Loading models…' : modelCache[activeProviderConfig.id] ? 'Refresh models' : 'List models'}
-                      </button>
-                    </div>
-                    <label className="field">
-                      {providerInfo(activeProviderConfig.kind).label} API key
-                      <input
-                        type="password"
-                        value={activeProviderConfig.apiKey}
-                        onChange={(event) => updateProviderConfig(activeProviderConfig.id, { apiKey: event.target.value })}
-                        placeholder={activeProviderConfig.hasEncryptedApiKey && !activeProviderConfig.apiKey ? 'saved key — tap Unlock to load' : apiKeyPlaceholder(activeProviderConfig.kind)}
-                        autoComplete="off"
-                        spellCheck={false}
-                      />
-                      {providerKeyLink(activeProviderConfig.kind) ? (
-                        <a
-                          className="key-signup-link"
-                          href={providerKeyLink(activeProviderConfig.kind)!.href}
-                          target="_blank"
-                          rel="noopener noreferrer"
+                      <div className="editor-actions left-aligned">
+                        <button type="button" onClick={() => requestSaveKey(settingsEditorConfig.id)} disabled={savingSettings}>
+                          {savingSettings
+                            ? 'Working…'
+                            : settingsEditorConfig.apiKey.trim()
+                              ? settingsEditorConfig.hasEncryptedApiKey ? 'Update saved key' : 'Save key'
+                              : settingsEditorConfig.hasEncryptedApiKey ? 'Unlock saved key' : 'Save key'}
+                        </button>
+                        <button
+                          type="button"
+                          className="quiet btn-danger"
+                          onClick={() => deleteSavedKey(settingsEditorConfig.id)}
+                          disabled={savingSettings || !settingsEditorConfig.hasEncryptedApiKey}
                         >
-                          {providerKeyLink(activeProviderConfig.kind)!.label} →
-                        </a>
-                      ) : null}
-                    </label>
-                    <div className="editor-actions left-aligned">
-                      <button type="button" onClick={requestSaveKey} disabled={savingSettings}>
-                        {savingSettings
-                          ? 'Working…'
-                          : activeProviderConfig.apiKey.trim()
-                            ? activeProviderConfig.hasEncryptedApiKey ? 'Update saved key' : 'Save key'
-                            : activeProviderConfig.hasEncryptedApiKey ? 'Unlock saved key' : 'Save key'}
-                      </button>
-                      <button
-                        type="button"
-                        className="quiet btn-danger"
-                        onClick={deleteSavedKey}
-                        disabled={savingSettings || !activeProviderConfig.hasEncryptedApiKey}
-                      >
-                        Delete saved key
+                          Delete saved key
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="settings-section">
+                      <h3 className="settings-section-title">Model</h3>
+                      <div className="settings-model-row">
+                        <label className="field">
+                          Model
+                          <select
+                            value={settingsEditorConfig.model}
+                            onChange={(event) => updateProviderConfig(settingsEditorConfig.id, { model: event.target.value })}
+                          >
+                            {settingsEditorModels.map((model) => (
+                              <option key={model} value={model}>
+                                {model}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <button
+                          type="button"
+                          className="settings-refresh"
+                          onClick={() => refreshModels(settingsEditorConfig.id)}
+                          disabled={settingsEditorModelsLoading || !settingsEditorConfig.apiKey.trim()}
+                        >
+                          {settingsEditorModelsLoading ? 'Loading…' : settingsEditorHasCachedModels ? 'Refresh' : 'List models'}
+                        </button>
+                      </div>
+                    </div>
+
+                    {renderModelParams(settingsEditorConfig)}
+
+                    {providerError ? <p className="error settings-status">{providerError}</p> : null}
+                    {settingsNotice ? <p className="muted settings-status">{settingsNotice}</p> : null}
+
+                    <div className="settings-danger">
+                      <button type="button" className="quiet btn-danger" onClick={() => deleteProfile(settingsEditorConfig.id)}>
+                        Delete this profile
                       </button>
                     </div>
-                  </>
-                ) : null}
-                {settingsNotice ? <p className="muted">{settingsNotice}</p> : null}
+                  </div>
+                ) : (
+                  <div className="profile-list-empty">
+                    <p>No AI profiles yet. Add one to start chatting.</p>
+                    <button type="button" className="profile-list-empty-cta" onClick={addProviderProfile}>
+                      Add AI profile
+                    </button>
+                  </div>
+                )}
               </section>
             </div>
           </section>
@@ -2224,7 +3472,7 @@ if (closeAfter) setMiniChatOpen(false);
                 ×
               </button>
             </header>
-            <div className="chat-modal-body">
+            <form className="chat-modal-body" onSubmit={(event) => { event.preventDefault(); submitThreadEditor(); }}>
               <label className="field">
                 Thread title
                 <input
@@ -2245,11 +3493,88 @@ if (closeAfter) setMiniChatOpen(false);
               </label>
               <p className="muted">Threads are provider-agnostic now. The active AI profile (set in the sidebar) decides which model answers when you send.</p>
               <div className="editor-actions">
-                <button onClick={submitThreadEditor}>{threadEditorMode === 'create' ? 'Create thread' : 'Save changes'}</button>
-                <button className="quiet" onClick={closeThreadEditor}>
+                <button type="submit">{threadEditorMode === 'create' ? 'Create thread' : 'Save changes'}</button>
+                <button type="button" className="quiet" onClick={closeThreadEditor}>
                   Cancel
                 </button>
               </div>
+            </form>
+          </section>
+        </div>
+      ) : null}
+
+      {passphraseModal ? (
+        <div className="chat-modal-backdrop" onClick={passphraseModal.busy ? undefined : closePassphraseModal}>
+          <section className="passphrase-modal" onClick={(event) => event.stopPropagation()}>
+            <header className="chat-modal-header">
+              <div>
+                <p className="eyebrow">{passphraseModal.mode === 'encrypt' ? 'Encrypt your key' : 'Unlock your saved key'}</p>
+                <h2>{passphraseModal.mode === 'encrypt' ? 'Choose a passphrase' : 'Enter your passphrase'}</h2>
+              </div>
+              <button type="button" className="quiet" onClick={closePassphraseModal} aria-label="Close" disabled={passphraseModal.busy}>
+                ×
+              </button>
+            </header>
+            <div className="chat-modal-body">
+              <p className="muted">
+                {passphraseModal.mode === 'encrypt'
+                  ? 'Your key is encrypted in this browser using this passphrase. Anyone with access to this browser also needs the passphrase to load it. There is no recovery — write it down.'
+                  : 'Decrypts the key saved in this browser. It stays in memory until you refresh or close the tab.'}
+              </p>
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  submitPassphraseModal();
+                }}
+              >
+                <label className="field">
+                  Passphrase
+                  <input
+                    autoFocus
+                    type="password"
+                    value={passphraseModal.passphrase}
+                    onChange={(event) =>
+                      setPassphraseModal((current) => (current ? { ...current, passphrase: event.target.value } : current))
+                    }
+                    autoComplete="off"
+                    spellCheck={false}
+                    disabled={passphraseModal.busy}
+                  />
+                </label>
+                {error ? <p className="error">{error}</p> : null}
+                <div className="editor-actions">
+                  <button type="submit" disabled={passphraseModal.busy || !passphraseModal.passphrase.trim()}>
+                    {passphraseModal.busy
+                      ? 'Working…'
+                      : passphraseModal.mode === 'encrypt' ? 'Encrypt and save' : 'Unlock'}
+                  </button>
+                  <button type="button" className="quiet" onClick={closePassphraseModal} disabled={passphraseModal.busy}>
+                    Cancel
+                  </button>
+                </div>
+              </form>
+              {passphraseModal.mode === 'unlock' && passphraseModal.targetConfigId ? (
+                <div className="passphrase-escape">
+                  <p className="muted">
+                    Forgot your passphrase? You can delete this profile to escape this prompt. The encrypted key will be wiped from this browser.
+                  </p>
+                  <button
+                    type="button"
+                    className="quiet"
+                    disabled={passphraseModal.busy}
+                    onClick={() => {
+                      const target = settings.providerConfigs.find((config) => config.id === passphraseModal.targetConfigId);
+                      if (!target) return;
+                      const confirmed = window.confirm(`Delete AI profile "${target.label}" and the saved key you can no longer unlock?`);
+                      if (!confirmed) return;
+                      removeProfile(target);
+                      setPassphraseModal(null);
+                    }}
+                  >
+                    Delete this profile and exit
+                  </button>
+                </div>
+              ) : null}
             </div>
           </section>
         </div>
@@ -2268,41 +3593,58 @@ function modelsForConfig(cache: ModelCache, config: AIProviderConfig | null | un
   return base;
 }
 
+// Convert a single attachment into an OpenAI chat-completions content part.
+// Images use image_url, PDFs use the `file` part, and text documents are inlined as text.
+function attachmentToOpenAIPart(attachment: MediaAttachment) {
+  if (attachment.type === 'image') {
+    return { type: 'image_url', image_url: { url: `data:${attachment.mimeType};base64,${attachment.data}` } };
+  }
+  if (attachment.mimeType === 'application/pdf') {
+    return { type: 'file', file: { filename: attachment.filename, file_data: `data:application/pdf;base64,${attachment.data}` } };
+  }
+  return { type: 'text', text: `Attached file "${attachment.filename}":\n\n${decodeBase64Text(attachment.data)}` };
+}
+
 // Helper function to convert ChatMessage to OpenAI API format
 function formatMessageForOpenAI(message: ChatMessage) {
   const role = message.role === 'assistant' ? 'assistant' : message.role === 'system' ? 'system' : 'user';
-  
-  // Handle backward compatibility and simple text messages
-  if (!message.content || message.content.type === 'text') {
+  const attachments = message.content?.attachments ?? [];
+  if (!message.content || message.content.type === 'text' || attachments.length === 0) {
     return { role, content: getMessageText(message) };
   }
-  
-  // Handle mixed content with attachments
-  if (message.content.attachments && message.content.attachments.length > 0) {
-    const content = [];
-    
-    // Add text if present
-    if (message.content.text) {
-      content.push({ type: 'text', text: message.content.text });
-    }
-    
-    // Add images (documents are not supported in vision API)
-    message.content.attachments.forEach(attachment => {
-      if (attachment.type === 'image') {
-        content.push({
-          type: 'image_url',
-          image_url: {
-            url: `data:${attachment.mimeType};base64,${attachment.data}`
-          }
-        });
-      }
-    });
-    
-    return { role, content };
-  }
-  
-  // Fallback to text
-  return { role, content: getMessageText(message) };
+
+  const content: unknown[] = [];
+  if (message.content.text) content.push({ type: 'text', text: message.content.text });
+  for (const attachment of attachments) content.push(attachmentToOpenAIPart(attachment));
+  return { role, content };
+}
+
+async function requestAiReply(config: AIProviderConfig, thread: ThreadLane, messages: ChatMessage[]) {
+  if (config.kind === 'anthropic') return requestAnthropic(config, thread, messages);
+  if (config.kind === 'openrouter') return requestOpenRouter(config, thread, messages);
+  return requestOpenAiCompatible(config, thread, messages);
+}
+
+function apiKeyPlaceholder(provider: AIProvider) {
+  if (provider === 'openai') return 'sk-...';
+  if (provider === 'anthropic') return 'sk-ant-...';
+  if (provider === 'openrouter') return 'sk-or-...';
+  if (provider === 'openai-compatible-custom') return 'sk-...';
+  return '';
+}
+
+function autoProfileLabel(kind: AIProvider, current: string): string {
+  if (kind !== 'openai-compatible-custom') return providerInfo(kind).label;
+  const presetLabels = PROVIDERS.map((entry) => entry.label);
+  const trimmed = current.trim();
+  return trimmed && trimmed !== 'New profile' && !presetLabels.includes(trimmed) ? trimmed : 'Custom provider';
+}
+
+function providerKeyLink(provider: AIProvider): { label: string; href: string } | null {
+  if (provider === 'openrouter') return { label: 'Get a free OpenRouter key', href: 'https://openrouter.ai/keys' };
+  if (provider === 'openai') return { label: 'Get an OpenAI key', href: 'https://platform.openai.com/api-keys' };
+  if (provider === 'anthropic') return { label: 'Get an Anthropic key', href: 'https://console.anthropic.com/settings/keys' };
+  return null;
 }
 
 const SYSTEM_PROMPT = (thread: ThreadLane) =>
@@ -2315,57 +3657,231 @@ const SYSTEM_PROMPT = (thread: ThreadLane) =>
     'Do not mention internal tools or policies.',
   ].join(' ');
 
-function apiKeyPlaceholder(provider: AIProvider) {
-  if (provider === 'openai') return 'sk-...';
-  if (provider === 'anthropic') return 'sk-ant-...';
-  if (provider === 'openrouter') return 'sk-or-...';
-  return 'API key';
+function openAiGenerationBody(config: AIProviderConfig): Record<string, unknown> {
+  const params = config.params ?? {};
+  const body: Record<string, unknown> = {};
+  // OpenAI proper omits temperature by default (some models only accept the default);
+  // other OpenAI-shaped providers keep the historical 0.4 unless the user overrides.
+  const temperature = params.temperature ?? (config.kind === 'openai' ? undefined : 0.4);
+  if (temperature !== undefined) body.temperature = temperature;
+  if (params.topP !== undefined) body.top_p = params.topP;
+  if (params.maxTokens !== undefined) body.max_tokens = params.maxTokens;
+  if (params.frequencyPenalty !== undefined) body.frequency_penalty = params.frequencyPenalty;
+  if (params.presencePenalty !== undefined) body.presence_penalty = params.presencePenalty;
+  if (params.seed !== undefined) body.seed = params.seed;
+  if (params.stop && params.stop.length > 0) body.stop = params.stop;
+  if (config.kind !== 'openai' && params.topK !== undefined) body.top_k = params.topK;
+  return body;
 }
 
-function providerKeyLink(provider: AIProvider): { label: string; href: string } | null {
-  if (provider === 'openrouter') return { label: 'Get a free OpenRouter key', href: 'https://openrouter.ai/keys' };
-  if (provider === 'openai') return { label: 'Get an OpenAI key', href: 'https://platform.openai.com/api-keys' };
-  if (provider === 'anthropic') return { label: 'Get an Anthropic key', href: 'https://console.anthropic.com/settings/keys' };
-  return null;
+const PARAM_META: Record<Exclude<keyof GenerationParams, 'stop'>, { label: string; min: number; max: number; step: number; control: 'range' | 'number'; default: number }> = {
+  temperature: { label: 'Temperature', min: 0, max: 2, step: 0.01, control: 'range', default: 0.7 },
+  topP: { label: 'Top P (nucleus)', min: 0, max: 1, step: 0.01, control: 'range', default: 1 },
+  topK: { label: 'Top K', min: 0, max: 500, step: 1, control: 'number', default: 40 },
+  maxTokens: { label: 'Max output tokens', min: 1, max: 200000, step: 1, control: 'number', default: 1024 },
+  frequencyPenalty: { label: 'Frequency penalty', min: -2, max: 2, step: 0.01, control: 'range', default: 0 },
+  presencePenalty: { label: 'Presence penalty', min: -2, max: 2, step: 0.01, control: 'range', default: 0 },
+  seed: { label: 'Seed', min: 0, max: 2147483647, step: 1, control: 'number', default: 0 },
+};
+
+async function requestOpenRouter(config: AIProviderConfig, thread: ThreadLane, messages: ChatMessage[]) {
+  const baseUrl = resolveBaseUrl(config.baseUrl, config.kind);
+  const response = await fetch(`${baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${config.apiKey}`,
+      'Content-Type': 'application/json',
+      // CORS-friendly attribution headers for OpenRouter
+      'X-App-Name': 'Loomspace',
+      'X-App-URL': window.location.origin,
+    },
+    body: JSON.stringify({
+      model: config.model,
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT(thread) },
+        ...messages.map(formatMessageForOpenAI),
+      ],
+      ...openAiGenerationBody(config),
+    }),
+  });
+
+  if (!response.ok) {
+    let errorText = '';
+    try {
+      errorText = await response.text();
+    } catch {
+      // If we can't read the response text, it's likely a network issue
+      errorText = 'Network error - check your internet connection';
+    }
+    
+    // Provide more detailed error messages for common OpenRouter issues
+    if (response.status === 0 || !response.status) {
+      throw new Error('OpenRouter request failed - check your internet connection and try again');
+    } else if (response.status === 401) {
+      throw new Error('OpenRouter API key is invalid - check your API key');
+    } else if (response.status === 429) {
+      throw new Error('OpenRouter rate limit exceeded - wait a moment and try again');
+    } else if (response.status >= 500) {
+      throw new Error('OpenRouter server error - try again in a moment');
+    } else {
+      throw new Error(errorText || `OpenRouter request failed (${response.status})`);
+    }
+  }
+
+  const data = (await response.json()) as {
+    choices?: Array<{ message?: { content?: string } }>;
+    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+  };
+  const assistantText = data.choices?.[0]?.message?.content?.trim();
+  if (!assistantText) throw new Error('OpenRouter returned no assistant text');
+
+  const usage = data.usage
+    ? normalizeUsage(config.model, data.usage.prompt_tokens ?? 0, data.usage.completion_tokens ?? 0, data.usage.total_tokens ?? 0)
+    : undefined;
+
+  return { assistantText, usage };
+}
+
+async function requestOpenAiCompatible(config: AIProviderConfig, thread: ThreadLane, messages: ChatMessage[]) {
+  const baseUrl = resolveBaseUrl(config.baseUrl, config.kind);
+  const payloadBase = {
+    model: config.model,
+    messages: [
+      { role: 'system', content: SYSTEM_PROMPT(thread) },
+      ...messages.map(formatMessageForOpenAI),
+    ],
+  };
+  const genBody = openAiGenerationBody(config);
+
+  const send = async (includeTemperature: boolean) => {
+    const body: Record<string, unknown> = { ...payloadBase, ...genBody };
+    if (!includeTemperature) delete body.temperature;
+
+    const response = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${config.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      return { ok: false as const, text };
+    }
+
+    const data = (await response.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+      usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+    };
+    return { ok: true as const, data };
+  };
+
+  let result = await send(true);
+
+  if (!result.ok && config.kind === 'openai') {
+    const maybeTempUnsupported = /temperature/i.test(result.text) && /unsupported|default \(1\)/i.test(result.text);
+    if (maybeTempUnsupported) {
+      result = await send(false);
+    }
+  }
+
+  if (!result.ok) {
+    throw new Error(result.text || `${config.label} request failed`);
+  }
+
+  const assistantText = result.data.choices?.[0]?.message?.content?.trim();
+  if (!assistantText) throw new Error(`${config.label} returned no assistant text`);
+
+  const usage = result.data.usage
+    ? normalizeUsage(config.model, result.data.usage.prompt_tokens ?? 0, result.data.usage.completion_tokens ?? 0, result.data.usage.total_tokens ?? 0)
+    : undefined;
+
+  return { assistantText, usage };
+}
+
+// Convert a single attachment into an Anthropic content block.
+// Images and PDFs use base64 source blocks; text documents are inlined as text.
+function attachmentToAnthropicPart(attachment: MediaAttachment) {
+  if (attachment.type === 'image') {
+    return { type: 'image', source: { type: 'base64', media_type: attachment.mimeType, data: attachment.data } };
+  }
+  if (attachment.mimeType === 'application/pdf') {
+    return { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: attachment.data } };
+  }
+  return { type: 'text', text: `Attached file "${attachment.filename}":\n\n${decodeBase64Text(attachment.data)}` };
 }
 
 // Helper function to convert ChatMessage to Anthropic API format
 function formatMessageForAnthropic(message: ChatMessage) {
   const role = message.role === 'assistant' ? 'assistant' : 'user';
-  
-  // Handle backward compatibility and simple text messages  
-  if (!message.content || message.content.type === 'text') {
+  const attachments = message.content?.attachments ?? [];
+  if (!message.content || message.content.type === 'text' || attachments.length === 0) {
     return { role, content: getMessageText(message) };
   }
-  
-  // Handle mixed content with attachments
-  if (message.content.attachments && message.content.attachments.length > 0) {
-    const content = [];
-    
-    // Add text if present
-    if (message.content.text) {
-      content.push({ type: 'text', text: message.content.text });
-    }
-    
-    // Add images in Anthropic format
-    message.content.attachments.forEach(attachment => {
-      if (attachment.type === 'image') {
-        content.push({
-          type: 'image',
-          source: {
-            type: 'base64',
-            media_type: attachment.mimeType,
-            data: attachment.data
-          }
-        });
-      }
-    });
-    
-    return { role, content };
+
+  const content: unknown[] = [];
+  if (message.content.text) content.push({ type: 'text', text: message.content.text });
+  for (const attachment of attachments) content.push(attachmentToAnthropicPart(attachment));
+  return { role, content };
+}
+
+async function requestAnthropic(config: AIProviderConfig, thread: ThreadLane, messages: ChatMessage[]) {
+  const baseUrl = resolveBaseUrl(config.baseUrl, config.kind);
+  const response = await fetch(`${baseUrl}/messages`, {
+    method: 'POST',
+    headers: {
+      'x-api-key': config.apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: config.model,
+      max_tokens: config.params?.maxTokens ?? 1024,
+      ...(config.params?.temperature !== undefined ? { temperature: config.params.temperature } : {}),
+      ...(config.params?.topP !== undefined ? { top_p: config.params.topP } : {}),
+      ...(config.params?.topK !== undefined ? { top_k: config.params.topK } : {}),
+      ...(config.params?.stop && config.params.stop.length > 0 ? { stop_sequences: config.params.stop } : {}),
+      system: SYSTEM_PROMPT(thread),
+      messages: messages
+        .filter((message) => message.role !== 'system')
+        .map(formatMessageForAnthropic),
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || 'Anthropic request failed');
   }
-  
-  // Fallback to text
-  return { role, content: getMessageText(message) };
+
+  const data = (await response.json()) as {
+    content?: Array<{ type?: string; text?: string }>;
+    usage?: { input_tokens?: number; output_tokens?: number };
+  };
+  const assistantText = (data.content ?? [])
+    .filter((block) => block.type === 'text')
+    .map((block) => block.text ?? '')
+    .join('\n')
+    .trim();
+  if (!assistantText) throw new Error('Anthropic returned no assistant text');
+
+  const inputTokens = data.usage?.input_tokens ?? 0;
+  const outputTokens = data.usage?.output_tokens ?? 0;
+  const usage = data.usage ? normalizeUsage(config.model, inputTokens, outputTokens, inputTokens + outputTokens) : undefined;
+
+  return { assistantText, usage };
+}
+
+function normalizeUsage(model: string, inputTokens: number, outputTokens: number, totalTokens: number): TokenUsage {
+  const total = totalTokens || inputTokens + outputTokens;
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens: total,
+    estimatedCostUsd: estimateCost(model, { inputTokens, outputTokens }),
+  };
 }
 
 function nodeHeight(thread: ThreadLane, node: ThreadNode) {
@@ -2431,10 +3947,36 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
-function FormattedMessage({ text }: { text: string }) {
+function FormattedMessage({ text, rich = false }: { text: string; rich?: boolean }) {
   return (
     <div className="message-copy">
-      <Markdown>{text}</Markdown>
+      <Markdown components={rich ? { code: CodeBlock } : undefined}>{text}</Markdown>
+    </div>
+  );
+}
+
+function CodeBlock({ inline, className, children, ...props }: any) {
+  const [copied, setCopied] = useState(false);
+  const value = String(children ?? '').replace(/\n$/, '');
+  const language = /language-(\w+)/.exec(className ?? '')?.[1];
+
+  if (inline) {
+    return <code className={className} {...props}>{children}</code>;
+  }
+
+  async function copyCode() {
+    await navigator.clipboard.writeText(value);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1400);
+  }
+
+  return (
+    <div className="code-block-shell">
+      <div className="code-block-header">
+        <span>{language ?? 'code'}</span>
+        <button type="button" onClick={copyCode}>{copied ? 'Copied' : 'Copy code'}</button>
+      </div>
+      <pre className={className}><code {...props}>{value}</code></pre>
     </div>
   );
 }
