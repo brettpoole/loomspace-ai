@@ -2,349 +2,243 @@
 
 A canvas for weaving project ideas and AI conversations into persistent, navigable threads.
 
-Each thread is an independent lane with its own AI context. Threads can be forked, cross-linked, and arranged spatially on an infinite canvas. All data is stored server-side per user account — nothing sensitive lives in the browser.
+Current state split:
+- durable app data can live on a backend: workspaces, threads, provider profiles, provider keys
+- runtime-only preferences remain browser-local: theme, panel sizes, TTS settings, onboarding/session UI state, model cache
 
 ---
 
-## Table of Contents
+## What to run
 
-- [Features](#features)
-- [Architecture](#architecture)
-- [Prerequisites](#prerequisites)
-- [Quick Start](#quick-start)
-- [Configuration](#configuration)
-- [API Reference](#api-reference)
-- [Development](#development)
-- [Deploying to DigitalOcean](#deploying-to-digitalocean)
-- [Project Structure](#project-structure)
-- [Security](#security)
-- [License](#license)
+There are **two backends** in this repo:
 
----
+1. `server/` — Node/Hono file-backed backend on port `3001`
+   - easiest way to run the app end-to-end right now
+   - no auth setup required
+   - stores durable data under `server/data/`
 
-## Features
+2. `backend/` — FastAPI + PostgreSQL backend on port `8000`
+   - used by the Docker/Postgres stack
+   - requires auth for `/api/*`
+   - the current `src/` frontend does **not** ship a login/register screen, so this path is not the easiest way to start using the UI locally
 
-- **Thread canvas** — infinite zoomable/pannable workspace; each thread is a vertical lane of chat nodes
-- **Multi-provider AI** — OpenAI, Anthropic, OpenRouter, and any OpenAI-compatible endpoint
-- **Server-side key storage** — API keys are encrypted at rest with Fernet (AES-128-GCM); the browser never handles a plaintext key after it is saved
-- **User accounts** — JWT-authenticated; each user's threads, profiles, and workspace are fully isolated
-- **Thread forking** — branch a conversation into a new thread with injected context from selected nodes
-- **Context injection** — pull messages from other threads into the active thread's context
-- **Responsive layout** — sidebar collapses to a drawer below 1024 px
+If you just want the app working locally, use **`server/` + Vite frontend**.
 
 ---
 
-## Architecture
+## Recommended local run
 
-```
-browser (React + Vite)
-        │  HTTP / JSON
-        ▼
-backend (FastAPI, port 8000)
-        │  asyncpg
-        ▼
-PostgreSQL 16 (port 5432)
-```
-
-| Layer | Stack |
-|---|---|
-| Frontend | React 19, TypeScript, Vite 7 |
-| Backend | Python 3.12, FastAPI, SQLAlchemy 2 async, Alembic |
-| Database | PostgreSQL 16 |
-| Auth | JWT (HS256), bcrypt passwords |
-| Encryption | Fernet (cryptography library), key derived from `DATA_SECRET` |
-| Container | Docker + Compose |
-
----
-
-## Prerequisites
-
-- [Docker](https://docs.docker.com/get-docker/) ≥ 24 with the Compose plugin
-- That's it for the default dev setup
-
-To run services individually:
-
-- Node.js ≥ 22
-- Python ≥ 3.12
-
----
-
-## Quick Start
+### Terminal 1 — start the backend
 
 ```bash
-# 1. Clone
-git clone <repo-url>
-cd loomspace-ai
+cd server
+npm ci
+DATA_SECRET=$(python -c "import secrets; print(secrets.token_hex(32))") npm start
+```
 
-# 2. Create your environment file
+Expected:
+- backend URL: `http://127.0.0.1:3001`
+- durable data written under `server/data/`
+
+### Terminal 2 — start the frontend
+
+```bash
+npm ci
+VITE_API_BASE=http://127.0.0.1:3001 npm run dev
+```
+
+Expected:
+- frontend URL: `http://127.0.0.1:5173`
+
+Then open `http://127.0.0.1:5173`.
+
+This path supports the current persistence model:
+- workspaces survive a browser wipe
+- threads/messages survive a browser wipe
+- provider profiles survive a browser wipe
+- saved provider keys survive a browser wipe
+- runtime-only settings reset after a browser wipe
+
+---
+
+## What is persisted where
+
+### Backend-persisted
+
+With the recommended `server/` backend running, these survive a full browser wipe:
+- workspace collection
+- active workspace
+- thread graph / messages / canvas state
+- AI provider profiles
+- saved provider API keys
+- provider model/generation settings
+
+### Browser-local only
+
+These stay local to the browser and may reset after a wipe:
+- theme mode
+- panel sizes
+- TTS settings / voices
+- onboarding dismissal state
+- cached model lists
+
+---
+
+## Alternative: FastAPI + PostgreSQL stack
+
+Use this only if you explicitly want the Python backend.
+
+### Start backend services
+
+```bash
 cp .env.example .env
 ```
 
-Edit `.env` and set **both** required secrets:
+Generate secrets and place them in `.env`:
 
 ```bash
-# Generate DATA_SECRET
 python -c "import secrets; print(secrets.token_hex(32))"
-
-# Generate JWT_SECRET
 python -c "import secrets; print(secrets.token_hex(32))"
 ```
 
-```bash
-# 3. Start the stack
-docker compose up --build
-
-# Frontend → http://localhost:5174
-# Backend  → http://localhost:8000
-# API docs → http://localhost:8000/docs
-```
-
-On first boot Alembic runs migrations automatically before uvicorn starts.
-
-Register an account at http://localhost:5174, then add an AI profile in Settings and save your API key.
-
----
-
-## Configuration
-
-All backend configuration is via environment variables, loaded from `.env`.
-
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `DATA_SECRET` | Yes | — | 64-char hex secret used to derive the Fernet key for API key encryption |
-| `JWT_SECRET` | Yes | `change-me-in-production` | Secret for signing JWT tokens |
-| `DATABASE_URL` | No | `postgresql+asyncpg://loomspace:loomspace@db:5432/loomspace` | asyncpg connection string |
-| `JWT_ALGORITHM` | No | `HS256` | JWT signing algorithm |
-| `JWT_EXPIRE_MINUTES` | No | `10080` (7 days) | JWT token lifetime |
-| `CORS_ORIGINS` | No | localhost dev ports | JSON array of allowed origins |
-
-The frontend reads one variable at build time:
-
-| Variable | Default | Description |
-|---|---|---|
-| `VITE_API_BASE` | `http://localhost:8000` | Backend base URL |
-
----
-
-## API Reference
-
-Interactive docs are available at `http://localhost:8000/docs` when the backend is running.
-
-### Auth
-
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/api/auth/register` | Create account → `{access_token, token_type}` |
-| `POST` | `/api/auth/login` | Sign in → `{access_token, token_type}` |
-| `GET` | `/api/auth/me` | Current user → `{id, username, createdAt}` |
-
-All other endpoints require `Authorization: Bearer <token>`.
-
-### Profiles (AI provider configurations)
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/api/profiles` | List profiles |
-| `POST` | `/api/profiles` | Create profile |
-| `PUT` | `/api/profiles/{id}` | Update profile |
-| `DELETE` | `/api/profiles/{id}` | Delete profile |
-| `POST` | `/api/profiles/{id}/key` | Store encrypted API key |
-| `DELETE` | `/api/profiles/{id}/key` | Clear stored API key |
-
-### Workspace
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/api/workspace/{id}` | Load workspace JSON |
-| `PUT` | `/api/workspace/{id}` | Save workspace JSON (upsert) |
-
-### AI Proxy
-
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/api/ai/chat` | Proxy chat completion to configured provider |
-| `GET` | `/api/ai/models/{profileId}` | Fetch available models for a profile |
-
-### Health
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/api/health` | `{status: "ok", ts: <epoch ms>}` |
-
----
-
-## Development
-
-### Docker (recommended)
+Start Postgres + FastAPI:
 
 ```bash
 docker compose up --build
 ```
 
-Source is bind-mounted into both containers so changes hot-reload immediately — Vite HMR for the frontend, uvicorn `--reload` for the backend.
+Expected:
+- backend URL: `http://127.0.0.1:8000`
+- API docs: `http://127.0.0.1:8000/docs`
 
-### Without Docker
+### Start frontend against FastAPI
 
-**Backend**
+In a second terminal:
 
 ```bash
-cd backend
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
-
-# Set env vars (or export them)
-export DATA_SECRET=<hex>
-export JWT_SECRET=<hex>
-export DATABASE_URL=postgresql+asyncpg://loomspace:loomspace@localhost:5432/loomspace
-
-alembic upgrade head
-uvicorn app.main:app --reload --port 8000
+npm ci
+npm run dev
 ```
 
-**Frontend**
+Notes:
+- `vite.config.ts` proxies `/api` to `http://127.0.0.1:8000` by default in dev.
+- The current frontend does not expose a login/register screen, but the FastAPI backend requires auth on `/api/*`.
+- So this stack is **not** the easiest path for using the UI unless you already have a token flow in place.
+
+---
+
+## Building
+
+### Frontend build
 
 ```bash
-npm install
-VITE_API_BASE=http://localhost:8000 npm run dev
+npm run build
 ```
 
-### Database migrations
+### Node backend typecheck/build
 
 ```bash
-cd backend
-
-# Apply all pending migrations
-alembic upgrade head
-
-# Create a new migration after changing models.py
-alembic revision --autogenerate -m "description"
-
-# Downgrade one step
-alembic downgrade -1
+cd server
+npm run build
 ```
 
-### Building for production
+### FastAPI Python syntax check
 
 ```bash
-# Build frontend static assets
-npm run build          # outputs to dist/
-
-# The backend serves dist/ automatically when it exists
+python -m py_compile \
+  backend/app/main.py \
+  backend/app/schemas.py \
+  backend/app/persistence.py \
+  backend/app/routers/profiles.py \
+  backend/app/routers/proxy.py \
+  backend/app/routers/workspace.py
 ```
 
 ---
 
-## Project Structure
+## API surface used by the current frontend
 
-```
+### Durable settings
+
+- `GET /api/settings`
+- `PUT /api/settings`
+
+Persists provider metadata and active provider selection.
+
+### Workspace collection
+
+- `GET /api/workspaces`
+- `PUT /api/workspaces`
+
+Persists the full workspace collection and active workspace.
+
+### Provider keys
+
+- `POST /api/profiles/{id}/key`
+- `DELETE /api/profiles/{id}/key`
+
+Persists encrypted provider secrets.
+
+### AI proxy
+
+- `POST /api/ai/chat`
+- `GET /api/ai/models/{profileId}`
+
+### Legacy single-workspace endpoints
+
+- `GET /api/workspace/{id}`
+- `PUT /api/workspace/{id}`
+
+Still present for compatibility/migration.
+
+---
+
+## Project structure
+
+```text
 loomspace-ai/
-├── src/                        # React frontend
-│   ├── App.tsx                 # Main canvas component (~2500 lines)
-│   ├── AuthGate.tsx            # Login / register screen
-│   ├── main.tsx                # Entry point, auth state
-│   ├── styles.css              # Global styles
-│   └── lib/
-│       ├── api.ts              # Backend API client
-│       ├── store.ts            # Pure state helpers
-│       ├── types.ts            # Shared TypeScript types
-│       └── mediaUtils.ts       # File/image attachment handling
-│
-├── backend/
-│   ├── app/
-│   │   ├── main.py             # FastAPI app, CORS, router wiring
-│   │   ├── config.py           # pydantic-settings configuration
-│   │   ├── database.py         # Async SQLAlchemy engine + session
-│   │   ├── models.py           # ORM models (User, Profile, Workspace)
-│   │   ├── schemas.py          # Pydantic request/response schemas
-│   │   ├── security.py         # Password hashing, JWT, Fernet encryption
-│   │   └── routers/
-│   │       ├── auth.py         # /api/auth/*
-│   │       ├── profiles.py     # /api/profiles/*
-│   │       ├── workspace.py    # /api/workspace/*
-│   │       └── proxy.py        # /api/ai/*
-│   ├── alembic/                # Database migrations
-│   ├── alembic.ini
-│   ├── Dockerfile
-│   └── pyproject.toml
-│
-├── docker-compose.yml          # Full stack: db + backend + frontend
-├── Dockerfile.frontend
-├── .env.example                # Environment variable template
-└── index.html
+├── src/                  # React frontend
+├── server/               # Recommended local backend: Node/Hono + file persistence
+├── backend/              # Alternative backend: FastAPI + PostgreSQL
+├── docker-compose.yml    # Starts Postgres + FastAPI backend
+├── Dockerfile.frontend   # Frontend dev container image
+└── README.md
 ```
 
 ---
 
-## Security
+## Troubleshooting
 
-- **API keys** are encrypted with Fernet before storage. The encryption key is derived from `DATA_SECRET` via SHA-256. The plaintext key is only held in memory server-side during a proxied request and is never returned to the browser after initial submission.
-- **Passwords** are hashed with bcrypt (via the `bcrypt` library directly).
-- **JWTs** use HS256 with a configurable secret and 7-day expiry by default.
-- **Workspace isolation** — each workspace row is scoped to `user_id`; the server enforces ownership on every read and write.
-- **CORS** — in production, set `CORS_ORIGINS` to your actual frontend origin. The default allows all localhost ports for development.
-- **No secrets in source** — `.env` is gitignored; `.env.example` contains only placeholder values.
+### `Server error 404`
 
-> **Note:** This is a development-oriented setup. For production deployment, use a strong randomly-generated `DATA_SECRET` and `JWT_SECRET`, put the stack behind TLS, and restrict `CORS_ORIGINS`.
+Usually one of these:
+
+1. You started the frontend but not the backend.
+2. You started the frontend against the wrong backend port.
+3. You ran `npm run dev` without `VITE_API_BASE=http://127.0.0.1:3001` while trying to use `server/`.
+4. You are using the FastAPI backend, but the requested `/api/settings` or `/api/workspaces` route was not available in the process you started.
+
+### `401 Unauthorized`
+
+You are almost certainly talking to the FastAPI backend on `:8000` without an auth token.
+
+If you want the app working immediately, switch to the recommended local path:
+- `server/` on `:3001`
+- `VITE_API_BASE=http://127.0.0.1:3001 npm run dev`
 
 ---
 
-## Deploying to DigitalOcean
-
-The repo includes a complete `app.yaml` for [DigitalOcean App Platform](https://docs.digitalocean.com/products/app-platform/).
-
-### What gets deployed
-
-| Component | Type | Notes |
-|---|---|---|
-| `backend` | Python service | FastAPI + Gunicorn/Uvicorn, port 8080 |
-| `frontend` | Static site | Vite build, served from CDN |
-| `db` | Dev database | PostgreSQL 16, free tier |
-
-### Steps
-
-**1. Fork or push the repo to GitHub.**
-
-Update the `github.repo` field in `app.yaml` to match your repository (`owner/repo`).
-
-**2. Generate secrets.**
+## Exact commands recap
 
 ```bash
-python -c "import secrets; print(secrets.token_hex(32))"  # run twice
+# terminal 1
+cd server
+npm ci
+DATA_SECRET=$(python -c "import secrets; print(secrets.token_hex(32))") npm start
+
+# terminal 2
+npm ci
+VITE_API_BASE=http://127.0.0.1:3001 npm run dev
 ```
 
-Replace the two `REPLACE_WITH_GENERATED_SECRET` placeholders in `app.yaml` with the generated values, or set them as encrypted environment variables in the DO dashboard after first deploy.
-
-**3. Deploy.**
-
-```bash
-# Install the doctl CLI, then:
-doctl apps create --spec app.yaml
-
-# Or import app.yaml via the App Platform web UI:
-# https://cloud.digitalocean.com/apps/new → "Edit Your App Spec"
-```
-
-**4. After first deploy**, verify migrations ran by checking the backend's runtime logs in the DO dashboard. If they didn't, trigger a manual re-deploy — the health check at `/api/health` will fail until they complete.
-
-### Upgrading the database for production
-
-The default `app.yaml` provisions a free **dev database** (single-node, limited storage, no backups). For production:
-
-1. In `app.yaml`, change `production: false` → `production: true` under `databases`.
-2. Re-apply the spec. DO will provision a managed PostgreSQL cluster (~$15/month for the smallest size).
-3. The `run_command` picks up the new credentials automatically via the `${db.*}` bindings — no code changes needed.
-
-### Environment variables reference
-
-| Variable | Where to set | Description |
-|---|---|---|
-| `DATA_SECRET` | DO dashboard → backend → Environment (encrypted) | Fernet key material — never change after first deploy or saved keys become unreadable |
-| `JWT_SECRET` | DO dashboard → backend → Environment (encrypted) | JWT signing secret |
-| `VITE_API_BASE` | Set automatically from `${backend.PUBLIC_URL}` | Backend URL injected at frontend build time |
-
----
-
-## License
-
-MIT License — see [LICENSE](LICENSE) for details. The software is provided as-is without warranty.
+Open: `http://127.0.0.1:5173`

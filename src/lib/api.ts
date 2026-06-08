@@ -1,3 +1,5 @@
+import type { GenerationParams, PersistedWorkspaceStore } from './types';
+
 /**
  * Backend API client for LoomSpace.
  *
@@ -6,7 +8,7 @@
  */
 
 // Empty string = same-origin (frontend served by backend).
-// For standalone Vite dev: set VITE_API_BASE=http://localhost:8000
+// For standalone Vite dev without an explicit VITE_API_BASE, vite.config.ts proxies /api to http://127.0.0.1:8000.
 export const API_BASE = import.meta.env.VITE_API_BASE ?? '';
 
 // ---------------------------------------------------------------------------
@@ -21,8 +23,28 @@ export interface ServerProfile {
   label: string;
   model: string;
   baseUrl?: string;
+  params?: GenerationParams;
   /** true when an API key is stored on the server */
   hasKey: boolean;
+}
+
+export interface SaveServerProfile {
+  id: string;
+  kind: AIProvider;
+  label: string;
+  model: string;
+  baseUrl?: string;
+  params?: GenerationParams;
+}
+
+export interface ServerSettingsPayload {
+  activeProviderConfigId: string;
+  providerConfigs: ServerProfile[];
+}
+
+export interface SaveServerSettingsPayload {
+  activeProviderConfigId: string;
+  providerConfigs: SaveServerProfile[];
 }
 
 export interface UpsertProfilePayload {
@@ -31,6 +53,7 @@ export interface UpsertProfilePayload {
   label: string;
   model: string;
   baseUrl?: string;
+  params?: GenerationParams;
   /** When provided, the server encrypts and stores this key. */
   apiKey?: string;
 }
@@ -54,6 +77,8 @@ export interface ChatResponsePayload {
 // Internal fetch helper
 // ---------------------------------------------------------------------------
 
+type ApiError = Error & { status?: number };
+
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const token = localStorage.getItem('loomspace.auth.token');
   const authHeader: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
@@ -74,13 +99,15 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       // ignore parse errors
     }
-    throw new Error(message);
+    const error = new Error(message) as ApiError;
+    error.status = res.status;
+    throw error;
   }
   return res.json() as Promise<T>;
 }
 
 // ---------------------------------------------------------------------------
-// Profiles
+// Profiles and durable provider settings
 // ---------------------------------------------------------------------------
 
 export async function apiListProfiles(): Promise<ServerProfile[]> {
@@ -99,6 +126,22 @@ export async function apiUpsertProfile(payload: UpsertProfilePayload): Promise<S
 
 export async function apiDeleteProfile(id: string): Promise<void> {
   await apiFetch<{ ok: boolean }>(`/api/profiles/${id}`, { method: 'DELETE' });
+}
+
+export async function apiLoadSettings(): Promise<ServerSettingsPayload | null> {
+  try {
+    return await apiFetch<ServerSettingsPayload>('/api/settings');
+  } catch (err) {
+    if ((err as ApiError).status === 404) return null;
+    throw err;
+  }
+}
+
+export async function apiSaveSettings(payload: SaveServerSettingsPayload): Promise<ServerSettingsPayload> {
+  return apiFetch<ServerSettingsPayload>('/api/settings', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function apiStoreKey(profileId: string, apiKey: string): Promise<void> {
@@ -129,14 +172,34 @@ export async function apiFetchModels(profileId: string): Promise<string[]> {
 }
 
 // ---------------------------------------------------------------------------
-// Workspace
+// Workspace collection
+// ---------------------------------------------------------------------------
+
+export async function apiLoadWorkspaceStore(): Promise<PersistedWorkspaceStore | null> {
+  try {
+    return await apiFetch<PersistedWorkspaceStore>('/api/workspaces');
+  } catch (err) {
+    if ((err as ApiError).status === 404) return null;
+    throw err;
+  }
+}
+
+export async function apiSaveWorkspaceStore(store: PersistedWorkspaceStore): Promise<void> {
+  await apiFetch<{ ok: boolean }>('/api/workspaces', {
+    method: 'PUT',
+    body: JSON.stringify(store),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Legacy single-workspace endpoints
 // ---------------------------------------------------------------------------
 
 export async function apiLoadWorkspace(workspaceId: string): Promise<unknown | null> {
   try {
     return await apiFetch<unknown>(`/api/workspace/${workspaceId}`);
   } catch (err) {
-    if (err instanceof Error && err.message.includes('404')) return null;
+    if ((err as ApiError).status === 404) return null;
     throw err;
   }
 }

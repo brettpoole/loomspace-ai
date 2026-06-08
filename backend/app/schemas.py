@@ -6,9 +6,10 @@ from pydantic.alias_generators import to_camel
 
 class CamelModel(BaseModel):
     """Base model that serializes to camelCase and accepts both snake and camel on input."""
+
     model_config = ConfigDict(
         alias_generator=to_camel,
-        populate_by_name=True,  # also accept snake_case on input
+        populate_by_name=True,
         from_attributes=True,
     )
 
@@ -39,8 +40,19 @@ class UserOut(CamelModel):
 
 
 # ---------------------------------------------------------------------------
-# Profiles
+# Profiles and durable settings
 # ---------------------------------------------------------------------------
+
+class GenerationParams(CamelModel):
+    temperature: float | None = None
+    top_p: float | None = None
+    top_k: int | None = None
+    max_tokens: int | None = None
+    frequency_penalty: float | None = None
+    presence_penalty: float | None = None
+    seed: int | None = None
+    stop: list[str] | None = None
+
 
 class ProfileOut(CamelModel):
     id: str
@@ -48,6 +60,7 @@ class ProfileOut(CamelModel):
     label: str
     model: str
     base_url: str | None = None
+    params: GenerationParams | None = None
     has_key: bool
 
 
@@ -57,11 +70,31 @@ class UpsertProfileRequest(CamelModel):
     label: str
     model: str
     base_url: str | None = None
+    params: GenerationParams | None = None
     api_key: str | None = None
 
 
 class StoreKeyRequest(CamelModel):
     api_key: str
+
+
+class SettingsProfile(CamelModel):
+    id: str
+    kind: str
+    label: str
+    model: str
+    base_url: str | None = None
+    params: GenerationParams | None = None
+
+
+class SettingsSnapshot(CamelModel):
+    active_provider_config_id: str
+    provider_configs: list[ProfileOut]
+
+
+class SaveSettingsRequest(CamelModel):
+    active_provider_config_id: str
+    provider_configs: list[SettingsProfile]
 
 
 # ---------------------------------------------------------------------------
