@@ -9,6 +9,8 @@ import type {
   FabricMetrics,
   LoomspaceState,
   PersistedWorkspace,
+  PersistedWorkspaceEntry,
+  PersistedWorkspaceStore,
   ProviderInfo,
   ThreadChatNode,
   ThreadContextNode,
@@ -133,19 +135,74 @@ interface EncryptedSecretPayload {
   ciphertext: string;
 }
 
-export function loadWorkspace(): LoomspaceState {
-  try {
-    const raw = localStorage.getItem(WORKSPACE_KEY);
-    if (!raw) return structuredClone(sampleState);
-    const parsed = JSON.parse(raw) as PersistedWorkspace;
-    return migrateWorkspaceState(parsed.state ?? structuredClone(sampleState));
-  } catch {
-    return structuredClone(sampleState);
-  }
+function newWorkspaceId() {
+  return `workspace-${crypto.randomUUID().slice(0, 8)}`;
 }
 
-export function saveWorkspace(state: LoomspaceState) {
-  localStorage.setItem(WORKSPACE_KEY, JSON.stringify({ state } satisfies PersistedWorkspace));
+export function createWorkspaceState(title = sampleState.title, workspaceId = newWorkspaceId()): LoomspaceState {
+  const nextTitle = title.trim() || sampleState.title;
+  return {
+    ...structuredClone(sampleState),
+    workspaceId,
+    title: nextTitle,
+  };
+}
+
+export function createWorkspaceEntry(title = sampleState.title): PersistedWorkspaceEntry {
+  const state = createWorkspaceState(title);
+  return { id: state.workspaceId, state };
+}
+
+export function resetWorkspaceState(state: LoomspaceState): LoomspaceState {
+  return createWorkspaceState(state.title, state.workspaceId);
+}
+
+function defaultWorkspaceStore(): PersistedWorkspaceStore {
+  const workspace = createWorkspaceEntry(sampleState.title);
+  return {
+    activeWorkspaceId: workspace.id,
+    workspaces: [workspace],
+  };
+}
+
+export function loadWorkspaceStore(): PersistedWorkspaceStore {
+  try {
+    const raw = localStorage.getItem(WORKSPACE_KEY);
+    if (!raw) return defaultWorkspaceStore();
+    const parsed = JSON.parse(raw) as PersistedWorkspaceStore | PersistedWorkspace;
+    const collection = parsed as Partial<PersistedWorkspaceStore>;
+    if (Array.isArray(collection.workspaces)) {
+      const workspaces = collection.workspaces
+        .map((entry) => {
+          if (!entry?.state) return null;
+          const state = migrateWorkspaceState(entry.state);
+          return {
+            id: state.workspaceId,
+            state,
+          } satisfies PersistedWorkspaceEntry;
+        })
+        .filter((entry): entry is PersistedWorkspaceEntry => entry !== null);
+      if (workspaces.length === 0) return defaultWorkspaceStore();
+      const activeWorkspaceId = workspaces.some((entry) => entry.id === collection.activeWorkspaceId)
+        ? collection.activeWorkspaceId ?? workspaces[0].id
+        : workspaces[0].id;
+      return { activeWorkspaceId, workspaces };
+    }
+    if ('state' in parsed && parsed.state) {
+      const state = migrateWorkspaceState(parsed.state);
+      return {
+        activeWorkspaceId: state.workspaceId,
+        workspaces: [{ id: state.workspaceId, state }],
+      };
+    }
+  } catch {
+    // Ignore storage failures and fall back to a blank local workspace.
+  }
+  return defaultWorkspaceStore();
+}
+
+export function saveWorkspaceStore(store: PersistedWorkspaceStore) {
+  localStorage.setItem(WORKSPACE_KEY, JSON.stringify(store));
 }
 
 export function loadSettings(): AISettings {
@@ -541,9 +598,16 @@ function readLegacySecretPayload(): EncryptedSecretPayload | null {
 }
 
 function migrateWorkspaceState(state: LoomspaceState): LoomspaceState {
+  const workspaceId = typeof state.workspaceId === 'string' && state.workspaceId ? state.workspaceId : newWorkspaceId();
+  const title = typeof state.title === 'string' && state.title.trim() ? state.title : sampleState.title;
+  const threads = Array.isArray(state.threads) ? state.threads : [];
+
   return {
+    ...createWorkspaceState(title, workspaceId),
     ...state,
-    threads: state.threads.map((thread) => {
+    workspaceId,
+    title,
+    threads: threads.map((thread) => {
       const stripped = { ...thread } as ThreadLane & {
         provider?: unknown;
         providerConfigId?: unknown;
@@ -552,22 +616,30 @@ function migrateWorkspaceState(state: LoomspaceState): LoomspaceState {
       delete stripped.provider;
       delete stripped.providerConfigId;
       delete stripped.model;
-      
-      // Migrate messages in thread context and chat nodes
+
       return {
         ...stripped,
-        context: stripped.context.map(msg => migrateMessage(msg)),
-        nodes: stripped.nodes.map(node => {
-          if (node.kind === 'chat') {
-            return {
-              ...node,
-              messages: node.messages.map(msg => migrateMessage(msg))
-            };
-          }
-          return node;
-        })
+        context: Array.isArray(stripped.context) ? stripped.context.map((msg) => migrateMessage(msg)) : [],
+        nodes: Array.isArray(stripped.nodes)
+          ? stripped.nodes.map((node) => {
+              if (node.kind === 'chat') {
+                return {
+                  ...node,
+                  messages: Array.isArray(node.messages) ? node.messages.map((msg) => migrateMessage(msg)) : [],
+                };
+              }
+              return node;
+            })
+          : [],
       } as ThreadLane;
     }),
+    selectedThreadId: typeof state.selectedThreadId === 'string' ? state.selectedThreadId : null,
+    selectedNodeId: typeof state.selectedNodeId === 'string' ? state.selectedNodeId : null,
+    densityOverlay: typeof state.densityOverlay === 'boolean' ? state.densityOverlay : sampleState.densityOverlay,
+    panX: typeof state.panX === 'number' && Number.isFinite(state.panX) ? state.panX : sampleState.panX,
+    panY: typeof state.panY === 'number' && Number.isFinite(state.panY) ? state.panY : sampleState.panY,
+    zoom: typeof state.zoom === 'number' && Number.isFinite(state.zoom) ? state.zoom : sampleState.zoom,
+    version: typeof state.version === 'number' && Number.isFinite(state.version) ? state.version : sampleState.version,
   };
 }
 

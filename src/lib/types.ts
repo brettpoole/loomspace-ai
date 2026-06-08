@@ -133,6 +133,16 @@ export interface PersistedWorkspace {
   state: LoomspaceState;
 }
 
+export interface PersistedWorkspaceEntry {
+  id: string;
+  state: LoomspaceState;
+}
+
+export interface PersistedWorkspaceStore {
+  activeWorkspaceId: string;
+  workspaces: PersistedWorkspaceEntry[];
+}
+
 export interface ThreadUsageSummary {
   inputTokens: number;
   outputTokens: number;

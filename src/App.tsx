@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent, type WheelEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type PointerEvent, type SetStateAction, type WheelEvent } from 'react';
 import Markdown from 'react-markdown';
 import {
   PROVIDERS,
@@ -8,6 +8,7 @@ import {
   computeMetrics,
   createChatNode,
   createContextNode,
+  createWorkspaceEntry,
   createProviderConfig,
   createThread,
   deleteProviderConfig,
@@ -16,13 +17,14 @@ import {
   getModelWindow,
   loadModelCache,
   loadSettings,
-  loadWorkspace,
+  loadWorkspaceStore,
   providerInfo,
   resolveBaseUrl,
+  resetWorkspaceState,
   saveModelCache,
   saveProviderSecret,
   saveSettings,
-  saveWorkspace,
+  saveWorkspaceStore,
   summarize,
   summarizeThreadUsage,
   threadWithActiveNode,
@@ -51,6 +53,7 @@ import type {
   ChatMessage,
   ForkDraft,
   LoomspaceState,
+  PersistedWorkspaceStore,
   ThreadChatNode,
   ThreadContextNode,
   ThreadLane,
@@ -204,7 +207,30 @@ function sameProviderModelSource(left: AIProviderConfig, right: AIProviderConfig
 }
 
 export default function App() {
-  const [state, setState] = useState<LoomspaceState>(() => loadWorkspace());
+  const [workspaceStore, setWorkspaceStore] = useState<PersistedWorkspaceStore>(() => loadWorkspaceStore());
+  const activeWorkspaceEntry = useMemo(
+    () => workspaceStore.workspaces.find((entry) => entry.id === workspaceStore.activeWorkspaceId) ?? workspaceStore.workspaces[0],
+    [workspaceStore],
+  );
+  const state = activeWorkspaceEntry.state;
+  const setState = (nextState: SetStateAction<LoomspaceState>) => {
+    setWorkspaceStore((current) => {
+      const activeIndex = current.workspaces.findIndex((entry) => entry.id === current.activeWorkspaceId);
+      const fallbackIndex = activeIndex === -1 ? 0 : activeIndex;
+      const activeEntry = current.workspaces[fallbackIndex];
+      if (!activeEntry) return current;
+      const currentState = activeEntry.state;
+      const resolvedState = typeof nextState === 'function'
+        ? (nextState as (value: LoomspaceState) => LoomspaceState)(currentState)
+        : nextState;
+      const workspaces = current.workspaces.slice();
+      workspaces[fallbackIndex] = { id: resolvedState.workspaceId, state: resolvedState };
+      return {
+        activeWorkspaceId: resolvedState.workspaceId,
+        workspaces,
+      };
+    });
+  };
   const [settings, setSettings] = useState<AISettings>(() => loadSettings());
   const [composerStates, setComposerStates] = useState<Record<string, ComposerState>>({});
   const [sending, setSending] = useState(false);
@@ -239,6 +265,8 @@ export default function App() {
   const [contextLinkPointer, setContextLinkPointer] = useState<{ x: number; y: number } | null>(null);
   const [contextLinkSnapTarget, setContextLinkSnapTarget] = useState<{ threadId: string; nodeId: string } | null>(null);
   const [aiSettingsModalOpen, setAiSettingsModalOpen] = useState(false);
+  const [workspaceManagerOpen, setWorkspaceManagerOpen] = useState(false);
+  const [workspaceDraftTitle, setWorkspaceDraftTitle] = useState('');
   const [onboardingState, setOnboardingState] = useState<'active' | 'providerSkipped' | 'dismissed'>(() => {
     try {
       if (sessionStorage.getItem(ONBOARDING_SESSION_KEY) === '1') return 'dismissed';
@@ -264,7 +292,8 @@ export default function App() {
   const [modelCache, setModelCache] = useState<ModelCache>(() => loadModelCache());
   const [modelsLoadingConfigId, setModelsLoadingConfigId] = useState<string | null>(null);
   const settingsRef = useRef(settings);
-  const stateRef = useRef(state);
+  const workspaceStoreRef = useRef(workspaceStore);
+  const previousWorkspaceIdRef = useRef(state.workspaceId);
   const viewportRef = useRef<HTMLDivElement>(null);
   const panGesture = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
   const pointerMap = useRef<Map<number, { x: number; y: number }>>(new Map());
@@ -297,12 +326,12 @@ export default function App() {
   }, [themeMode]);
 
   useEffect(() => {
-    stateRef.current = state;
-    const handle = window.setTimeout(() => saveWorkspace(state), WORKSPACE_SAVE_DEBOUNCE_MS);
+    workspaceStoreRef.current = workspaceStore;
+    const handle = window.setTimeout(() => saveWorkspaceStore(workspaceStore), WORKSPACE_SAVE_DEBOUNCE_MS);
     return () => window.clearTimeout(handle);
-  }, [state]);
+  }, [workspaceStore]);
   useEffect(() => {
-    const flush = () => saveWorkspace(stateRef.current);
+    const flush = () => saveWorkspaceStore(workspaceStoreRef.current);
     window.addEventListener('pagehide', flush);
     return () => {
       window.removeEventListener('pagehide', flush);
@@ -314,6 +343,27 @@ export default function App() {
     saveSettings(settings);
   }, [settings]);
   useEffect(() => saveModelCache(modelCache), [modelCache]);
+  useEffect(() => {
+    const previousWorkspaceId = previousWorkspaceIdRef.current;
+    if (previousWorkspaceId === state.workspaceId) return;
+    previousWorkspaceIdRef.current = state.workspaceId;
+    setComposerStates({});
+    setContextLinkMode(null);
+    setContextLinkPointer(null);
+    setContextLinkSnapTarget(null);
+    setForkDraft(null);
+    setDeleteMode(null);
+    setNodePreviewModal(null);
+    setThreadEditorOpen(false);
+    setThreadEditorTargetId(null);
+    setThreadEditorDraft(DEFAULT_THREAD_DRAFT);
+    setProviderMenuOpen(false);
+    setRightPanelOpen(false);
+    setSettingsNotice(null);
+    setError(null);
+    setCopiedMessageId(null);
+    stopSpeaking();
+  }, [state.workspaceId]);
 
   useEffect(() => {
     const validConfigIds = new Set(settings.providerConfigs.map((config) => config.id));
@@ -396,6 +446,9 @@ export default function App() {
     localStorage.setItem(TTS_SETTINGS_KEY, JSON.stringify(ttsSettings));
   }, [ttsSettings]);
 
+  const workspaces = workspaceStore.workspaces;
+  const workspaceCount = workspaces.length;
+  const activeWorkspaceId = state.workspaceId;
   const metrics = useMemo(() => computeMetrics(state), [state]);
   const activeThread = state.threads.find((thread) => thread.id === state.selectedThreadId) ?? null;
   const activeNode =
@@ -1521,28 +1574,103 @@ export default function App() {
     }
   }
 
+  function openWorkspaceManager() {
+    setWorkspaceDraftTitle('');
+    setNavMenuOpen(false);
+    setWorkspaceManagerOpen(true);
+  }
+
+  function closeWorkspaceManager() {
+    setWorkspaceDraftTitle('');
+    setWorkspaceManagerOpen(false);
+  }
+
+  function closeWorkspaceManagerAfterAction() {
+    window.setTimeout(() => {
+      setWorkspaceDraftTitle('');
+      setWorkspaceManagerOpen(false);
+    }, 0);
+  }
+
+  function activateWorkspace(workspaceId: string) {
+    if (workspaceId === state.workspaceId) {
+      closeWorkspaceManagerAfterAction();
+      return;
+    }
+    setWorkspaceStore((current) =>
+      current.workspaces.some((entry) => entry.id === workspaceId)
+        ? { ...current, activeWorkspaceId: workspaceId }
+        : current,
+    );
+    closeWorkspaceManagerAfterAction();
+  }
+
+  function createWorkspaceFromManager() {
+    const workspace = createWorkspaceEntry(workspaceDraftTitle);
+    setWorkspaceStore((current) => ({
+      activeWorkspaceId: workspace.id,
+      workspaces: [...current.workspaces, workspace],
+    }));
+    closeWorkspaceManagerAfterAction();
+  }
+
+  function deleteWorkspace(workspaceId: string) {
+    if (workspaceCount <= 1) return;
+    const target = workspaces.find((entry) => entry.id === workspaceId);
+    if (!target) return;
+    const title = target.state.title.trim() || 'Untitled workspace';
+    const confirmed = window.confirm(
+      `Delete workspace "${title}"?\n\nThis removes its threads, messages, and canvas layout from this browser. Your AI provider profiles and remaining workspaces stay intact.`,
+    );
+    if (!confirmed) return;
+    setWorkspaceStore((current) => {
+      const index = current.workspaces.findIndex((entry) => entry.id === workspaceId);
+      if (index === -1 || current.workspaces.length <= 1) return current;
+      const remaining = current.workspaces.filter((entry) => entry.id !== workspaceId);
+      const nextActiveWorkspaceId = current.activeWorkspaceId === workspaceId
+        ? remaining[Math.min(index, remaining.length - 1)].id
+        : current.activeWorkspaceId;
+      return {
+        activeWorkspaceId: nextActiveWorkspaceId,
+        workspaces: remaining,
+      };
+    });
+  }
+
   function closeAiSettings() {
     setAiSettingsModalOpen(false);
     setSettingsEditorConfigId(null);
   }
 
   function confirmResetWorkspace() {
+    const title = state.title.trim() || 'Untitled workspace';
     const confirmed = window.confirm(
-      'Reset workspace canvas?\n\nThis removes all threads, messages, nodes, and canvas layout from this browser. Your AI provider profiles and saved provider keys will be kept.',
+      `Reset workspace "${title}"?\n\nThis clears its threads, messages, nodes, and canvas layout in this browser. Your AI provider profiles and other workspaces will be kept.`,
     );
     if (!confirmed) return;
     resetWorkspace();
   }
 
   function resetWorkspace() {
-    localStorage.removeItem('loomspace.workspace.v7');
-    setState(loadWorkspace());
+    setState(resetWorkspaceState(state));
     setComposerStates({});
     setPassphraseModal(null);
     setSettingsNotice(null);
+    setProviderError(null);
     setError(null);
     setThreadEditorOpen(false);
+    setThreadEditorTargetId(null);
+    setThreadEditorDraft(DEFAULT_THREAD_DRAFT);
     setRightPanelOpen(false);
+    setProviderMenuOpen(false);
+    setContextLinkMode(null);
+    setContextLinkPointer(null);
+    setContextLinkSnapTarget(null);
+    setForkDraft(null);
+    setDeleteMode(null);
+    setNodePreviewModal(null);
+    setCopiedMessageId(null);
+    stopSpeaking();
   }
 
   function changeSettingsProvider(providerConfigId: string) {
@@ -2384,6 +2512,21 @@ export default function App() {
           <div className="nav-group nav-group-view" role="group" aria-label="Panels and view">
           </div>
           <span className="nav-sep nav-sep-compact" aria-hidden="true" />
+          <button
+            type="button"
+            className="nav-btn nav-btn-workspaces"
+            onClick={openWorkspaceManager}
+            aria-label="Manage workspaces"
+            title={`${workspaceCount} workspace${workspaceCount === 1 ? '' : 's'} saved in this browser`}
+          >
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <rect x="2.25" y="2.5" width="5.5" height="5.5" rx="1.1"/>
+              <rect x="8.25" y="2.5" width="5.5" height="5.5" rx="1.1"/>
+              <rect x="2.25" y="8.5" width="5.5" height="5.5" rx="1.1"/>
+              <rect x="8.25" y="8.5" width="5.5" height="5.5" rx="1.1"/>
+            </svg>
+            <span className="nav-label">Workspaces</span>
+          </button>
           <button type="button" className="nav-btn nav-btn-ai" onClick={() => openProviderSetup()} aria-label="AI settings and profiles" title="AI settings & profiles"><svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.2 9.3 5.5 13.6 6.8 9.3 8.1 8 12.4 6.7 8.1 2.4 6.8 6.7 5.5z"/></svg><span className="nav-label">AI</span></button>
           <button type="button" className="nav-btn nav-btn-icon" onClick={() => setThemeMode((mode) => (mode === 'auto' ? 'light' : mode === 'light' ? 'dark' : 'auto'))} aria-label={`Theme: ${themeMode}`} title={`Theme: ${themeMode} — click to change`}>
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -2394,7 +2537,7 @@ export default function App() {
               )}
             </svg>
           </button>
-          <button type="button" className="nav-btn nav-btn-icon nav-btn-danger" onClick={confirmResetWorkspace} aria-label="Reset workspace" title="Reset workspace (AI profiles are kept)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12.8 8a4.8 4.8 0 1 1-1.5-3.5"/><path d="M13 2.2v2.6h-2.6"/></svg></button>
+          <button type="button" className="nav-btn nav-btn-icon nav-btn-danger" onClick={confirmResetWorkspace} aria-label="Reset workspace" title="Reset this workspace"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12.8 8a4.8 4.8 0 1 1-1.5-3.5"/><path d="M13 2.2v2.6h-2.6"/></svg></button>
           <span className="nav-sep nav-sep-compact" aria-hidden="true" />
           <button type="button" className="nav-btn nav-btn-focus" onClick={() => enterFocusMode()} aria-label="Enter focus mode" title="Focus mode — distraction-free chat"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M2 6V3.5A1.5 1.5 0 0 1 3.5 2H6"/><path d="M14 6V3.5A1.5 1.5 0 0 0 12.5 2H10"/><path d="M2 10v2.5A1.5 1.5 0 0 0 3.5 14H6"/><path d="M14 10v2.5a1.5 1.5 0 0 1-1.5 1.5H10"/></svg><span className="nav-label">Focus</span></button>
           <button type="button" className="nav-btn nav-btn-primary nav-btn-new" onClick={() => openThreadEditor('create')} aria-label="New thread" title="New thread"><svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="6.5" y1="1.5" x2="6.5" y2="11.5"/><line x1="1.5" y1="6.5" x2="11.5" y2="6.5"/></svg><span className="nav-label">New thread</span></button>
@@ -2402,6 +2545,7 @@ export default function App() {
             <button type="button" className="nav-btn nav-btn-icon nav-menu-trigger" aria-expanded={navMenuOpen} aria-label="More actions" title="More actions" onClick={() => setNavMenuOpen((open) => !open)}>⋯</button>
             {navMenuOpen ? (
               <div className="nav-menu" role="menu" aria-label="More actions">
+                <button type="button" role="menuitem" onClick={openWorkspaceManager}>Manage workspaces</button>
                 <button type="button" role="menuitem" onClick={() => { setNavMenuOpen(false); openProviderSetup(); }}>AI settings and profiles</button>
                 <button type="button" role="menuitem" onClick={() => { setNavMenuOpen(false); setThemeMode((mode) => (mode === 'auto' ? 'light' : mode === 'light' ? 'dark' : 'auto')); }}>Theme</button>
                 <button type="button" role="menuitem" onClick={() => { setNavMenuOpen(false); confirmResetWorkspace(); }}>Reset workspace</button>
@@ -3049,6 +3193,82 @@ export default function App() {
       ) : null}
 
 
+      {workspaceManagerOpen ? (
+        <div className="chat-modal-backdrop" onClick={closeWorkspaceManager}>
+          <section className="chat-modal workspace-manager-modal" onClick={(event) => event.stopPropagation()}>
+            <header className="chat-modal-header">
+              <div>
+                <p className="eyebrow">Workspaces</p>
+                <h2>Switch or create workspaces</h2>
+              </div>
+              <button type="button" className="quiet" onClick={closeWorkspaceManager} aria-label="Close workspace manager">
+                ×
+              </button>
+            </header>
+            <div className="chat-modal-body workspace-manager-body">
+              <section className="inspector-card workspace-manager-card">
+                <div className="workspace-manager-head">
+                  <div>
+                    <h3>Saved in this browser</h3>
+                    <p>Each workspace keeps its own canvas, threads, and chat history.</p>
+                  </div>
+                  <span className="pill">{workspaceCount} total</span>
+                </div>
+                <div className="workspace-list">
+                  {workspaces.map((workspace) => {
+                    const isActive = workspace.id === activeWorkspaceId;
+                    const workspaceTitle = workspace.state.title.trim() || 'Untitled workspace';
+                    const threadCount = workspace.state.threads.length;
+                    return (
+                      <article key={workspace.id} className={`workspace-card ${isActive ? 'selected' : ''}`}>
+                        <button type="button" className="workspace-card-main" onClick={() => activateWorkspace(workspace.id)} aria-pressed={isActive}>
+                          <span className="workspace-card-title-row">
+                            <strong>{workspaceTitle}</strong>
+                            {isActive ? <span className="pill">Current</span> : null}
+                          </span>
+                          <span className="workspace-card-meta">
+                            <span>{threadCount} thread{threadCount === 1 ? '' : 's'}</span>
+                            <span>{Math.round(workspace.state.zoom * 100)}% zoom</span>
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          className="quiet btn-danger workspace-card-delete"
+                          onClick={() => deleteWorkspace(workspace.id)}
+                          disabled={workspaceCount <= 1}
+                          aria-label={`Delete ${workspaceTitle}`}
+                        >
+                          Delete
+                        </button>
+                      </article>
+                    );
+                  })}
+                </div>
+                <p className="muted workspace-manager-note">Rename the current workspace from the title field in the header.</p>
+              </section>
+              <form className="inspector-card workspace-create-card" onSubmit={(event) => { event.preventDefault(); createWorkspaceFromManager(); }}>
+                <h3>Create workspace</h3>
+                <label className="field">
+                  Workspace name
+                  <input
+                    autoFocus
+                    value={workspaceDraftTitle}
+                    onChange={(event) => setWorkspaceDraftTitle(event.target.value)}
+                    placeholder="e.g. client sandbox"
+                  />
+                </label>
+                <p className="muted">New workspaces start with an empty canvas and their own thread list.</p>
+                <div className="editor-actions left-aligned">
+                  <button type="submit">Create workspace</button>
+                  <button type="button" className="quiet" onClick={closeWorkspaceManager}>
+                    Cancel
+                  </button>
+                </div>
+              </form>
+            </div>
+          </section>
+        </div>
+      ) : null}
       {aiSettingsModalOpen ? (
         <div className="chat-modal-backdrop" onClick={closeAiSettings}>
           <section className="ai-settings-modal" onClick={(event) => event.stopPropagation()}>
