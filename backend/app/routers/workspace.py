@@ -6,17 +6,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models import User, Workspace
-from app.persistence import RESERVED_WORKSPACE_IDS, WORKSPACE_STORE_ROW_ID, load_reserved_json, save_reserved_json
+from app.persistence import WORKSPACE_STORE_ROW_ID, load_reserved_json, reserved_workspace_ids, save_reserved_json
 from app.routers.auth import get_current_user
 
 router = APIRouter(tags=["workspace"])
-
 
 async def _list_user_workspaces(current_user: User, db: AsyncSession) -> list[Workspace]:
     result = await db.execute(
         select(Workspace).where(
             Workspace.user_id == current_user.id,
-            Workspace.id.not_in(RESERVED_WORKSPACE_IDS),
+            Workspace.id.not_in(reserved_workspace_ids(current_user.id)),
         )
     )
     return list(result.scalars().all())

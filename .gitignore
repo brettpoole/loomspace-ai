@@ -6,3 +6,4 @@ vite.config.d.ts
 .env
 entities.json
 mempalace.yaml
+__pycache__/

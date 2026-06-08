@@ -127,6 +127,95 @@ Notes:
 
 ---
 
+## Manual sync between the two backends
+
+Yes. There is now a manual one-shot sync script.
+
+Location:
+
+```bash
+backend/scripts/sync_storage.py
+```
+
+What it does:
+- `node-to-fastapi` — copies durable data from `server/data/` into one FastAPI user
+- `fastapi-to-node` — exports one FastAPI user's durable data back into `server/data/`
+
+Scope:
+- profiles
+- saved provider keys
+- provider params / active provider
+- full workspace store
+- per-workspace legacy files
+
+Important:
+- this is **manual sync**, not live replication
+- the target side is treated as replaceable state
+- for FastAPI, the sync is scoped to one username
+
+### Run it
+
+From the repo root, after installing the Python backend deps:
+
+```bash
+cd backend
+python -m venv .venv
+source .venv/bin/activate
+pip install -e .
+cd ..
+```
+
+If you use `.env` at the repo root, the script will load it automatically.
+
+#### Node backend → FastAPI backend
+
+Creates the FastAPI user if needed, then replaces that user's durable data with `server/data/`.
+
+```bash
+python backend/scripts/sync_storage.py \
+  node-to-fastapi \
+  --username alice \
+  --password 'choose-a-password-if-the-user-does-not-exist'
+```
+
+If the Node backend used a different `DATA_SECRET`, pass it explicitly:
+
+```bash
+python backend/scripts/sync_storage.py \
+  node-to-fastapi \
+  --username alice \
+  --password 'choose-a-password-if-the-user-does-not-exist' \
+  --node-data-secret '<node-backend-data-secret>'
+```
+
+#### FastAPI backend → Node backend
+
+Exports one FastAPI user's durable data into `server/data/`.
+
+```bash
+python backend/scripts/sync_storage.py \
+  fastapi-to-node \
+  --username alice
+```
+
+Again, if the Node backend should encrypt keys with a different secret:
+
+```bash
+python backend/scripts/sync_storage.py \
+  fastapi-to-node \
+  --username alice \
+  --node-data-secret '<node-backend-data-secret>'
+```
+
+#### Non-default Node data directory
+
+```bash
+python backend/scripts/sync_storage.py \
+  fastapi-to-node \
+  --username alice \
+  --server-data-dir /path/to/server/data
+```
+
 ## Building
 
 ### Frontend build

@@ -9,7 +9,17 @@ from app.models import User, Workspace
 
 SETTINGS_ROW_ID = "__loomspace_settings__"
 WORKSPACE_STORE_ROW_ID = "__loomspace_workspace_store__"
-RESERVED_WORKSPACE_IDS = {SETTINGS_ROW_ID, WORKSPACE_STORE_ROW_ID}
+
+
+def reserved_row_id(row_id: str, user_id: str) -> str:
+    return f"{row_id}:{user_id}"
+
+
+def reserved_workspace_ids(user_id: str) -> set[str]:
+    return {
+        reserved_row_id(SETTINGS_ROW_ID, user_id),
+        reserved_row_id(WORKSPACE_STORE_ROW_ID, user_id),
+    }
 
 
 async def load_reserved_json(
@@ -17,9 +27,10 @@ async def load_reserved_json(
     current_user: User,
     db: AsyncSession,
 ) -> dict[str, Any] | None:
+    scoped_row_id = reserved_row_id(row_id, current_user.id)
     result = await db.execute(
         select(Workspace).where(
-            Workspace.id == row_id,
+            Workspace.id == scoped_row_id,
             Workspace.user_id == current_user.id,
         )
     )
@@ -35,15 +46,16 @@ async def save_reserved_json(
     current_user: User,
     db: AsyncSession,
 ) -> None:
+    scoped_row_id = reserved_row_id(row_id, current_user.id)
     result = await db.execute(
         select(Workspace).where(
-            Workspace.id == row_id,
+            Workspace.id == scoped_row_id,
             Workspace.user_id == current_user.id,
         )
     )
     row = result.scalar_one_or_none()
     if row is None:
-        db.add(Workspace(id=row_id, user_id=current_user.id, data=payload))
+        db.add(Workspace(id=scoped_row_id, user_id=current_user.id, data=payload))
         return
     row.data = payload
 
