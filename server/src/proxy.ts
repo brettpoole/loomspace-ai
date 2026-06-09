@@ -27,8 +27,10 @@ export function resolveBaseUrl(baseUrl: string | undefined, kind: AIProvider): s
 // ---------------------------------------------------------------------------
 
 export async function fetchModels(profile: Profile): Promise<string[]> {
-  const apiKey = resolveKey(profile.id);
   const baseUrl = resolveBaseUrl(profile.baseUrl, profile.kind);
+
+  // Custom providers may not require an API key
+  const apiKey = resolveKey(profile.id, { optional: profile.kind === 'openai-compatible-custom' });
 
   if (profile.kind === 'anthropic') {
     const res = await fetch(`${baseUrl}/models`, {
@@ -42,9 +44,9 @@ export async function fetchModels(profile: Profile): Promise<string[]> {
     return (data.data ?? []).map((entry) => entry.id ?? '').filter(Boolean).sort();
   }
 
-  const res = await fetch(`${baseUrl}/models`, {
-    headers: { Authorization: `Bearer ${apiKey}` },
-  });
+  const headers: Record<string, string> = {};
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  const res = await fetch(`${baseUrl}/models`, { headers });
   if (!res.ok) throw new Error((await res.text()) || `${profile.label} /models failed`);
   const data = (await res.json()) as {
     data?: Array<{ id?: string; pricing?: { prompt?: string; completion?: string } }>;
@@ -105,7 +107,8 @@ function openAiGenerationBody(profile: Profile): Record<string, unknown> {
 }
 
 export async function chatCompletion(profile: Profile, req: ChatRequest): Promise<ChatResponse> {
-  const apiKey = resolveKey(profile.id);
+  // Custom providers may not require an API key
+  const apiKey = resolveKey(profile.id, { optional: profile.kind === 'openai-compatible-custom' });
   const baseUrl = resolveBaseUrl(profile.baseUrl, profile.kind);
 
   if (profile.kind === 'anthropic') {
@@ -190,9 +193,9 @@ async function openaiCompatibleChat(
   };
 
   const headers: Record<string, string> = {
-    Authorization: `Bearer ${apiKey}`,
     'Content-Type': 'application/json',
   };
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 
   if (profile.kind === 'openrouter') {
     headers['X-App-Name'] = 'Loomspace';

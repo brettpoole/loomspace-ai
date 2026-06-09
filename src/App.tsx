@@ -550,7 +550,12 @@ export default function App() {
       : 'none'
     : 'none';
   const hasConfiguredProvider = settings.providerConfigs.some(
-    (config) => config.model.trim() && (config.apiKey.trim() || config.hasEncryptedApiKey),
+    (config) => {
+      if (!config.model.trim()) return false;
+      // Custom OpenAI-compatible providers work without an API key
+      if (config.kind === 'openai-compatible-custom') return true;
+      return config.apiKey.trim() || config.hasEncryptedApiKey;
+    },
   );
   const onboardingStep =
     onboardingState === 'dismissed' || state.threads.length > 0
@@ -967,7 +972,11 @@ export default function App() {
       }
       return null;
     }
-    if (!activeConfig.apiKey.trim() && !activeConfig.hasEncryptedApiKey) {
+    if (
+      !activeConfig.apiKey.trim() &&
+      !activeConfig.hasEncryptedApiKey &&
+      activeConfig.kind !== 'openai-compatible-custom'
+    ) {
       const message = 'Add your API key to this profile first.';
       setError(message);
       setProviderError(message);
@@ -1558,10 +1567,21 @@ export default function App() {
   async function requestSaveKey(configId: string) {
     const targetConfig = settings.providerConfigs.find((config) => config.id === configId) ?? null;
     const candidate = targetConfig?.apiKey.trim() ?? '';
-    if (!targetConfig || !candidate) {
+    if (!targetConfig) {
+      const message = 'No profile found.';
+      setError(message);
+      setProviderError(message);
+      return;
+    }
+    if (!candidate && targetConfig.kind !== 'openai-compatible-custom') {
       const message = 'Enter your API key first.';
       setError(message);
       setProviderError(message);
+      return;
+    }
+    // Custom provider without a key: just acknowledge, don't try to save.
+    if (targetConfig.kind === 'openai-compatible-custom' && !candidate && !targetConfig.hasEncryptedApiKey) {
+      setSettingsNotice('No API key to save. The profile can be used without a key.');
       return;
     }
 
@@ -1782,7 +1802,7 @@ export default function App() {
     options: { requireKey?: boolean; updateSelectedModel?: boolean } = {},
   ) {
     const typedApiKey = config.apiKey.trim();
-    if (!typedApiKey && !config.hasEncryptedApiKey) {
+    if (!typedApiKey && !config.hasEncryptedApiKey && config.kind !== 'openai-compatible-custom') {
       if (options.requireKey !== false) {
         setProviderError('Add your API key to list models.');
       }
@@ -3437,8 +3457,15 @@ export default function App() {
                         ) : null}
                       </label>
                       <div className="editor-actions left-aligned">
-                        <button type="button" onClick={() => void requestSaveKey(settingsEditorConfig.id)} disabled={savingSettings || !settingsEditorConfig.apiKey.trim()}>
-                          {savingSettings
+                        <button
+                          type="button"
+                          onClick={() => void requestSaveKey(settingsEditorConfig.id)}
+                          disabled={
+                            savingSettings ||
+                            (settingsEditorConfig.kind !== 'openai-compatible-custom' && !settingsEditorConfig.apiKey.trim())
+                          }
+                        >
+                        {savingSettings
                             ? 'Working…'
                             : settingsEditorConfig.apiKey.trim()
                               ? settingsEditorConfig.hasEncryptedApiKey ? 'Update saved key' : 'Save key'
@@ -3475,7 +3502,10 @@ export default function App() {
                           type="button"
                           className="settings-refresh"
                           onClick={() => refreshModels(settingsEditorConfig.id)}
-                          disabled={settingsEditorModelsLoading || !settingsEditorConfig.apiKey.trim()}
+                          disabled={
+                            settingsEditorModelsLoading ||
+                            (settingsEditorConfig.kind !== 'openai-compatible-custom' && !settingsEditorConfig.apiKey.trim())
+                          }
                         >
                           {settingsEditorModelsLoading ? 'Loading…' : settingsEditorHasCachedModels ? 'Refresh' : 'List models'}
                         </button>
@@ -3648,7 +3678,8 @@ function apiKeyPlaceholder(provider: AIProvider) {
   if (provider === 'openai') return 'sk-...';
   if (provider === 'anthropic') return 'sk-ant-...';
   if (provider === 'openrouter') return 'sk-or-...';
-  if (provider === 'openai-compatible-custom') return 'sk-...';
+  // Custom OpenAI-compatible providers — API key is optional, no hint needed
+  if (provider === 'openai-compatible-custom') return 'optional';
   return '';
 }
 
@@ -3663,6 +3694,7 @@ function providerKeyLink(provider: AIProvider): { label: string; href: string } 
   if (provider === 'openrouter') return { label: 'Get a free OpenRouter key', href: 'https://openrouter.ai/keys' };
   if (provider === 'openai') return { label: 'Get an OpenAI key', href: 'https://platform.openai.com/api-keys' };
   if (provider === 'anthropic') return { label: 'Get an Anthropic key', href: 'https://console.anthropic.com/settings/keys' };
+  // Custom OpenAI-compatible providers — API key is optional
   return null;
 }
 

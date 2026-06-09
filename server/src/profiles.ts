@@ -368,10 +368,17 @@ export function clearKey(id: string): void {
   deleteEncryptedKey(id);
 }
 
-/** Retrieve the decrypted API key for a profile. Throws when no key is stored. */
-export function resolveKey(id: string): string {
+/**
+ * Retrieve the decrypted API key for a profile.
+ * When `optional` is true, returns an empty string instead of throwing
+ * when no key is stored (useful for custom providers that may not need auth).
+ */
+export function resolveKey(id: string, options?: { optional?: boolean }): string {
   const payload = readEncryptedKey(id);
-  if (!payload) throw new Error(`No API key stored for profile ${id}`);
+  if (!payload) {
+    if (options?.optional) return '';
+    throw new Error(`No API key stored for profile ${id}`);
+  }
   return decryptKey(payload);
 }
 

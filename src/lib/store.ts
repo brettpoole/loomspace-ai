@@ -469,7 +469,9 @@ export function estimateCost(model: string, usage: Pick<TokenUsage, 'inputTokens
 
 export async function fetchProviderModels(config: AIProviderConfig): Promise<string[]> {
   const apiKey = config.apiKey.trim();
-  if (!apiKey) throw new Error('Unlock or enter the API key before fetching models.');
+  if (!apiKey && config.kind !== 'openai-compatible-custom') {
+    throw new Error('Unlock or enter the API key before fetching models.');
+  }
 
   if (config.kind === 'anthropic') {
     const response = await fetch(resolveBaseUrl(config.baseUrl, config.kind) + '/models', {
@@ -484,8 +486,10 @@ export async function fetchProviderModels(config: AIProviderConfig): Promise<str
     return (data.data ?? []).map((entry) => entry.id ?? '').filter(Boolean).sort();
   }
 
+  const headers: Record<string, string> = {};
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
   const response = await fetch(resolveBaseUrl(config.baseUrl, config.kind) + '/models', {
-    headers: { Authorization: `Bearer ${apiKey}` },
+    headers,
   });
   if (!response.ok) throw new Error((await response.text()) || `${providerInfo(config.kind).label} /models request failed`);
   const data = (await response.json()) as { data?: Array<{ id?: string; pricing?: { prompt?: string; completion?: string } }> };

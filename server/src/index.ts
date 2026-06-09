@@ -212,7 +212,10 @@ app.post('/api/ai/chat', async (c) => {
 
   const profile = getProfile(profileId);
   if (!profile) return c.json({ error: `Profile ${profileId} not found` }, 404);
-  if (!profile.hasKey) return c.json({ error: `No API key stored for profile ${profileId}` }, 400);
+  // Custom OpenAI-compatible providers may not require an API key
+  if (!profile.hasKey && profile.kind !== 'openai-compatible-custom') {
+    return c.json({ error: `No API key stored for profile ${profileId}` }, 400);
+  }
 
   try {
     const result = await chatCompletion(profile, {
@@ -228,7 +231,10 @@ app.post('/api/ai/chat', async (c) => {
 app.get('/api/ai/models/:profileId', async (c) => {
   const profile = getProfile(c.req.param('profileId'));
   if (!profile) return c.json({ error: 'Profile not found' }, 404);
-  if (!profile.hasKey) return c.json({ error: 'No API key stored for this profile' }, 400);
+  // Custom OpenAI-compatible providers may not require an API key
+  if (!profile.hasKey && profile.kind !== 'openai-compatible-custom') {
+    return c.json({ error: 'No API key stored for this profile' }, 400);
+  }
 
   try {
     const models = await fetchModels(profile);
