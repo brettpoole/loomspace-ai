@@ -1569,14 +1569,14 @@ export default function App() {
     const candidate = targetConfig?.apiKey.trim() ?? '';
     if (!targetConfig) {
       const message = 'No profile found.';
-      setError(message);
       setProviderError(message);
+      setSettingsNotice(message);
       return;
     }
     if (!candidate && targetConfig.kind !== 'openai-compatible-custom') {
       const message = 'Enter your API key first.';
-      setError(message);
       setProviderError(message);
+      setSettingsNotice(message);
       return;
     }
     // Custom provider without a key: just acknowledge, don't try to save.
@@ -1586,7 +1586,6 @@ export default function App() {
     }
 
     setSavingSettings(true);
-    setError(null);
     setProviderError(null);
     setSettingsNotice(null);
     try {
@@ -1600,8 +1599,8 @@ export default function App() {
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Saving the key failed.';
-      setError(message);
       setProviderError(message);
+      setSettingsNotice(message);
     } finally {
       setSavingSettings(false);
     }
@@ -1614,7 +1613,6 @@ export default function App() {
     if (!confirmed) return;
 
     setSavingSettings(true);
-    setError(null);
     setProviderError(null);
     setSettingsNotice(null);
     try {
@@ -1624,8 +1622,8 @@ export default function App() {
       setSettingsNotice('Saved key deleted from the backend.');
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Deleting the saved key failed.';
-      setError(message);
       setProviderError(message);
+      setSettingsNotice(message);
     } finally {
       setSavingSettings(false);
     }
@@ -1705,6 +1703,8 @@ export default function App() {
   function closeAiSettings() {
     setAiSettingsModalOpen(false);
     setSettingsEditorConfigId(null);
+    setProviderError(null);
+    setSettingsNotice(null);
   }
 
   function confirmResetWorkspace() {
