@@ -166,9 +166,8 @@ function maxSideWidth(reserved = 0) {
   const viewport = typeof window === 'undefined' ? 1280 : window.innerWidth;
   return Math.max(MIN_PANEL_W, Math.round(viewport - MIN_CANVAS_W - reserved));
 }
-
 function loadPanelSizes(): { left: number; right: number; bottom: number } {
-  const fallback = { left: 300, right: 400, bottom: 260 };
+  const fallback = { left: 300, right: 480, bottom: 260 };
   try {
     const raw = localStorage.getItem(PANEL_SIZE_KEY);
     if (!raw) return fallback;
@@ -276,6 +275,7 @@ export default function App() {
   const [contextLinkPointer, setContextLinkPointer] = useState<{ x: number; y: number } | null>(null);
   const [contextLinkSnapTarget, setContextLinkSnapTarget] = useState<{ threadId: string; nodeId: string } | null>(null);
   const [aiSettingsModalOpen, setAiSettingsModalOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [workspaceManagerOpen, setWorkspaceManagerOpen] = useState(false);
   const [workspaceDraftTitle, setWorkspaceDraftTitle] = useState('');
   const [onboardingState, setOnboardingState] = useState<'active' | 'providerSkipped' | 'dismissed'>(() => {
@@ -490,13 +490,6 @@ export default function App() {
     };
   }, []);
 
-  useEffect(() => {
-    const el = viewportRef.current;
-    if (!el) return;
-    const block = (e: Event) => e.preventDefault();
-    el.addEventListener('wheel', block, { passive: false });
-    return () => el.removeEventListener('wheel', block);
-  }, []);
 
   useEffect(() => {
     const synth = window.speechSynthesis;
@@ -685,10 +678,59 @@ export default function App() {
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, [canvasWidth, canvasHeight]);
+  useEffect(() => {
+    // The canvas viewport is only mounted after persistenceReady flips true.
+    // Attach a native wheel listener with passive:false so preventDefault() works.
+    if (!persistenceReady) return;
+    const el = viewportRef.current;
+    if (!el) return;
+
+    const onWheel = (event: globalThis.WheelEvent) => {
+      event.preventDefault();
+      const rect = el.getBoundingClientRect();
+
+      if (event.ctrlKey || event.metaKey) {
+        setState((current) => {
+          const zoom = clamp(current.zoom - event.deltaY * 0.0005, MIN_ZOOM, MAX_ZOOM);
+          const pointX = event.clientX - rect.left;
+          const pointY = event.clientY - rect.top;
+          const scale = zoom / current.zoom;
+          const transformed = {
+            panX: pointX - (pointX - current.panX) * scale,
+            panY: pointY - (pointY - current.panY) * scale,
+          };
+          return {
+            ...current,
+            zoom,
+            ...boundedPan(transformed.panX, transformed.panY, zoom, rect.width, rect.height, canvasWidth, canvasHeight),
+          };
+        });
+        return;
+      }
+
+      setState((current) => ({
+        ...current,
+        ...boundedPan(
+          current.panX - event.deltaX,
+          current.panY - event.deltaY,
+          current.zoom,
+          rect.width,
+          rect.height,
+          canvasWidth,
+          canvasHeight,
+        ),
+      }));
+    };
+
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [persistenceReady, canvasWidth, canvasHeight]);
 
   useEffect(() => {
+    if (!persistenceReady) return;
     resetView();
-  }, []);
+  }, [persistenceReady]);
+
 
   function scrollChatToBottom(behavior: ScrollBehavior = 'auto') {
     const messages = focusMode ? focusMessagesRef.current : rightPanelOpen ? rightPanelMessagesRef.current : null;
@@ -723,8 +765,10 @@ export default function App() {
       if (!isEscape) return;
       e.preventDefault();
       e.stopPropagation();
+      if (shortcutsOpen) { setShortcutsOpen(false); return; }
       if (aiSettingsModalOpen) { closeAiSettings(); return; }
       if (threadEditorOpen) { closeThreadEditor(); return; }
+      if (workspaceManagerOpen) { closeWorkspaceManager(); return; }
       if (nodePreviewModal) { setNodePreviewModal(null); return; }
       if (onboardingVisible) { dismissOnboarding(); return; }
       if (focusMode) { setFocusMode(false); return; }
@@ -739,7 +783,71 @@ export default function App() {
       window.removeEventListener('keydown', onKeyDown, true);
       document.removeEventListener('keydown', onKeyDown, true);
     };
-  }, [aiSettingsModalOpen, threadEditorOpen, nodePreviewModal, onboardingVisible, rightPanelOpen, contextLinkMode, forkDraft, focusMode, state.selectedThreadId]);
+  }, [shortcutsOpen, aiSettingsModalOpen, threadEditorOpen, workspaceManagerOpen, nodePreviewModal, onboardingVisible, rightPanelOpen, contextLinkMode, forkDraft, focusMode]);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const key = e.key.toLowerCase();
+      const target = e.target as HTMLElement | null;
+      const isEditable = !!target && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName));
+
+      if (key === '?') {
+        if (isEditable) return;
+        if (aiSettingsModalOpen || threadEditorOpen || workspaceManagerOpen || nodePreviewModal || onboardingVisible || navMenuOpen) return;
+        e.preventDefault();
+        e.stopPropagation();
+        setShortcutsOpen((open) => !open);
+        return;
+      }
+
+      if (isEditable || shortcutsOpen || aiSettingsModalOpen || threadEditorOpen || workspaceManagerOpen || nodePreviewModal || onboardingVisible || navMenuOpen) return;
+      if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+
+      if (key === 'c') {
+        e.preventDefault();
+        e.stopPropagation();
+        const viewport = viewportRef.current;
+        if (!viewport) {
+          setState((current) => ({ ...current, zoom: 1, panX: 0, panY: 0 }));
+          return;
+        }
+        const rect = viewport.getBoundingClientRect();
+        const centered = boundedPan(
+          (rect.width - canvasWidth) / 2,
+          EDGE_PADDING,
+          1,
+          rect.width,
+          rect.height,
+          canvasWidth,
+          canvasHeight,
+        );
+        setState((current) => ({ ...current, zoom: 1, ...centered }));
+        return;
+      }
+
+      if (key === 'n') {
+        e.preventDefault();
+        e.stopPropagation();
+        setLeftPanelOpen(false);
+        setThreadEditorMode('create');
+        setThreadEditorTargetId(null);
+        setThreadEditorDraft(DEFAULT_THREAD_DRAFT);
+        setThreadEditorOpen(true);
+        return;
+      }
+
+      if (key === 'w') {
+        e.preventDefault();
+        e.stopPropagation();
+        setWorkspaceDraftTitle('');
+        setNavMenuOpen(false);
+        setWorkspaceManagerOpen(true);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [shortcutsOpen, aiSettingsModalOpen, threadEditorOpen, workspaceManagerOpen, nodePreviewModal, onboardingVisible, navMenuOpen, canvasWidth, canvasHeight]);
+
 
   function clampViewport(next?: Partial<Pick<LoomspaceState, 'panX' | 'panY' | 'zoom'>>) {
     const viewport = viewportRef.current;
@@ -1589,6 +1697,10 @@ export default function App() {
     setProviderError(null);
     setSettingsNotice(null);
     try {
+      // Flush current settings to the backend first so the profile is guaranteed to
+      // exist before we attempt to store its key (avoids "Profile not found" when the
+      // 400ms auto-save debounce hasn't fired yet for a newly-created profile).
+      await apiSaveSettings(serializeSettingsForBackend(settingsRef.current));
       await apiStoreKey(configId, candidate);
       clearProviderSecret(configId);
       updateProviderConfig(configId, { apiKey: '', hasEncryptedApiKey: true });
@@ -2031,19 +2143,6 @@ export default function App() {
       canvasHeight,
     );
     setState((current) => ({ ...current, zoom: 1, ...centered }));
-  }
-
-  function onWheel(event: WheelEvent<HTMLDivElement>) {
-    event.preventDefault();
-    if (event.ctrlKey || event.metaKey) {
-      zoomAt(event.clientX, event.clientY, state.zoom - event.deltaY * 0.0005);
-      return;
-    }
-    const viewport = viewportRef.current;
-    const width = viewport?.clientWidth ?? window.innerWidth;
-    const height = viewport?.clientHeight ?? window.innerHeight;
-    const next = boundedPan(state.panX - event.deltaX, state.panY - event.deltaY, state.zoom, width, height, canvasWidth, canvasHeight);
-    setState((current) => ({ ...current, ...next }));
   }
 
   const selectedThreadUsage = activeThread ? summarizeThreadUsage(activeThread) : null;
@@ -2623,9 +2722,12 @@ export default function App() {
                 <button type="button" role="menuitem" onClick={() => { setNavMenuOpen(false); confirmResetWorkspace(); }}>Reset workspace</button>
                 <button type="button" role="menuitem" onClick={() => { setNavMenuOpen(false); enterFocusMode(); }}>Focus mode</button>
                 <button type="button" role="menuitem" onClick={() => { setNavMenuOpen(false); openThreadEditor('create'); }}>New thread</button>
+                <hr className="nav-menu-divider" />
+                <button type="button" role="menuitem" onClick={() => { setNavMenuOpen(false); setShortcutsOpen(true); }}>Keyboard shortcuts</button>
               </div>
             ) : null}
           </div>
+          <button type="button" className="nav-btn nav-btn-icon nav-btn-shortcuts" onClick={() => setShortcutsOpen(true)} aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">?</button>
         </div>
       </header>
 
@@ -2760,7 +2862,7 @@ export default function App() {
           ) : null}
 
           <div className="canvas-area">
-            <div ref={viewportRef} className={`canvas-viewport ${state.densityOverlay ? 'overlay' : ''} pan-${panMode}`} onWheel={onWheel}>
+            <div ref={viewportRef} className={`canvas-viewport ${state.densityOverlay ? 'overlay' : ''} pan-${panMode}`}>
               <div
                 className="canvas-stage"
                 style={{
@@ -2891,7 +2993,7 @@ export default function App() {
                         const isContextSource = ctxPart !== null;
                         const isContextTarget = contextLinkMode !== null && thread.id !== contextLinkMode.sourceThreadId;
                         const isContextSnapTarget = contextLinkSnapTarget?.threadId === thread.id && contextLinkSnapTarget.nodeId === node.id;
-                        const showDots = !rightPanelOpen && (isSelected || (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id));
+                        const showDots = isSelected || (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id);
                         return (
                           <div
                             key={node.id}
@@ -2949,7 +3051,7 @@ export default function App() {
                       const isContextSource = ctxPart !== null;
                       const isContextTarget = contextLinkMode?.intent === 'link' && thread.id !== contextLinkMode.sourceThreadId;
                       const isContextSnapTarget = contextLinkSnapTarget?.threadId === thread.id && contextLinkSnapTarget.nodeId === node.id;
-                      const showDots = !rightPanelOpen && (isSelected || (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id));
+                      const showDots = isSelected || (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id);
 
                       return (
                         <div
@@ -3336,6 +3438,60 @@ export default function App() {
           </section>
         </div>
       ) : null}
+      {shortcutsOpen ? (
+        <div className="chat-modal-backdrop" onClick={() => setShortcutsOpen(false)}>
+          <section className="chat-modal shortcuts-modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
+            <header className="chat-modal-header">
+              <div>
+                <p className="eyebrow">Reference</p>
+                <h2>Keyboard shortcuts</h2>
+              </div>
+              <button type="button" className="quiet" onClick={() => setShortcutsOpen(false)} aria-label="Close shortcuts">×</button>
+            </header>
+            <div className="chat-modal-body shortcuts-body">
+              <section className="shortcuts-group">
+                <h3 className="shortcuts-group-title">Canvas</h3>
+                <dl className="shortcuts-list">
+                  <div className="shortcut-row"><dt><kbd>Scroll</kbd></dt><dd>Pan canvas</dd></div>
+                  <div className="shortcut-row"><dt><kbd>Space</kbd> + drag</dt><dd>Pan canvas</dd></div>
+                  <div className="shortcut-row"><dt>Pinch (trackpad)</dt><dd>Zoom canvas in / out</dd></div>
+                  <div className="shortcut-row"><dt><kbd>C</kbd></dt><dd>Center canvas and reset zoom</dd></div>
+                  <div className="shortcut-row"><dt><kbd>Ctrl</kbd> + scroll</dt><dd>Zoom canvas in / out</dd></div>
+                  <div className="shortcut-row"><dt><kbd>+</kbd> / <kbd>−</kbd></dt><dd>Zoom canvas in / out</dd></div>
+                </dl>
+              </section>
+              <section className="shortcuts-group">
+                <h3 className="shortcuts-group-title">Thread</h3>
+                <dl className="shortcuts-list">
+                  <div className="shortcut-row"><dt><kbd>N</kbd></dt><dd>Create a new thread</dd></div>
+                </dl>
+              </section>
+              <section className="shortcuts-group">
+                <h3 className="shortcuts-group-title">Workspace</h3>
+                <dl className="shortcuts-list">
+                  <div className="shortcut-row"><dt><kbd>W</kbd></dt><dd>Create a new workspace</dd></div>
+                </dl>
+              </section>
+              <section className="shortcuts-group">
+                <h3 className="shortcuts-group-title">Chat composer</h3>
+                <dl className="shortcuts-list">
+                  <div className="shortcut-row"><dt><kbd>Enter</kbd></dt><dd>Send message</dd></div>
+                  <div className="shortcut-row"><dt><kbd>Ctrl</kbd> + <kbd>Enter</kbd></dt><dd>Send message</dd></div>
+                  <div className="shortcut-row"><dt><kbd>Shift</kbd> + <kbd>Enter</kbd></dt><dd>New line</dd></div>
+                  <div className="shortcut-row"><dt><kbd>Escape</kbd></dt><dd>Close chat panel</dd></div>
+                </dl>
+              </section>
+              <section className="shortcuts-group">
+                <h3 className="shortcuts-group-title">Global</h3>
+                <dl className="shortcuts-list">
+                  <div className="shortcut-row"><dt><kbd>Escape</kbd></dt><dd>Close modal / exit mode</dd></div>
+                  <div className="shortcut-row"><dt><kbd>?</kbd></dt><dd>Toggle this shortcuts panel</dd></div>
+                </dl>
+              </section>
+            </div>
+          </section>
+        </div>
+      ) : null}
       {aiSettingsModalOpen ? (
         <div className="chat-modal-backdrop" onClick={closeAiSettings}>
           <section className="ai-settings-modal" onClick={(event) => event.stopPropagation()}>
@@ -3379,12 +3535,19 @@ export default function App() {
                           onChange={(event) => {
                             const kind = event.target.value as AIProvider;
                             const info = providerInfo(kind);
-                            const patch = {
+                            const basePatch = {
                               kind,
                               label: autoProfileLabel(kind, settingsEditorConfig.label),
                               model: '',
                               baseUrl: info.baseUrl,
                             };
+                            // When the provider kind changes, the stored key belongs to a
+                            // different provider and must not be silently reused.
+                            const hadKey = settingsEditorConfig.hasEncryptedApiKey;
+                            const patch = hadKey ? { ...basePatch, hasEncryptedApiKey: false } : basePatch;
+                            if (hadKey) {
+                              void apiClearKey(settingsEditorConfig.id).catch(() => undefined);
+                            }
                             updateProviderConfig(settingsEditorConfig.id, patch);
                             void fetchModelsForConfig({ ...settingsEditorConfig, ...patch }, { requireKey: false, updateSelectedModel: true });
                           }}

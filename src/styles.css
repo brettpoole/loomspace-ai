@@ -3846,3 +3846,182 @@ button.btn-danger:disabled {
 :root[data-theme='light'] .workspace-card-meta {
   color: #60708d;
 }
+
+/* ---- Shortcuts modal ---- */
+
+.shortcuts-modal {
+  width: min(560px, 100%);
+}
+
+.shortcuts-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+  align-items: start;
+}
+
+@media (max-width: 520px) {
+  .shortcuts-body {
+    grid-template-columns: 1fr;
+  }
+}
+
+.shortcuts-group {
+  display: grid;
+  gap: 10px;
+}
+
+.shortcuts-group-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: #6a7a9a;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.shortcuts-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+}
+
+.shortcut-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.shortcut-row dt {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  color: #c8d4ee;
+  font-weight: 500;
+}
+
+.shortcut-row dd {
+  margin: 0;
+  color: #8494b4;
+  font-size: 12px;
+  text-align: right;
+}
+
+kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1px 6px;
+  min-width: 22px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.8;
+  color: #d4e0f8;
+}
+
+/* Nav menu divider */
+.nav-menu-divider {
+  border: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  margin: 4px 0;
+}
+
+/* Shortcuts button in nav */
+.nav-btn-shortcuts {
+  font-size: 14px;
+  font-weight: 700;
+  width: 28px;
+  min-width: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ---- Light theme: status bar footer ---- */
+
+:root[data-theme='light'] .status-bar {
+  background: rgba(247, 250, 255, 0.92);
+  border-top-color: rgba(24, 37, 63, 0.1);
+  color: #4a5872;
+  backdrop-filter: blur(10px);
+}
+
+:root[data-theme='light'] .status-right {
+  color: #60708d;
+}
+
+:root[data-theme='light'] .status-btn,
+:root[data-theme='light'] .status-zoom {
+  border-color: rgba(24, 37, 63, 0.12);
+  background: rgba(255, 255, 255, 0.7);
+  color: #2a3852;
+}
+
+:root[data-theme='light'] .status-btn:hover,
+:root[data-theme='light'] .status-zoom:hover {
+  background: rgba(255, 255, 255, 0.95);
+  border-color: rgba(24, 37, 63, 0.22);
+}
+
+:root[data-theme='light'] .status-panel-btn.active {
+  background: rgba(20, 154, 111, 0.12);
+  border-color: rgba(20, 154, 111, 0.32);
+  color: #0f7a52;
+}
+
+/* ---- Light theme: shortcuts modal ---- */
+
+:root[data-theme='light'] .shortcuts-group-title {
+  color: #60708d;
+  border-bottom-color: rgba(24, 37, 63, 0.1);
+}
+
+:root[data-theme='light'] .shortcut-row dt {
+  color: #2a3852;
+}
+
+:root[data-theme='light'] .shortcut-row dd {
+  color: #60708d;
+}
+
+:root[data-theme='light'] kbd {
+  background: rgba(24, 37, 63, 0.06);
+  border-color: rgba(24, 37, 63, 0.16);
+  color: #2a3852;
+}
+
+/* ---- Light theme: nav menu divider ---- */
+
+:root[data-theme='light'] .nav-menu-divider {
+  border-top-color: rgba(24, 37, 63, 0.1);
+}
+
+/* ---- Light theme: workspace selection padding fixes ---- */
+
+:root[data-theme='light'] .workspace-manager-modal .inspector-card {
+  background: rgba(255, 255, 255, 0.82);
+  border-color: rgba(24, 37, 63, 0.1);
+}
+
+:root[data-theme='light'] .workspace-manager-note {
+  color: #60708d;
+}
+
+:root[data-theme='light'] .workspace-manager-head h3,
+:root[data-theme='light'] .workspace-create-card h3 {
+  color: #162033;
+}
+
+:root[data-theme='light'] .workspace-manager-head p {
+  color: #60708d;
+}
