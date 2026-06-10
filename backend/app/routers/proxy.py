@@ -1,13 +1,14 @@
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models import Profile, User
+from app.persistence import load_settings_blob, params_by_profile_id
+from app.routers.auth import get_current_user
 from app.schemas import ChatRequest, ChatResponse, ChatUsage, ModelsResponse
 from app.security import decrypt_api_key
-from app.routers.auth import get_current_user
 
 router = APIRouter(tags=["proxy"])
 
@@ -19,7 +20,6 @@ def _resolve_base_url(base_url: str | None, kind: str) -> str:
         return (base_url or "").rstrip("/") or "https://openrouter.ai/api/v1"
     if kind == "openai":
         return (base_url or "").rstrip("/") or "https://api.openai.com/v1"
-    # openai-compatible-custom
     trimmed = (base_url or "").strip()
     if not trimmed:
         raise ValueError("baseUrl is required for custom OpenAI-compatible providers")
@@ -27,18 +27,47 @@ def _resolve_base_url(base_url: str | None, kind: str) -> str:
 
 
 async def _get_profile_with_key(
-    profile_id: str, current_user: User, db: AsyncSession
+    profile_id: str,
+    current_user: User,
+    db: AsyncSession,
 ) -> tuple[Profile, str]:
     result = await db.execute(
         select(Profile).where(Profile.id == profile_id, Profile.user_id == current_user.id)
     )
-    p = result.scalar_one_or_none()
-    if p is None:
+    profile = result.scalar_one_or_none()
+    if profile is None:
         raise HTTPException(404, f"Profile {profile_id} not found")
-    if p.encrypted_api_key is None:
+    if profile.encrypted_api_key is None:
         raise HTTPException(400, f"No API key stored for profile {profile_id}")
-    api_key = decrypt_api_key(p.encrypted_api_key)
-    return p, api_key
+    return profile, decrypt_api_key(profile.encrypted_api_key)
+
+
+def _generation_params_for_profile(settings_blob: dict, profile_id: str) -> dict:
+    return params_by_profile_id(settings_blob).get(profile_id, {})
+
+
+def _openai_generation_body(profile: Profile, params: dict) -> dict:
+    body: dict = {}
+    temperature = params.get("temperature")
+    if temperature is None and profile.kind != "openai":
+        temperature = 0.4
+    if temperature is not None:
+        body["temperature"] = temperature
+    if params.get("topP") is not None:
+        body["top_p"] = params["topP"]
+    if params.get("maxTokens") is not None:
+        body["max_tokens"] = params["maxTokens"]
+    if params.get("frequencyPenalty") is not None:
+        body["frequency_penalty"] = params["frequencyPenalty"]
+    if params.get("presencePenalty") is not None:
+        body["presence_penalty"] = params["presencePenalty"]
+    if params.get("seed") is not None:
+        body["seed"] = params["seed"]
+    if isinstance(params.get("stop"), list) and params["stop"]:
+        body["stop"] = params["stop"]
+    if profile.kind != "openai" and params.get("topK") is not None:
+        body["top_k"] = params["topK"]
+    return body
 
 
 @router.get("/ai/models/{profile_id}", response_model=ModelsResponse)
@@ -47,47 +76,47 @@ async def fetch_models(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    p, api_key = await _get_profile_with_key(profile_id, current_user, db)
-    base_url = _resolve_base_url(p.base_url, p.kind)
+    profile, api_key = await _get_profile_with_key(profile_id, current_user, db)
+    base_url = _resolve_base_url(profile.base_url, profile.kind)
     try:
         async with httpx.AsyncClient(timeout=30) as client:
-            if p.kind == "anthropic":
-                r = await client.get(
+            if profile.kind == "anthropic":
+                response = await client.get(
                     f"{base_url}/models",
                     headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
                 )
-                r.raise_for_status()
-                data = r.json()
+                response.raise_for_status()
+                data = response.json()
                 models = sorted(
-                    m["id"] for m in (data.get("data") or []) if m.get("id")
+                    entry["id"] for entry in (data.get("data") or []) if entry.get("id")
                 )
             else:
-                r = await client.get(
+                response = await client.get(
                     f"{base_url}/models",
                     headers={"Authorization": f"Bearer {api_key}"},
                 )
-                r.raise_for_status()
-                data = r.json()
-                if p.kind == "openrouter":
+                response.raise_for_status()
+                data = response.json()
+                if profile.kind == "openrouter":
                     models = sorted(
-                        m["id"]
-                        for m in (data.get("data") or [])
-                        if m.get("id")
+                        entry["id"]
+                        for entry in (data.get("data") or [])
+                        if entry.get("id")
                         and (
-                            str(m["id"]).endswith(":free")
+                            str(entry["id"]).endswith(":free")
                             or (
-                                float(m.get("pricing", {}).get("prompt", "1") or "1") == 0
-                                and float(m.get("pricing", {}).get("completion", "1") or "1") == 0
+                                float(entry.get("pricing", {}).get("prompt", "1") or "1") == 0
+                                and float(entry.get("pricing", {}).get("completion", "1") or "1") == 0
                             )
                         )
                     )
                 else:
-                    models = sorted(m["id"] for m in (data.get("data") or []) if m.get("id"))
+                    models = sorted(entry["id"] for entry in (data.get("data") or []) if entry.get("id"))
         return ModelsResponse(models=models)
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(502, str(e))
-    except Exception as e:
-        raise HTTPException(502, str(e))
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(502, str(exc))
+    except Exception as exc:
+        raise HTTPException(502, str(exc))
 
 
 @router.post("/ai/chat", response_model=ChatResponse)
@@ -96,24 +125,37 @@ async def chat(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    p, api_key = await _get_profile_with_key(body.profile_id, current_user, db)
-    base_url = _resolve_base_url(p.base_url, p.kind)
-    messages = [{"role": m.role, "content": m.content} for m in body.messages]
+    profile, api_key = await _get_profile_with_key(body.profile_id, current_user, db)
+    base_url = _resolve_base_url(profile.base_url, profile.kind)
+    messages = [{"role": message.role, "content": message.content} for message in body.messages]
+    params = _generation_params_for_profile(await load_settings_blob(current_user, db), profile.id)
     try:
         async with httpx.AsyncClient(timeout=120) as client:
-            if p.kind == "anthropic":
+            if profile.kind == "anthropic":
                 result = await _anthropic_chat(
-                    client, base_url, api_key, p.model, messages, body.system_prompt
+                    client,
+                    base_url,
+                    api_key,
+                    profile.model,
+                    messages,
+                    body.system_prompt,
+                    params,
                 )
             else:
                 result = await _openai_compatible_chat(
-                    client, base_url, api_key, p, messages, body.system_prompt
+                    client,
+                    base_url,
+                    api_key,
+                    profile,
+                    messages,
+                    body.system_prompt,
+                    params,
                 )
         return result
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(502, e.response.text or str(e))
-    except Exception as e:
-        raise HTTPException(502, str(e))
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(502, exc.response.text or str(exc))
+    except Exception as exc:
+        raise HTTPException(502, str(exc))
 
 
 async def _anthropic_chat(
@@ -123,15 +165,25 @@ async def _anthropic_chat(
     model: str,
     messages: list[dict],
     system_prompt: str | None,
+    params: dict,
 ) -> ChatResponse:
     payload: dict = {
         "model": model,
-        "max_tokens": 4096,
-        "messages": [m for m in messages if m["role"] != "system"],
+        "max_tokens": params.get("maxTokens") or 1024,
+        "messages": [message for message in messages if message["role"] != "system"],
     }
     if system_prompt:
         payload["system"] = system_prompt
-    r = await client.post(
+    if params.get("temperature") is not None:
+        payload["temperature"] = params["temperature"]
+    if params.get("topP") is not None:
+        payload["top_p"] = params["topP"]
+    if params.get("topK") is not None:
+        payload["top_k"] = params["topK"]
+    if isinstance(params.get("stop"), list) and params["stop"]:
+        payload["stop_sequences"] = params["stop"]
+
+    response = await client.post(
         f"{base_url}/messages",
         headers={
             "x-api-key": api_key,
@@ -140,19 +192,25 @@ async def _anthropic_chat(
         },
         json=payload,
     )
-    r.raise_for_status()
-    data = r.json()
+    response.raise_for_status()
+    data = response.json()
     text = "\n".join(
-        b["text"] for b in (data.get("content") or []) if b.get("type") == "text" and b.get("text")
+        block["text"]
+        for block in (data.get("content") or [])
+        if block.get("type") == "text" and block.get("text")
     ).strip()
     if not text:
         raise ValueError("Anthropic returned no text")
-    u = data.get("usage")
+    usage_data = data.get("usage")
     usage = None
-    if u:
-        inp = u.get("input_tokens", 0)
-        out = u.get("output_tokens", 0)
-        usage = ChatUsage(input_tokens=inp, output_tokens=out, total_tokens=inp + out)
+    if usage_data:
+        input_tokens = usage_data.get("input_tokens", 0)
+        output_tokens = usage_data.get("output_tokens", 0)
+        usage = ChatUsage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=input_tokens + output_tokens,
+        )
     return ChatResponse(assistant_text=text, usage=usage)
 
 
@@ -163,38 +221,51 @@ async def _openai_compatible_chat(
     profile: Profile,
     messages: list[dict],
     system_prompt: str | None,
+    params: dict,
 ) -> ChatResponse:
     combined: list[dict] = []
     if system_prompt:
         combined.append({"role": "system", "content": system_prompt})
     combined.extend(messages)
+
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
     if profile.kind == "openrouter":
         headers["X-App-Name"] = "Loomspace"
-    payload_base = {"model": profile.model, "messages": combined}
 
-    async def send(with_temperature: bool):
-        payload = {**payload_base, "temperature": 0.4} if with_temperature else payload_base
-        r = await client.post(f"{base_url}/chat/completions", headers=headers, json=payload)
-        return r
+    payload_base = {
+        "model": profile.model,
+        "messages": combined,
+        **_openai_generation_body(profile, params),
+    }
 
-    r = await send(profile.kind != "openai")
-    if not r.is_success and profile.kind == "openai":
-        text = r.text
-        if "temperature" in text.lower() and ("unsupported" in text.lower() or "default (1)" in text.lower()):
-            r = await send(False)
-    r.raise_for_status()
-    data = r.json()
+    async def send(include_temperature: bool):
+        payload = dict(payload_base)
+        if not include_temperature and "temperature" in payload:
+            del payload["temperature"]
+        return await client.post(f"{base_url}/chat/completions", headers=headers, json=payload)
+
+    response = await send(True)
+    if not response.is_success and profile.kind == "openai":
+        text = response.text.lower()
+        if "temperature" in text and ("unsupported" in text or "default (1)" in text):
+            response = await send(False)
+    response.raise_for_status()
+
+    data = response.json()
     text = (data.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
     if not text:
         raise ValueError(f"{profile.label} returned no assistant text")
-    u = data.get("usage")
+    usage_data = data.get("usage")
     usage = None
-    if u:
-        inp = u.get("prompt_tokens", 0)
-        out = u.get("completion_tokens", 0)
-        usage = ChatUsage(input_tokens=inp, output_tokens=out, total_tokens=u.get("total_tokens", inp + out))
+    if usage_data:
+        input_tokens = usage_data.get("prompt_tokens", 0)
+        output_tokens = usage_data.get("completion_tokens", 0)
+        usage = ChatUsage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=usage_data.get("total_tokens", input_tokens + output_tokens),
+        )
     return ChatResponse(assistant_text=text, usage=usage)

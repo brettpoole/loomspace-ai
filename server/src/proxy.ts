@@ -2,8 +2,8 @@
  * AI provider proxy.
  *
  * The server holds the decrypted API keys; the frontend sends requests here
- * that include only the profile id and the message payload.  The server
- * adds the authorization header and forwards to the upstream provider.
+ * that include only the profile id and the message payload. The server adds
+ * the authorization header and forwards to the upstream provider.
  */
 
 import type { AIProvider, Profile } from './profiles.js';
@@ -17,7 +17,6 @@ export function resolveBaseUrl(baseUrl: string | undefined, kind: AIProvider): s
   if (kind === 'anthropic') return baseUrl?.trim().replace(/\/+$/, '') || 'https://api.anthropic.com/v1';
   if (kind === 'openrouter') return baseUrl?.trim().replace(/\/+$/, '') || 'https://openrouter.ai/api/v1';
   if (kind === 'openai') return baseUrl?.trim().replace(/\/+$/, '') || 'https://api.openai.com/v1';
-  // openai-compatible-custom
   const trimmed = baseUrl?.trim();
   if (!trimmed) throw new Error('baseUrl is required for custom OpenAI-compatible providers');
   return trimmed.replace(/\/+$/, '');
@@ -28,8 +27,10 @@ export function resolveBaseUrl(baseUrl: string | undefined, kind: AIProvider): s
 // ---------------------------------------------------------------------------
 
 export async function fetchModels(profile: Profile): Promise<string[]> {
-  const apiKey = resolveKey(profile.id);
   const baseUrl = resolveBaseUrl(profile.baseUrl, profile.kind);
+
+  // Custom providers may not require an API key
+  const apiKey = resolveKey(profile.id, { optional: profile.kind === 'openai-compatible-custom' });
 
   if (profile.kind === 'anthropic') {
     const res = await fetch(`${baseUrl}/models`, {
@@ -40,12 +41,12 @@ export async function fetchModels(profile: Profile): Promise<string[]> {
     });
     if (!res.ok) throw new Error((await res.text()) || 'Anthropic /models failed');
     const data = (await res.json()) as { data?: Array<{ id?: string }> };
-    return (data.data ?? []).map((e) => e.id ?? '').filter(Boolean).sort();
+    return (data.data ?? []).map((entry) => entry.id ?? '').filter(Boolean).sort();
   }
 
-  const res = await fetch(`${baseUrl}/models`, {
-    headers: { Authorization: `Bearer ${apiKey}` },
-  });
+  const headers: Record<string, string> = {};
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  const res = await fetch(`${baseUrl}/models`, { headers });
   if (!res.ok) throw new Error((await res.text()) || `${profile.label} /models failed`);
   const data = (await res.json()) as {
     data?: Array<{ id?: string; pricing?: { prompt?: string; completion?: string } }>;
@@ -53,20 +54,20 @@ export async function fetchModels(profile: Profile): Promise<string[]> {
 
   if (profile.kind === 'openrouter') {
     return (data.data ?? [])
-      .filter((e) => {
-        const id = e.id ?? '';
+      .filter((entry) => {
+        const id = entry.id ?? '';
         if (!id) return false;
         if (id.endsWith(':free')) return true;
-        const prompt = parseFloat(e.pricing?.prompt ?? '');
-        const completion = parseFloat(e.pricing?.completion ?? '');
+        const prompt = parseFloat(entry.pricing?.prompt ?? '');
+        const completion = parseFloat(entry.pricing?.completion ?? '');
         return Number.isFinite(prompt) && Number.isFinite(completion) && prompt === 0 && completion === 0;
       })
-      .map((e) => e.id ?? '')
+      .map((entry) => entry.id ?? '')
       .filter(Boolean)
       .sort();
   }
 
-  return (data.data ?? []).map((e) => e.id ?? '').filter(Boolean).sort();
+  return (data.data ?? []).map((entry) => entry.id ?? '').filter(Boolean).sort();
 }
 
 // ---------------------------------------------------------------------------
@@ -76,7 +77,7 @@ export async function fetchModels(profile: Profile): Promise<string[]> {
 export interface ChatRequest {
   messages: Array<{
     role: string;
-    content: unknown; // text string or Anthropic/OpenAI content blocks
+    content: unknown;
   }>;
   systemPrompt?: string;
 }
@@ -90,12 +91,28 @@ export interface ChatResponse {
   };
 }
 
+function openAiGenerationBody(profile: Profile): Record<string, unknown> {
+  const params = profile.params ?? {};
+  const body: Record<string, unknown> = {};
+  const temperature = params.temperature ?? (profile.kind === 'openai' ? undefined : 0.4);
+  if (temperature !== undefined) body.temperature = temperature;
+  if (params.topP !== undefined) body.top_p = params.topP;
+  if (params.maxTokens !== undefined) body.max_tokens = params.maxTokens;
+  if (params.frequencyPenalty !== undefined) body.frequency_penalty = params.frequencyPenalty;
+  if (params.presencePenalty !== undefined) body.presence_penalty = params.presencePenalty;
+  if (params.seed !== undefined) body.seed = params.seed;
+  if (params.stop && params.stop.length > 0) body.stop = params.stop;
+  if (profile.kind !== 'openai' && params.topK !== undefined) body.top_k = params.topK;
+  return body;
+}
+
 export async function chatCompletion(profile: Profile, req: ChatRequest): Promise<ChatResponse> {
-  const apiKey = resolveKey(profile.id);
+  // Custom providers may not require an API key
+  const apiKey = resolveKey(profile.id, { optional: profile.kind === 'openai-compatible-custom' });
   const baseUrl = resolveBaseUrl(profile.baseUrl, profile.kind);
 
   if (profile.kind === 'anthropic') {
-    return anthropicChat(baseUrl, apiKey, profile.model, req);
+    return anthropicChat(baseUrl, apiKey, profile, req);
   }
   return openaiCompatibleChat(baseUrl, apiKey, profile, req);
 }
@@ -107,15 +124,20 @@ export async function chatCompletion(profile: Profile, req: ChatRequest): Promis
 async function anthropicChat(
   baseUrl: string,
   apiKey: string,
-  model: string,
+  profile: Profile,
   req: ChatRequest,
 ): Promise<ChatResponse> {
+  const params = profile.params ?? {};
   const body: Record<string, unknown> = {
-    model,
-    max_tokens: 4096,
-    messages: req.messages.filter((m) => m.role !== 'system'),
+    model: profile.model,
+    max_tokens: params.maxTokens ?? 1024,
+    messages: req.messages.filter((message) => message.role !== 'system'),
   };
   if (req.systemPrompt) body.system = req.systemPrompt;
+  if (params.temperature !== undefined) body.temperature = params.temperature;
+  if (params.topP !== undefined) body.top_p = params.topP;
+  if (params.topK !== undefined) body.top_k = params.topK;
+  if (params.stop && params.stop.length > 0) body.stop_sequences = params.stop;
 
   const res = await fetch(`${baseUrl}/messages`, {
     method: 'POST',
@@ -135,8 +157,8 @@ async function anthropicChat(
   };
 
   const assistantText = (data.content ?? [])
-    .filter((b) => b.type === 'text')
-    .map((b) => b.text ?? '')
+    .filter((block) => block.type === 'text')
+    .map((block) => block.text ?? '')
     .join('\n')
     .trim();
 
@@ -164,20 +186,24 @@ async function openaiCompatibleChat(
   if (req.systemPrompt) messages.push({ role: 'system', content: req.systemPrompt });
   messages.push(...req.messages);
 
-  const payloadBase = { model: profile.model, messages };
+  const payloadBase = {
+    model: profile.model,
+    messages,
+    ...openAiGenerationBody(profile),
+  };
 
   const headers: Record<string, string> = {
-    Authorization: `Bearer ${apiKey}`,
     'Content-Type': 'application/json',
   };
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 
   if (profile.kind === 'openrouter') {
     headers['X-App-Name'] = 'Loomspace';
-    // X-App-URL would require knowing the frontend origin; omit
   }
 
-  const send = async (withTemperature: boolean) => {
-    const body = withTemperature ? { ...payloadBase, temperature: 0.4 } : payloadBase;
+  const send = async (includeTemperature: boolean) => {
+    const body: Record<string, unknown> = { ...payloadBase };
+    if (!includeTemperature) delete body.temperature;
     const res = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers,
@@ -194,8 +220,7 @@ async function openaiCompatibleChat(
     return { ok: true as const, data };
   };
 
-  // OpenAI o-series models don't support temperature — try with, then without
-  let result = await send(profile.kind !== 'openai');
+  let result = await send(true);
 
   if (!result.ok && profile.kind === 'openai') {
     const maybeUnsupported = /temperature/i.test(result.text) && /unsupported|default \(1\)/i.test(result.text);
@@ -207,11 +232,11 @@ async function openaiCompatibleChat(
   const assistantText = result.data.choices?.[0]?.message?.content?.trim();
   if (!assistantText) throw new Error(`${profile.label} returned no assistant text`);
 
-  const u = result.data.usage;
-  const inputTokens = u?.prompt_tokens ?? 0;
-  const outputTokens = u?.completion_tokens ?? 0;
+  const usage = result.data.usage;
+  const inputTokens = usage?.prompt_tokens ?? 0;
+  const outputTokens = usage?.completion_tokens ?? 0;
   return {
     assistantText,
-    usage: u ? { inputTokens, outputTokens, totalTokens: u.total_tokens ?? inputTokens + outputTokens } : undefined,
+    usage: usage ? { inputTokens, outputTokens, totalTokens: usage.total_tokens ?? inputTokens + outputTokens } : undefined,
   };
 }

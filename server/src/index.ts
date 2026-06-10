@@ -3,6 +3,10 @@
  *
  * Endpoints
  * ─────────
+ * Settings
+ *   GET    /api/settings              — load durable provider settings (no keys)
+ *   PUT    /api/settings              — save durable provider settings (no keys)
+ *
  * Profiles
  *   GET    /api/profiles              — list profiles (no keys)
  *   GET    /api/profiles/:id          — single profile
@@ -13,17 +17,19 @@
  *   DELETE /api/profiles/:id/key      — remove stored key
  *
  * AI proxy
- *   POST   /api/ai/chat               — chat completion  { profileId, messages, systemPrompt? }
+ *   POST   /api/ai/chat               — chat completion { profileId, messages, systemPrompt? }
  *   GET    /api/ai/models/:profileId  — list models for a profile
  *
- * Workspace
- *   GET    /api/workspace/:id         — load workspace JSON
- *   PUT    /api/workspace/:id         — save workspace JSON
+ * Workspaces
+ *   GET    /api/workspaces            — load full workspace collection
+ *   PUT    /api/workspaces            — save full workspace collection
+ *   GET    /api/workspace/:id         — legacy single-workspace load
+ *   PUT    /api/workspace/:id         — legacy single-workspace save
  */
 
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { cors } from 'hono/cors';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -32,17 +38,16 @@ import {
   deleteProfile,
   getProfile,
   listProfiles,
+  loadSettingsSnapshot,
   orphanedKeyIds,
+  saveSettingsSnapshot,
   storeKey,
   upsertProfile,
+  type SaveSettingsSnapshotInput,
   type UpsertProfileInput,
 } from './profiles.js';
 import { chatCompletion, fetchModels } from './proxy.js';
-import { loadWorkspace, saveWorkspace } from './workspace.js';
-
-// ---------------------------------------------------------------------------
-// Startup checks
-// ---------------------------------------------------------------------------
+import { loadWorkspace, loadWorkspaceStore, saveWorkspace, saveWorkspaceStore } from './workspace.js';
 
 if (!process.env.DATA_SECRET) {
   console.error('[loomspace] FATAL: DATA_SECRET environment variable is not set.');
@@ -50,19 +55,13 @@ if (!process.env.DATA_SECRET) {
   process.exit(1);
 }
 
-// Warn about orphaned key files (profile deleted but key file left behind)
 const orphans = orphanedKeyIds();
 if (orphans.length) {
   console.warn(`[loomspace] Warning: ${orphans.length} orphaned key file(s) found in data/keys/. Run cleanup if needed.`);
 }
 
-// ---------------------------------------------------------------------------
-// App
-// ---------------------------------------------------------------------------
-
 const app = new Hono();
 
-// Allow requests from the dev Vite server (localhost:5173) and production
 app.use(
   '/api/*',
   cors({
@@ -72,24 +71,63 @@ app.use(
       return null;
     },
     allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowHeaders: ['Content-Type'],
+    allowHeaders: ['Content-Type', 'Authorization'],
     credentials: false,
   }),
 );
 
+app.get('/api/health', (c) => c.json({ status: 'ok', ts: Date.now() }));
+
 // ---------------------------------------------------------------------------
-// Health
+// Durable settings
 // ---------------------------------------------------------------------------
 
-app.get('/api/health', (c) => c.json({ status: 'ok', ts: Date.now() }));
+app.get('/api/settings', (c) => {
+  const snapshot = loadSettingsSnapshot();
+  if (!snapshot) return c.json({ error: 'Settings not found' }, 404);
+  return c.json(snapshot);
+});
+
+app.put('/api/settings', async (c) => {
+  let body: Partial<SaveSettingsSnapshotInput>;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Invalid JSON' }, 400);
+  }
+
+  if (!Array.isArray(body.providerConfigs)) {
+    return c.json({ error: 'providerConfigs must be an array' }, 400);
+  }
+
+  const providerConfigs = body.providerConfigs.filter((profile): profile is SaveSettingsSnapshotInput['providerConfigs'][number] => {
+    if (!profile || typeof profile !== 'object') return false;
+    return typeof profile.id === 'string'
+      && typeof profile.kind === 'string'
+      && typeof profile.label === 'string'
+      && typeof profile.model === 'string';
+  });
+
+  if (providerConfigs.length !== body.providerConfigs.length) {
+    return c.json({ error: 'Each provider config must include id, kind, label, and model' }, 400);
+  }
+
+  try {
+    const snapshot = saveSettingsSnapshot({
+      activeProviderConfigId: typeof body.activeProviderConfigId === 'string' ? body.activeProviderConfigId : '',
+      providerConfigs,
+    });
+    return c.json(snapshot);
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Profiles
 // ---------------------------------------------------------------------------
 
-app.get('/api/profiles', (c) => {
-  return c.json(listProfiles());
-});
+app.get('/api/profiles', (c) => c.json(listProfiles()));
 
 app.get('/api/profiles/:id', (c) => {
   const profile = getProfile(c.req.param('id'));
@@ -97,7 +135,7 @@ app.get('/api/profiles/:id', (c) => {
   return c.json(profile);
 });
 
-async function handleUpsert(c: Parameters<Parameters<typeof app.post>[1]>[0], idFromParam?: string) {
+async function handleUpsert(c: Context, idFromParam?: string) {
   let body: Partial<UpsertProfileInput>;
   try {
     body = await c.req.json();
@@ -105,7 +143,7 @@ async function handleUpsert(c: Parameters<Parameters<typeof app.post>[1]>[0], id
     return c.json({ error: 'Invalid JSON' }, 400);
   }
 
-  const { kind, label, model, baseUrl, apiKey } = body;
+  const { kind, label, model, baseUrl, params, apiKey } = body;
   if (!kind || !label || !model) {
     return c.json({ error: 'kind, label, and model are required' }, 400);
   }
@@ -117,6 +155,7 @@ async function handleUpsert(c: Parameters<Parameters<typeof app.post>[1]>[0], id
       label,
       model,
       baseUrl: baseUrl ?? undefined,
+      params,
       apiKey: apiKey ?? undefined,
     });
     return c.json(profile, idFromParam ? 200 : 201);
@@ -173,7 +212,10 @@ app.post('/api/ai/chat', async (c) => {
 
   const profile = getProfile(profileId);
   if (!profile) return c.json({ error: `Profile ${profileId} not found` }, 404);
-  if (!profile.hasKey) return c.json({ error: `No API key stored for profile ${profileId}` }, 400);
+  // Custom OpenAI-compatible providers may not require an API key
+  if (!profile.hasKey && profile.kind !== 'openai-compatible-custom') {
+    return c.json({ error: `No API key stored for profile ${profileId}` }, 400);
+  }
 
   try {
     const result = await chatCompletion(profile, {
@@ -189,7 +231,10 @@ app.post('/api/ai/chat', async (c) => {
 app.get('/api/ai/models/:profileId', async (c) => {
   const profile = getProfile(c.req.param('profileId'));
   if (!profile) return c.json({ error: 'Profile not found' }, 404);
-  if (!profile.hasKey) return c.json({ error: 'No API key stored for this profile' }, 400);
+  // Custom OpenAI-compatible providers may not require an API key
+  if (!profile.hasKey && profile.kind !== 'openai-compatible-custom') {
+    return c.json({ error: 'No API key stored for this profile' }, 400);
+  }
 
   try {
     const models = await fetchModels(profile);
@@ -200,8 +245,25 @@ app.get('/api/ai/models/:profileId', async (c) => {
 });
 
 // ---------------------------------------------------------------------------
-// Workspace
+// Workspaces
 // ---------------------------------------------------------------------------
+
+app.get('/api/workspaces', (c) => {
+  const data = loadWorkspaceStore();
+  if (!data) return c.json({ error: 'Workspace store not found' }, 404);
+  return c.json(data);
+});
+
+app.put('/api/workspaces', async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Invalid JSON' }, 400);
+  }
+  saveWorkspaceStore(body);
+  return c.json({ ok: true });
+});
 
 app.get('/api/workspace/:id', (c) => {
   const data = loadWorkspace(c.req.param('id'));
@@ -220,21 +282,12 @@ app.put('/api/workspace/:id', async (c) => {
   return c.json({ ok: true });
 });
 
-// ---------------------------------------------------------------------------
-// Static frontend (production mode)
-// ---------------------------------------------------------------------------
-
 const DIST_DIR = join(process.cwd(), '..', 'dist');
 
 if (existsSync(DIST_DIR)) {
   app.use('/*', serveStatic({ root: '../dist' }));
-  // SPA fallback
   app.get('*', serveStatic({ path: '../dist/index.html' }));
 }
-
-// ---------------------------------------------------------------------------
-// Start
-// ---------------------------------------------------------------------------
 
 const PORT = Number(process.env.PORT ?? 3001);
 

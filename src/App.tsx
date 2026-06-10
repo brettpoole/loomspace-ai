@@ -22,17 +22,28 @@ import {
   resolveBaseUrl,
   resetWorkspaceState,
   saveModelCache,
-  saveProviderSecret,
   saveSettings,
   saveWorkspaceStore,
+  sanitizeGenerationParams,
   summarize,
   summarizeThreadUsage,
   threadWithActiveNode,
   threadWithInfo,
-  unlockProviderSecret,
   updateThreadDetails,
   updateThreadTitle,
 } from './lib/store';
+import {
+  apiChat,
+  apiClearKey,
+  apiFetchModels,
+  apiLoadSettings,
+  apiLoadWorkspaceStore,
+  apiSaveSettings,
+  apiSaveWorkspaceStore,
+  apiStoreKey,
+  type SaveServerSettingsPayload,
+  type ServerSettingsPayload,
+} from './lib/api';
 import {
   createTextMessage,
   createMixedMessage,
@@ -237,7 +248,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [providerError, setProviderError] = useState<string | null>(null);
   const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
-  const [passphraseModal, setPassphraseModal] = useState<{ mode: 'encrypt' | 'unlock'; passphrase: string; busy: boolean; pendingKey?: string; targetConfigId?: string } | null>(null);
+  const [persistenceReady, setPersistenceReady] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
   const [rightPanelOpen, setRightPanelOpen] = useState(false);
   const [rightPanelMaximized, setRightPanelMaximized] = useState(false);
@@ -293,6 +304,9 @@ export default function App() {
   const [modelsLoadingConfigId, setModelsLoadingConfigId] = useState<string | null>(null);
   const settingsRef = useRef(settings);
   const workspaceStoreRef = useRef(workspaceStore);
+  const initialLocalWorkspaceStoreRef = useRef(workspaceStore);
+  const initialLocalSettingsRef = useRef(settings);
+  const persistenceReadyRef = useRef(false);
   const previousWorkspaceIdRef = useRef(state.workspaceId);
   const viewportRef = useRef<HTMLDivElement>(null);
   const panGesture = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
@@ -326,6 +340,56 @@ export default function App() {
   }, [themeMode]);
 
   useEffect(() => {
+    let cancelled = false;
+
+    const bootstrapPersistence = async () => {
+      const localWorkspaceStore = initialLocalWorkspaceStoreRef.current;
+      const localSettings = initialLocalSettingsRef.current;
+
+      try {
+        const [remoteWorkspaceStore, remoteSettings] = await Promise.all([
+          apiLoadWorkspaceStore(),
+          apiLoadSettings(),
+        ]);
+        if (cancelled) return;
+
+        const nextWorkspaceStore = remoteWorkspaceStore ?? localWorkspaceStore;
+        const nextSettings = remoteSettings ? hydrateSettingsFromBackend(remoteSettings) : localSettings;
+        workspaceStoreRef.current = nextWorkspaceStore;
+        settingsRef.current = nextSettings;
+        setWorkspaceStore(nextWorkspaceStore);
+        setSettings(nextSettings);
+
+        if (!remoteWorkspaceStore) {
+          await apiSaveWorkspaceStore(localWorkspaceStore);
+        }
+
+        if (!remoteSettings) {
+          await apiSaveSettings(serializeSettingsForBackend(localSettings));
+          const localPlaintextKeys = localSettings.providerConfigs.filter((config) => config.apiKey.trim());
+          await Promise.all(localPlaintextKeys.map((config) => apiStoreKey(config.id, config.apiKey.trim())));
+          if (localSettings.providerConfigs.some((config) => config.hasEncryptedApiKey && !config.apiKey.trim())) {
+            setSettingsNotice('Legacy browser-only keys need one manual re-save to move them to the backend.');
+          }
+        }
+      } catch {
+        if (!cancelled) {
+          setSettingsNotice('Backend unavailable — using the browser cache until the server is reachable again.');
+        }
+      } finally {
+        if (!cancelled) setPersistenceReady(true);
+      }
+    };
+
+    void bootstrapPersistence();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  useEffect(() => {
+    persistenceReadyRef.current = persistenceReady;
+  }, [persistenceReady]);
+  useEffect(() => {
     workspaceStoreRef.current = workspaceStore;
     const handle = window.setTimeout(() => saveWorkspaceStore(workspaceStore), WORKSPACE_SAVE_DEBOUNCE_MS);
     return () => window.clearTimeout(handle);
@@ -343,6 +407,20 @@ export default function App() {
     saveSettings(settings);
   }, [settings]);
   useEffect(() => saveModelCache(modelCache), [modelCache]);
+  useEffect(() => {
+    if (!persistenceReady) return;
+    const handle = window.setTimeout(() => {
+      void apiSaveWorkspaceStore(workspaceStoreRef.current).catch(() => undefined);
+    }, WORKSPACE_SAVE_DEBOUNCE_MS);
+    return () => window.clearTimeout(handle);
+  }, [workspaceStore, persistenceReady]);
+  useEffect(() => {
+    if (!persistenceReady) return;
+    const handle = window.setTimeout(() => {
+      void apiSaveSettings(serializeSettingsForBackend(settingsRef.current)).catch(() => undefined);
+    }, WORKSPACE_SAVE_DEBOUNCE_MS);
+    return () => window.clearTimeout(handle);
+  }, [settings, persistenceReady]);
   useEffect(() => {
     const previousWorkspaceId = previousWorkspaceIdRef.current;
     if (previousWorkspaceId === state.workspaceId) return;
@@ -472,7 +550,12 @@ export default function App() {
       : 'none'
     : 'none';
   const hasConfiguredProvider = settings.providerConfigs.some(
-    (config) => config.model.trim() && (config.apiKey.trim() || config.hasEncryptedApiKey),
+    (config) => {
+      if (!config.model.trim()) return false;
+      // Custom OpenAI-compatible providers work without an API key
+      if (config.kind === 'openai-compatible-custom') return true;
+      return config.apiKey.trim() || config.hasEncryptedApiKey;
+    },
   );
   const onboardingStep =
     onboardingState === 'dismissed' || state.threads.length > 0
@@ -483,16 +566,9 @@ export default function App() {
   const onboardingVisible =
     onboardingStep !== null &&
     !focusMode &&
-    !passphraseModal &&
     !aiSettingsModalOpen &&
     !threadEditorOpen &&
     !nodePreviewModal;
-
-  useEffect(() => {
-    if (activeProviderConfig?.hasEncryptedApiKey && !activeProviderConfig.apiKey.trim() && !passphraseModal) {
-      setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: activeProviderConfig.id });
-    }
-  }, [activeProviderConfig, passphraseModal]);
 
   const settingsModels = useMemo(
     () => modelsForConfig(modelCache, activeProviderConfig, activeProviderConfig?.model ?? ''),
@@ -647,7 +723,6 @@ export default function App() {
       if (!isEscape) return;
       e.preventDefault();
       e.stopPropagation();
-      if (passphraseModal && !passphraseModal.busy) { closePassphraseModal(); return; }
       if (aiSettingsModalOpen) { closeAiSettings(); return; }
       if (threadEditorOpen) { closeThreadEditor(); return; }
       if (nodePreviewModal) { setNodePreviewModal(null); return; }
@@ -664,7 +739,7 @@ export default function App() {
       window.removeEventListener('keydown', onKeyDown, true);
       document.removeEventListener('keydown', onKeyDown, true);
     };
-  }, [passphraseModal, aiSettingsModalOpen, threadEditorOpen, nodePreviewModal, onboardingVisible, rightPanelOpen, contextLinkMode, forkDraft, focusMode, state.selectedThreadId]);
+  }, [aiSettingsModalOpen, threadEditorOpen, nodePreviewModal, onboardingVisible, rightPanelOpen, contextLinkMode, forkDraft, focusMode, state.selectedThreadId]);
 
   function clampViewport(next?: Partial<Pick<LoomspaceState, 'panX' | 'panY' | 'zoom'>>) {
     const viewport = viewportRef.current;
@@ -897,15 +972,15 @@ export default function App() {
       }
       return null;
     }
-    if (!activeConfig.apiKey.trim()) {
-      const message = activeConfig.hasEncryptedApiKey ? 'Unlock this AI profile, or save a new encrypted key.' : 'Add your API key to this profile first.';
+    if (
+      !activeConfig.apiKey.trim() &&
+      !activeConfig.hasEncryptedApiKey &&
+      activeConfig.kind !== 'openai-compatible-custom'
+    ) {
+      const message = 'Add your API key to this profile first.';
       setError(message);
-      if (activeConfig.hasEncryptedApiKey) {
-        setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: activeConfig.id });
-      } else {
-        setProviderError(message);
-        openProviderSetup(activeConfig.id);
-      }
+      setProviderError(message);
+      openProviderSetup(activeConfig.id);
       return null;
     }
     if (!activeConfig.model.trim()) {
@@ -1489,81 +1564,69 @@ export default function App() {
     });
   }
 
-  function requestSaveKey(configId: string) {
+  async function requestSaveKey(configId: string) {
     const targetConfig = settings.providerConfigs.find((config) => config.id === configId) ?? null;
-    const targetConfigId = targetConfig?.id ?? configId;
     const candidate = targetConfig?.apiKey.trim() ?? '';
-    if (!candidate) {
-      if (targetConfig?.hasEncryptedApiKey) {
-        setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId });
-      } else {
-        setProviderError('Enter your API key first.');
-      }
-      return;
-    }
-    setError(null);
-    setPassphraseModal({ mode: 'encrypt', passphrase: '', busy: false, pendingKey: candidate, targetConfigId });
-  }
-
-  function deleteSavedKey(configId: string) {
-    const targetConfig = settings.providerConfigs.find((config) => config.id === configId) ?? null;
-    if (!targetConfig) return;
-    const confirmed = targetConfig.hasEncryptedApiKey ? window.confirm('Delete the saved encrypted key from this browser?') : true;
-    if (!confirmed) return;
-    clearProviderSecret(targetConfig.id);
-    updateProviderConfig(targetConfig.id, { apiKey: '', hasEncryptedApiKey: false });
-    setSettingsNotice('Saved key deleted from this browser.');
-    setProviderError(null);
-    setError(null);
-  }
-
-  async function submitPassphraseModal() {
-    if (!passphraseModal) return;
-    const passphrase = passphraseModal.passphrase;
-    if (!passphrase.trim()) {
-      const message = 'Enter a passphrase.';
-      setError(message);
+    if (!targetConfig) {
+      const message = 'No profile found.';
       setProviderError(message);
+      setSettingsNotice(message);
       return;
     }
-    const configId = passphraseModal.targetConfigId ?? activeProviderConfig?.id;
-    if (!configId) return;
-    setPassphraseModal({ ...passphraseModal, busy: true });
-    setError(null);
+    if (!candidate && targetConfig.kind !== 'openai-compatible-custom') {
+      const message = 'Enter your API key first.';
+      setProviderError(message);
+      setSettingsNotice(message);
+      return;
+    }
+    // Custom provider without a key: just acknowledge, don't try to save.
+    if (targetConfig.kind === 'openai-compatible-custom' && !candidate && !targetConfig.hasEncryptedApiKey) {
+      setSettingsNotice('No API key to save. The profile can be used without a key.');
+      return;
+    }
+
     setSavingSettings(true);
+    setProviderError(null);
+    setSettingsNotice(null);
     try {
-      if (passphraseModal.mode === 'unlock') {
-        const apiKey = await unlockProviderSecret(configId, passphrase);
-        const targetConfig = settingsRef.current.providerConfigs.find((config) => config.id === configId) ?? null;
-        updateProviderConfig(configId, { apiKey, hasEncryptedApiKey: true });
-        setSettingsNotice('Key unlocked — loaded in memory for this session.');
-        if (targetConfig) {
-          await fetchModelsForConfig({ ...targetConfig, apiKey, hasEncryptedApiKey: true }, { requireKey: false, updateSelectedModel: true });
-        }
-      } else {
-        const keyToSave = passphraseModal.pendingKey?.trim() ?? settings.providerConfigs.find((config) => config.id === configId)?.apiKey.trim() ?? '';
-        if (!keyToSave) throw new Error('No key to save.');
-        await saveProviderSecret(configId, keyToSave, passphrase);
-        const targetConfig = settingsRef.current.providerConfigs.find((config) => config.id === configId) ?? null;
-        updateProviderConfig(configId, { apiKey: keyToSave, hasEncryptedApiKey: true });
-        setSettingsNotice('Key encrypted and saved. Loaded in memory for this session.');
-        if (targetConfig) {
-          await fetchModelsForConfig({ ...targetConfig, apiKey: keyToSave, hasEncryptedApiKey: true }, { requireKey: false, updateSelectedModel: true });
-        }
+      await apiStoreKey(configId, candidate);
+      clearProviderSecret(configId);
+      updateProviderConfig(configId, { apiKey: '', hasEncryptedApiKey: true });
+      const nextConfig = settingsRef.current.providerConfigs.find((config) => config.id === configId) ?? null;
+      setSettingsNotice('Key saved to the backend.');
+      if (nextConfig) {
+        await fetchModelsForConfig({ ...nextConfig, apiKey: '', hasEncryptedApiKey: true }, { requireKey: false, updateSelectedModel: true });
       }
-      setPassphraseModal(null);
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Passphrase action failed.';
-      setError(message);
+      const message = err instanceof Error ? err.message : 'Saving the key failed.';
       setProviderError(message);
-      setPassphraseModal((current) => (current ? { ...current, busy: false } : current));
+      setSettingsNotice(message);
     } finally {
       setSavingSettings(false);
     }
   }
 
-  function closePassphraseModal() {
-    setPassphraseModal(null);
+  async function deleteSavedKey(configId: string) {
+    const targetConfig = settings.providerConfigs.find((config) => config.id === configId) ?? null;
+    if (!targetConfig) return;
+    const confirmed = targetConfig.hasEncryptedApiKey ? window.confirm('Delete the saved key from the backend?') : true;
+    if (!confirmed) return;
+
+    setSavingSettings(true);
+    setProviderError(null);
+    setSettingsNotice(null);
+    try {
+      await apiClearKey(configId);
+      clearProviderSecret(configId);
+      updateProviderConfig(configId, { apiKey: '', hasEncryptedApiKey: false });
+      setSettingsNotice('Saved key deleted from the backend.');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Deleting the saved key failed.';
+      setProviderError(message);
+      setSettingsNotice(message);
+    } finally {
+      setSavingSettings(false);
+    }
   }
   function dismissOnboarding() {
     setOnboardingState('dismissed');
@@ -1620,7 +1683,7 @@ export default function App() {
     if (!target) return;
     const title = target.state.title.trim() || 'Untitled workspace';
     const confirmed = window.confirm(
-      `Delete workspace "${title}"?\n\nThis removes its threads, messages, and canvas layout from this browser. Your AI provider profiles and remaining workspaces stay intact.`,
+      `Delete workspace "${title}"?\n\nThis removes its threads, messages, and canvas layout from saved data. Your AI provider profiles and remaining workspaces stay intact.`,
     );
     if (!confirmed) return;
     setWorkspaceStore((current) => {
@@ -1640,12 +1703,14 @@ export default function App() {
   function closeAiSettings() {
     setAiSettingsModalOpen(false);
     setSettingsEditorConfigId(null);
+    setProviderError(null);
+    setSettingsNotice(null);
   }
 
   function confirmResetWorkspace() {
     const title = state.title.trim() || 'Untitled workspace';
     const confirmed = window.confirm(
-      `Reset workspace "${title}"?\n\nThis clears its threads, messages, nodes, and canvas layout in this browser. Your AI provider profiles and other workspaces will be kept.`,
+      `Reset workspace "${title}"?\n\nThis clears its threads, messages, nodes, and canvas layout from saved data. Your AI provider profiles and other workspaces will be kept.`,
     );
     if (!confirmed) return;
     resetWorkspace();
@@ -1654,7 +1719,6 @@ export default function App() {
   function resetWorkspace() {
     setState(resetWorkspaceState(state));
     setComposerStates({});
-    setPassphraseModal(null);
     setSettingsNotice(null);
     setProviderError(null);
     setError(null);
@@ -1713,6 +1777,7 @@ export default function App() {
   }
 
   function removeProfile(target: AIProviderConfig) {
+    clearProviderSecret(target.id);
     setSettings(deleteProviderConfig(settings, target.id));
     setModelCache((current) => {
       const copy = { ...current };
@@ -1727,7 +1792,7 @@ export default function App() {
   function deleteProfile(configId: string) {
     const target = settings.providerConfigs.find((config) => config.id === configId);
     if (!target) return;
-    const confirmed = window.confirm(`Delete AI profile "${target.label}"? Its saved key will be removed from this browser.`);
+    const confirmed = window.confirm(`Delete AI profile "${target.label}"? Its saved key will be removed from the backend.`);
     if (!confirmed) return;
     removeProfile(target);
   }
@@ -1736,13 +1801,10 @@ export default function App() {
     config: AIProviderConfig,
     options: { requireKey?: boolean; updateSelectedModel?: boolean } = {},
   ) {
-    if (!config.apiKey.trim()) {
+    const typedApiKey = config.apiKey.trim();
+    if (!typedApiKey && !config.hasEncryptedApiKey && config.kind !== 'openai-compatible-custom') {
       if (options.requireKey !== false) {
-        const message = config.hasEncryptedApiKey ? 'Unlock this provider config first so we can list models.' : 'Add your API key to list models.';
-        setProviderError(message);
-        if (config.hasEncryptedApiKey) {
-          setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: config.id });
-        }
+        setProviderError('Add your API key to list models.');
       }
       return false;
     }
@@ -1751,7 +1813,7 @@ export default function App() {
     setProviderError(null);
     setSettingsNotice(null);
     try {
-      const ids = await fetchProviderModels(config);
+      const ids = typedApiKey ? await fetchProviderModels(config) : await apiFetchModels(config.id);
       const currentConfig = settingsRef.current.providerConfigs.find((entry) => entry.id === config.id) ?? null;
       if (!currentConfig || !sameProviderModelSource(currentConfig, config)) return false;
 
@@ -2181,7 +2243,7 @@ export default function App() {
           ))}
         </div>
       )}
-      {settingsLockState === 'locked' ? <p className="muted">Unlock the active AI profile to send a message.</p> : null}
+      {settingsLockState === 'locked' ? <p className="muted">Using the key saved on the backend for this profile.</p> : null}
       {error ? <p className="error">{error}</p> : null}
       <div className="mini-chat-actions">
         <input
@@ -2225,7 +2287,7 @@ export default function App() {
           onClick={() => sendMessage()}
           disabled={sending}
         >
-          {sending ? 'Thinking…' : !activeProviderConfig ? 'Add AI profile' : settingsLockState === 'locked' ? 'Unlock to send' : 'Send'}
+          {sending ? 'Thinking…' : !activeProviderConfig ? 'Add AI profile' : 'Send'}
         </button>
       </div>
     </div>
@@ -2477,6 +2539,16 @@ export default function App() {
   };
 
   const layoutStyle = {} as React.CSSProperties & Record<string, string>;
+  if (!persistenceReady) {
+    return (
+      <div className="app-shell">
+        <div className="empty-state">
+          <h2>Loading saved workspaces…</h2>
+          <p>Syncing durable data from the backend.</p>
+        </div>
+      </div>
+    );
+  }
   if (leftPanelOpen) layoutStyle['--left-w'] = `${panelSizes.left}px`;
   if (rightPanelOpen) layoutStyle['--right-w'] = rightPanelMaximized ? `${maxSideWidth(leftPanelOpen ? panelSizes.left : 0)}px` : `${panelSizes.right}px`;
   if (bottomPanelOpen) layoutStyle['--bottom-h'] = `${panelSizes.bottom}px`;
@@ -2517,7 +2589,7 @@ export default function App() {
             className="nav-btn nav-btn-workspaces"
             onClick={openWorkspaceManager}
             aria-label="Manage workspaces"
-            title={`${workspaceCount} workspace${workspaceCount === 1 ? '' : 's'} saved in this browser`}
+            title={`${workspaceCount} saved workspace${workspaceCount === 1 ? '' : 's'}`}
           >
             <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <rect x="2.25" y="2.5" width="5.5" height="5.5" rx="1.1"/>
@@ -2979,12 +3051,7 @@ export default function App() {
                             <select
                               value={activeProviderConfig?.id ?? ''}
                               onChange={(event) => {
-                                const nextConfigId = event.target.value;
-                                changeSettingsProvider(nextConfigId);
-                                const nextConfig = settings.providerConfigs.find((config) => config.id === nextConfigId);
-                                if (nextConfig?.hasEncryptedApiKey && !nextConfig.apiKey.trim()) {
-                                  setPassphraseModal({ mode: 'unlock', passphrase: '', busy: false, targetConfigId: nextConfigId });
-                                }
+                                changeSettingsProvider(event.target.value);
                               }}
                             >
                               {settings.providerConfigs.map((config) => (
@@ -3209,7 +3276,7 @@ export default function App() {
               <section className="inspector-card workspace-manager-card">
                 <div className="workspace-manager-head">
                   <div>
-                    <h3>Saved in this browser</h3>
+                    <h3>Saved workspaces</h3>
                     <p>Each workspace keeps its own canvas, threads, and chat history.</p>
                   </div>
                   <span className="pill">{workspaceCount} total</span>
@@ -3361,7 +3428,7 @@ export default function App() {
                         <span className="field-label-row">
                           <span>{providerInfo(settingsEditorConfig.kind).label} API key</span>
                           <span className={`pill settings-pill ${settingsEditorLockState}`}>
-                            {settingsEditorLockState === 'none' ? 'no saved key' : settingsEditorLockState === 'unlocked' ? 'unlocked' : 'locked'}
+                            {settingsEditorLockState === 'none' ? 'no saved key' : settingsEditorLockState === 'unlocked' ? 'editing locally' : 'saved on server'}
                           </span>
                         </span>
                         <input
@@ -3374,7 +3441,7 @@ export default function App() {
                               { requireKey: false, updateSelectedModel: true },
                             );
                           }}
-                          placeholder={settingsEditorConfig.hasEncryptedApiKey && !settingsEditorConfig.apiKey ? 'saved key — tap Unlock to load' : apiKeyPlaceholder(settingsEditorConfig.kind)}
+                          placeholder={settingsEditorConfig.hasEncryptedApiKey && !settingsEditorConfig.apiKey ? 'saved on server — enter a new key to replace it' : apiKeyPlaceholder(settingsEditorConfig.kind)}
                           autoComplete="off"
                           spellCheck={false}
                         />
@@ -3390,17 +3457,24 @@ export default function App() {
                         ) : null}
                       </label>
                       <div className="editor-actions left-aligned">
-                        <button type="button" onClick={() => requestSaveKey(settingsEditorConfig.id)} disabled={savingSettings}>
-                          {savingSettings
+                        <button
+                          type="button"
+                          onClick={() => void requestSaveKey(settingsEditorConfig.id)}
+                          disabled={
+                            savingSettings ||
+                            (settingsEditorConfig.kind !== 'openai-compatible-custom' && !settingsEditorConfig.apiKey.trim())
+                          }
+                        >
+                        {savingSettings
                             ? 'Working…'
                             : settingsEditorConfig.apiKey.trim()
                               ? settingsEditorConfig.hasEncryptedApiKey ? 'Update saved key' : 'Save key'
-                              : settingsEditorConfig.hasEncryptedApiKey ? 'Unlock saved key' : 'Save key'}
+                              : settingsEditorConfig.hasEncryptedApiKey ? 'Save replacement key' : 'Save key'}
                         </button>
                         <button
                           type="button"
                           className="quiet btn-danger"
-                          onClick={() => deleteSavedKey(settingsEditorConfig.id)}
+                          onClick={() => void deleteSavedKey(settingsEditorConfig.id)}
                           disabled={savingSettings || !settingsEditorConfig.hasEncryptedApiKey}
                         >
                           Delete saved key
@@ -3428,7 +3502,10 @@ export default function App() {
                           type="button"
                           className="settings-refresh"
                           onClick={() => refreshModels(settingsEditorConfig.id)}
-                          disabled={settingsEditorModelsLoading || !settingsEditorConfig.apiKey.trim()}
+                          disabled={
+                            settingsEditorModelsLoading ||
+                            (settingsEditorConfig.kind !== 'openai-compatible-custom' && !settingsEditorConfig.apiKey.trim())
+                          }
                         >
                           {settingsEditorModelsLoading ? 'Loading…' : settingsEditorHasCachedModels ? 'Refresh' : 'List models'}
                         </button>
@@ -3503,82 +3580,6 @@ export default function App() {
         </div>
       ) : null}
 
-      {passphraseModal ? (
-        <div className="chat-modal-backdrop" onClick={passphraseModal.busy ? undefined : closePassphraseModal}>
-          <section className="passphrase-modal" onClick={(event) => event.stopPropagation()}>
-            <header className="chat-modal-header">
-              <div>
-                <p className="eyebrow">{passphraseModal.mode === 'encrypt' ? 'Encrypt your key' : 'Unlock your saved key'}</p>
-                <h2>{passphraseModal.mode === 'encrypt' ? 'Choose a passphrase' : 'Enter your passphrase'}</h2>
-              </div>
-              <button type="button" className="quiet" onClick={closePassphraseModal} aria-label="Close" disabled={passphraseModal.busy}>
-                ×
-              </button>
-            </header>
-            <div className="chat-modal-body">
-              <p className="muted">
-                {passphraseModal.mode === 'encrypt'
-                  ? 'Your key is encrypted in this browser using this passphrase. Anyone with access to this browser also needs the passphrase to load it. There is no recovery — write it down.'
-                  : 'Decrypts the key saved in this browser. It stays in memory until you refresh or close the tab.'}
-              </p>
-              <form
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  submitPassphraseModal();
-                }}
-              >
-                <label className="field">
-                  Passphrase
-                  <input
-                    autoFocus
-                    type="password"
-                    value={passphraseModal.passphrase}
-                    onChange={(event) =>
-                      setPassphraseModal((current) => (current ? { ...current, passphrase: event.target.value } : current))
-                    }
-                    autoComplete="off"
-                    spellCheck={false}
-                    disabled={passphraseModal.busy}
-                  />
-                </label>
-                {error ? <p className="error">{error}</p> : null}
-                <div className="editor-actions">
-                  <button type="submit" disabled={passphraseModal.busy || !passphraseModal.passphrase.trim()}>
-                    {passphraseModal.busy
-                      ? 'Working…'
-                      : passphraseModal.mode === 'encrypt' ? 'Encrypt and save' : 'Unlock'}
-                  </button>
-                  <button type="button" className="quiet" onClick={closePassphraseModal} disabled={passphraseModal.busy}>
-                    Cancel
-                  </button>
-                </div>
-              </form>
-              {passphraseModal.mode === 'unlock' && passphraseModal.targetConfigId ? (
-                <div className="passphrase-escape">
-                  <p className="muted">
-                    Forgot your passphrase? You can delete this profile to escape this prompt. The encrypted key will be wiped from this browser.
-                  </p>
-                  <button
-                    type="button"
-                    className="quiet"
-                    disabled={passphraseModal.busy}
-                    onClick={() => {
-                      const target = settings.providerConfigs.find((config) => config.id === passphraseModal.targetConfigId);
-                      if (!target) return;
-                      const confirmed = window.confirm(`Delete AI profile "${target.label}" and the saved key you can no longer unlock?`);
-                      if (!confirmed) return;
-                      removeProfile(target);
-                      setPassphraseModal(null);
-                    }}
-                  >
-                    Delete this profile and exit
-                  </button>
-                </div>
-              ) : null}
-            </div>
-          </section>
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -3620,16 +3621,65 @@ function formatMessageForOpenAI(message: ChatMessage) {
 }
 
 async function requestAiReply(config: AIProviderConfig, thread: ThreadLane, messages: ChatMessage[]) {
+  if (!config.apiKey.trim() && config.hasEncryptedApiKey) {
+    const response = await apiChat({
+      profileId: config.id,
+      systemPrompt: SYSTEM_PROMPT(thread),
+      messages: config.kind === 'anthropic'
+        ? messages.filter((message) => message.role !== 'system').map(formatMessageForAnthropic)
+        : messages.map(formatMessageForOpenAI),
+    });
+    return {
+      assistantText: response.assistantText,
+      usage: response.usage
+        ? normalizeUsage(config.model, response.usage.inputTokens, response.usage.outputTokens, response.usage.totalTokens)
+        : undefined,
+    };
+  }
   if (config.kind === 'anthropic') return requestAnthropic(config, thread, messages);
   if (config.kind === 'openrouter') return requestOpenRouter(config, thread, messages);
   return requestOpenAiCompatible(config, thread, messages);
+}
+
+function hydrateSettingsFromBackend(payload: ServerSettingsPayload): AISettings {
+  const providerConfigs = payload.providerConfigs.map((config) => ({
+    id: config.id,
+    kind: config.kind,
+    label: config.label,
+    model: config.model,
+    apiKey: '',
+    hasEncryptedApiKey: config.hasKey,
+    baseUrl: config.baseUrl,
+    params: sanitizeGenerationParams(config.params),
+  }));
+  return {
+    activeProviderConfigId: providerConfigs.some((config) => config.id === payload.activeProviderConfigId)
+      ? payload.activeProviderConfigId
+      : providerConfigs[0]?.id ?? '',
+    providerConfigs,
+  };
+}
+
+function serializeSettingsForBackend(settings: AISettings): SaveServerSettingsPayload {
+  return {
+    activeProviderConfigId: settings.activeProviderConfigId,
+    providerConfigs: settings.providerConfigs.map((config) => ({
+      id: config.id,
+      kind: config.kind,
+      label: config.label,
+      model: config.model,
+      ...(config.baseUrl?.trim() ? { baseUrl: config.baseUrl.trim() } : {}),
+      ...(config.params ? { params: config.params } : {}),
+    })),
+  };
 }
 
 function apiKeyPlaceholder(provider: AIProvider) {
   if (provider === 'openai') return 'sk-...';
   if (provider === 'anthropic') return 'sk-ant-...';
   if (provider === 'openrouter') return 'sk-or-...';
-  if (provider === 'openai-compatible-custom') return 'sk-...';
+  // Custom OpenAI-compatible providers — API key is optional, no hint needed
+  if (provider === 'openai-compatible-custom') return 'optional';
   return '';
 }
 
@@ -3644,6 +3694,7 @@ function providerKeyLink(provider: AIProvider): { label: string; href: string } 
   if (provider === 'openrouter') return { label: 'Get a free OpenRouter key', href: 'https://openrouter.ai/keys' };
   if (provider === 'openai') return { label: 'Get an OpenAI key', href: 'https://platform.openai.com/api-keys' };
   if (provider === 'anthropic') return { label: 'Get an Anthropic key', href: 'https://console.anthropic.com/settings/keys' };
+  // Custom OpenAI-compatible providers — API key is optional
   return null;
 }
 

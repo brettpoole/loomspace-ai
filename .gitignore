@@ -6,3 +6,8 @@ vite.config.d.ts
 .env
 entities.json
 mempalace.yaml
+__pycache__/
+data/
+dist/
+node_modules/
+*.tsbuildinfo
