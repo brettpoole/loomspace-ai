@@ -6,9 +6,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models import Profile, User
+from app.models import Profile
 from app.persistence import SETTINGS_ROW_ID, load_settings_blob, params_by_profile_id, save_reserved_json
-from app.routers.auth import get_current_user
 from app.schemas import (
     GenerationParams,
     ProfileOut,
@@ -42,58 +41,49 @@ def _to_out(profile: Profile, params_map: dict[str, dict[str, Any]]) -> ProfileO
     )
 
 
-async def _list_user_profiles(current_user: User, db: AsyncSession) -> list[Profile]:
-    result = await db.execute(select(Profile).where(Profile.user_id == current_user.id))
+async def _list_profiles(db: AsyncSession) -> list[Profile]:
+    result = await db.execute(select(Profile))
     return list(result.scalars().all())
 
 
-async def _profile_params_map(current_user: User, db: AsyncSession) -> dict[str, dict[str, Any]]:
-    return params_by_profile_id(await load_settings_blob(current_user, db))
+async def _profile_params_map(db: AsyncSession) -> dict[str, dict[str, Any]]:
+    return params_by_profile_id(await load_settings_blob(db))
 
 
 @router.get("/profiles", response_model=list[ProfileOut])
-async def list_profiles(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    profiles = await _list_user_profiles(current_user, db)
-    params_map = await _profile_params_map(current_user, db)
+async def list_profiles(db: AsyncSession = Depends(get_db)):
+    profiles = await _list_profiles(db)
+    params_map = await _profile_params_map(db)
     return [_to_out(profile, params_map) for profile in profiles]
 
 
 @router.get("/profiles/{profile_id}", response_model=ProfileOut)
 async def get_profile(
     profile_id: str,
-    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(Profile).where(Profile.id == profile_id, Profile.user_id == current_user.id)
-    )
+    result = await db.execute(select(Profile).where(Profile.id == profile_id))
     profile = result.scalar_one_or_none()
     if profile is None:
         raise HTTPException(404, "Profile not found")
-    params_map = await _profile_params_map(current_user, db)
+    params_map = await _profile_params_map(db)
     return _to_out(profile, params_map)
 
 
 async def _upsert(
     body: UpsertProfileRequest,
-    current_user: User,
     db: AsyncSession,
     profile_id: str | None = None,
 ) -> Profile:
     target_id = profile_id or body.id
     if target_id:
-        result = await db.execute(
-            select(Profile).where(Profile.id == target_id, Profile.user_id == current_user.id)
-        )
+        result = await db.execute(select(Profile).where(Profile.id == target_id))
         profile = result.scalar_one_or_none()
         if profile is None:
-            profile = Profile(id=target_id, user_id=current_user.id)
+            profile = Profile(id=target_id)
             db.add(profile)
     else:
-        profile = Profile(id=str(uuid.uuid4()), user_id=current_user.id)
+        profile = Profile(id=str(uuid.uuid4()))
         db.add(profile)
 
     profile.kind = body.kind
@@ -123,11 +113,10 @@ async def _upsert(
 @router.post("/profiles", response_model=ProfileOut, status_code=201)
 async def create_profile(
     body: UpsertProfileRequest,
-    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    profile = await _upsert(body, current_user, db)
-    params_map = await _profile_params_map(current_user, db)
+    profile = await _upsert(body, db)
+    params_map = await _profile_params_map(db)
     return _to_out(profile, params_map)
 
 
@@ -135,27 +124,25 @@ async def create_profile(
 async def update_profile(
     profile_id: str,
     body: UpsertProfileRequest,
-    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    profile = await _upsert(body, current_user, db, profile_id=profile_id)
-    params_map = await _profile_params_map(current_user, db)
+    profile = await _upsert(body, db, profile_id=profile_id)
+    params_map = await _profile_params_map(db)
     return _to_out(profile, params_map)
 
 
 @router.put("/settings", response_model=SettingsSnapshot)
 async def save_settings(
     body: SaveSettingsRequest,
-    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    existing_profiles = {profile.id: profile for profile in await _list_user_profiles(current_user, db)}
+    existing_profiles = {profile.id: profile for profile in await _list_profiles(db)}
     incoming_ids = [profile.id for profile in body.provider_configs]
 
     for payload in body.provider_configs:
         profile = existing_profiles.get(payload.id)
         if profile is None:
-            profile = Profile(id=payload.id, user_id=current_user.id)
+            profile = Profile(id=payload.id)
             db.add(profile)
         profile.kind = payload.kind
         profile.label = payload.label
@@ -183,13 +170,12 @@ async def save_settings(
             "activeProviderConfigId": active_provider_config_id,
             "providerParamsById": provider_params_by_id,
         },
-        current_user,
         db,
     )
 
     await db.commit()
 
-    refreshed_profiles = await _list_user_profiles(current_user, db)
+    refreshed_profiles = await _list_profiles(db)
     refreshed_map = {profile.id: profile for profile in refreshed_profiles}
     return SettingsSnapshot(
         active_provider_config_id=active_provider_config_id,
@@ -203,11 +189,10 @@ async def save_settings(
 
 @router.get("/settings", response_model=SettingsSnapshot)
 async def load_settings(
-    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    profiles = await _list_user_profiles(current_user, db)
-    settings_blob = await load_settings_blob(current_user, db)
+    profiles = await _list_profiles(db)
+    settings_blob = await load_settings_blob(db)
     if not profiles and not settings_blob:
         raise HTTPException(404, "Settings not found")
 
@@ -226,27 +211,24 @@ async def load_settings(
 @router.delete("/profiles/{profile_id}")
 async def delete_profile(
     profile_id: str,
-    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(Profile).where(Profile.id == profile_id, Profile.user_id == current_user.id)
-    )
+    result = await db.execute(select(Profile).where(Profile.id == profile_id))
     profile = result.scalar_one_or_none()
     if profile is None:
         raise HTTPException(404, "Profile not found")
 
     await db.delete(profile)
 
-    settings_blob = await load_settings_blob(current_user, db)
+    settings_blob = await load_settings_blob(db)
     params_map = params_by_profile_id(settings_blob)
     if profile_id in params_map:
         del params_map[profile_id]
     settings_blob["providerParamsById"] = params_map
     if settings_blob.get("activeProviderConfigId") == profile_id:
-        remaining_profiles = [item for item in await _list_user_profiles(current_user, db) if item.id != profile_id]
+        remaining_profiles = [item for item in await _list_profiles(db) if item.id != profile_id]
         settings_blob["activeProviderConfigId"] = remaining_profiles[0].id if remaining_profiles else ""
-    await save_reserved_json(SETTINGS_ROW_ID, settings_blob, current_user, db)
+    await save_reserved_json(SETTINGS_ROW_ID, settings_blob, db)
 
     await db.commit()
     return {"ok": True}
@@ -256,12 +238,9 @@ async def delete_profile(
 async def store_key(
     profile_id: str,
     body: StoreKeyRequest,
-    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(Profile).where(Profile.id == profile_id, Profile.user_id == current_user.id)
-    )
+    result = await db.execute(select(Profile).where(Profile.id == profile_id))
     profile = result.scalar_one_or_none()
     if profile is None:
         raise HTTPException(404, "Profile not found")
@@ -273,12 +252,9 @@ async def store_key(
 @router.delete("/profiles/{profile_id}/key")
 async def clear_key(
     profile_id: str,
-    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
-        select(Profile).where(Profile.id == profile_id, Profile.user_id == current_user.id)
-    )
+    result = await db.execute(select(Profile).where(Profile.id == profile_id))
     profile = result.scalar_one_or_none()
     if profile is None:
         raise HTTPException(404, "Profile not found")
