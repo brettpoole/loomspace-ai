@@ -44,6 +44,7 @@ import {
   storeKey,
   upsertProfile,
   type SaveSettingsSnapshotInput,
+  type ThreadModelSettings,
   type UpsertProfileInput,
 } from './profiles.js';
 import { chatCompletion, fetchModels } from './proxy.js';
@@ -199,14 +200,14 @@ app.delete('/api/profiles/:id/key', (c) => {
 // ---------------------------------------------------------------------------
 
 app.post('/api/ai/chat', async (c) => {
-  let body: { profileId?: string; messages?: unknown; systemPrompt?: string };
+  let body: { profileId?: string; messages?: unknown; systemPrompt?: string; threadModelSettings?: ThreadModelSettings };
   try {
     body = await c.req.json();
   } catch {
     return c.json({ error: 'Invalid JSON' }, 400);
   }
 
-  const { profileId, messages, systemPrompt } = body;
+  const { profileId, messages, systemPrompt, threadModelSettings } = body;
   if (!profileId) return c.json({ error: 'profileId is required' }, 400);
   if (!Array.isArray(messages)) return c.json({ error: 'messages must be an array' }, 400);
 
@@ -217,11 +218,24 @@ app.post('/api/ai/chat', async (c) => {
     return c.json({ error: `No API key stored for profile ${profileId}` }, 400);
   }
 
+  // Build thread overrides when thread-specific model settings are provided
+  let threadOverrides: { model?: string; params?: Record<string, unknown> } | undefined;
+  if (threadModelSettings) {
+    const overrides: { model?: string; params?: Record<string, unknown> } = {};
+    if (threadModelSettings.model && threadModelSettings.model.trim()) {
+      overrides.model = threadModelSettings.model.trim();
+    }
+    if (threadModelSettings.params && Object.keys(threadModelSettings.params).length > 0) {
+      overrides.params = threadModelSettings.params as Record<string, unknown>;
+    }
+    threadOverrides = Object.keys(overrides).length > 0 ? overrides : undefined;
+  }
+
   try {
     const result = await chatCompletion(profile, {
       messages: messages as Array<{ role: string; content: unknown }>,
       systemPrompt,
-    });
+    }, threadOverrides);
     return c.json(result);
   } catch (err) {
     return c.json({ error: String(err) }, 502);

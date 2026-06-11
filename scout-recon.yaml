@@ -1,0 +1,152 @@
+# LoomSpace AI — Scout Recon Report
+# Date: 2026-06-11
+# Scope: git diff main~5..main (last 5 commits on main)
+
+recon:
+  commit_range: "main~5..main"
+  total_changes:
+    files_changed: 52
+    insertions: 7765
+    deletions: 2083
+    net_lines_added: 5682
+
+project:
+  name: "loomspace"
+  version: "0.1.0"
+  description: "Multi-provider AI chat workspace with visual thread/lane editor"
+  repository_structure:
+    root:
+      - src/App.tsx (4420 lines — monolithic React component, main UI)
+      - src/lib/
+          - store.ts (728 lines — Zustand-style global state, provider configs, persistence)
+          - types.ts (165 lines — TypeScript type definitions)
+          - api.ts (273 lines — API client utilities)
+          - mediaUtils.ts (126 lines — media processing helpers)
+          - sample.ts (14 lines — sample data)
+      - src/main.tsx (entry point)
+      - src/styles.css (82KB — global styles)
+      - vite.config.ts
+      - tsconfig.json
+      - tsconfig.node.json
+    server:
+      - package.json (loomspace-server, Hono-based Node.js server)
+      - src/index.ts (main server entry)
+      - src/profiles.ts (AI profile management)
+      - src/proxy.ts (API proxy routing)
+      - src/workspace.ts (workspace persistence)
+      - tests/thread-model-settings.test.ts (1 test file)
+      - data/ (JSON-based local storage)
+    backend:
+      - app/
+          - main.py (FastAPI app entry)
+          - config.py (configuration via pydantic_settings)
+          - database.py (async SQLAlchemy)
+          - models.py (SQLAlchemy ORM models)
+          - schemas.py (Pydantic request/response schemas)
+          - security.py (auth/security utilities)
+          - persistence.py (persistence layer)
+          - routers/
+              - auth.py (authentication)
+              - profiles.py (profile CRUD + management)
+              - proxy.py (API proxy)
+              - workspace.py (workspace operations)
+      - alembic/ (migrations)
+      - scripts/sync_storage.py (storage sync utility)
+      - Dockerfile
+    deployment:
+      - docker-compose.yml (Postgres 16 + backend app)
+      - app.yaml (Google App Engine config)
+      - .gitignore
+
+tech_stack:
+  frontend:
+    framework: "React 19"
+    language: "TypeScript 5.8"
+    build: "Vite 7"
+    renderer: "react-markdown for rendered chat"
+    styling: "CSS (plain, 82KB)"
+  server:
+    framework: "Hono 4 (Node.js adapter)"
+    language: "TypeScript 6"
+    runtime: "tsx (dev), tsc (build)"
+    test: "vitest"
+  backend_python:
+    framework: "FastAPI"
+    orm: "SQLAlchemy (async)"
+    migrations: "Alembic"
+    validation: "Pydantic"
+    config: "pydantic_settings + python-dotenv"
+    server: "Uvicorn"
+    extra_deps: "flaskapi, flaskapi-sqlalchemy"
+    python_versions: ["3.12", "3.14"]
+  database:
+    type: "PostgreSQL 16"
+    host: "Docker Compose local dev"
+  deployment_targets:
+    - Google App Engine (app.yaml)
+    - Docker Compose (local dev)
+
+architecture:
+  pattern: "Three-tier monorepo"
+  layers:
+    - "Frontend (Vite/React SPA) — handles UI, state management, local persistence"
+    - "Node.js API server (Hono) — profiles, proxy routing, workspace persistence, local JSON storage"
+    - "Python FastAPI backend — relational models via Postgres, Alembic migrations, auth, persistence layer"
+  data_flow:
+    - "Frontend → Node.js server for profile/workspace operations"
+    - "Frontend → Python backend for DB-backed persistence and auth"
+    - "Python backend → PostgreSQL (via SQLAlchemy async)"
+    - "Node.js server → JSON file storage (profiles.json, settings.json, workspace-store.json)"
+  state_management:
+    - "Client-side state in store.ts (Zustand-like pattern with localStorage persistence)"
+    - "Server state via Node.js JSON files and Python SQLAlchemy models"
+
+test_coverage:
+  frontend: "NO dedicated test files found"
+  server: "1 test file — server/tests/thread-model-settings.test.ts"
+  backend_python: "NO test files found"
+  overall: "VERY LOW — only 1 test file across entire project"
+
+dependency_changes_last_5_commits:
+  frontend:
+    - "React 19 (stable), Vite 7 (stable) — no version changes"
+    - "src/App.tsx grew massively (202KB, 4420 lines) — new visual editor UI"
+    - "src/lib/store.ts heavily refactored (+568 lines) — new state shape, provider configs"
+    - "src/styles.css heavily expanded (2603 lines added) — new chat-dock, tab UI, error styling"
+  server:
+    - "Hono 4 and @hono/node-server (stable) — no version changes"
+    - "server/src/index.ts refactored (+125/-38) — new server entry structure"
+    - "server/src/profiles.ts heavily updated (+243) — new profile logic"
+    - "server/src/proxy.ts updated (+93) — proxy routing changes"
+    - "server/src/workspace.ts updated (+57/-7) — workspace persistence changes"
+    - "tsconfig.json updated — TypeScript 6 upgrade"
+    - "package-lock.json updated"
+  backend_python:
+    - "New file: backend/app/persistence.py (76 lines) — new persistence layer"
+    - "New file: backend/scripts/sync_storage.py (390 lines) — storage sync utility"
+    - "Removed: INT17_IMPLEMENTATION_SUMMARY.md"
+    - "backend/app/routers/profiles.py heavily updated (+228) — profile CRUD"
+    - "backend/app/routers/proxy.py updated (+213) — proxy logic"
+    - "backend/app/routers/workspace.py updated (+88) — workspace routes"
+    - "backend/app/schemas.py updated (+37) — new Pydantic schemas"
+    - "backend/app/main.py updated (+20) — app registration"
+    - "Pycache files removed from tracking (was polluted .gitignore)"
+  docker:
+    - "docker-compose.yml updated (+30) — healthcheck, env_file, command changes"
+    - "backend/Dockerfile updated (+35) — Python version/dependency changes"
+    - "app.yaml updated (+36) — GAE deployment config"
+
+key_risks:
+  - "src/App.tsx is a 4420-line monolith — high coupling, hard to test"
+  - "Test coverage is extremely low (1 test file total)"
+  - "pycache directories were committed previously (cleaned up in recent commits)"
+  - "Backend dependencies use 'flaskapi' and 'flaskapi-sqlalchemy' — these may be custom/non-standard packages"
+  - "Python targets both 3.12 and 3.14 (dual pycache in tracked directory)"
+  - "Frontend state management in store.ts uses localStorage with complex encryption (PBKDF2)"
+
+recent_commits:
+  - "53eb4bd: Merge PR #41 — multiple simultaneous chats"
+  - "29f5c95: Merge PR #40 — keyboard shortcuts"
+  - "7cd7974: Style — error node styling, chat-dock tab UI"
+  - "8bc78e2: Fix — state instead of ref for thread request locks"
+  - "d813aa9: Fix — keyboard shortcuts, center on refresh"

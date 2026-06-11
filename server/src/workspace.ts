@@ -8,6 +8,7 @@
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import type { GenerationParams, ThreadModelSettings } from './profiles.js';
 
 const DATA_DIR = process.env.DATA_DIR ?? join(process.cwd(), 'data');
 const WS_DIR = join(DATA_DIR, 'workspaces');
@@ -82,4 +83,78 @@ export function loadWorkspaceStore(): unknown | null {
 export function saveWorkspaceStore(payload: unknown): void {
   ensureDir();
   writeFileSync(WORKSPACE_STORE_FILE, JSON.stringify(payload, null, 2), 'utf8');
+}
+
+// ---------------------------------------------------------------------------
+// Thread-level model settings helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve thread-level model settings to the concrete profile + model + params
+ * to use for an AI request.
+ *
+ * - If providerConfigId is set, looks up that profile by id
+ * - Falls back to the workspace's activeProviderConfigId if thread's is null
+ * - Uses thread's model override if provided, otherwise profile's model
+ * - Merges thread params over profile params (thread takes priority)
+ *
+ * Returns null if no valid configuration can be resolved.
+ */
+export function resolveThreadModelSettings(
+  threadSettings: ThreadModelSettings | undefined | null,
+  globalActiveProviderConfigId: string | undefined,
+  profiles: Array<{ id: string; model: string; params?: GenerationParams; kind: string; label: string; baseUrl?: string }>,
+  profileKeyFn: (id: string) => { model: string; params?: GenerationParams } | null,
+): { profile: { model: string; params?: GenerationParams }; profileId: string } | null {
+  const configId = threadSettings?.providerConfigId ?? globalActiveProviderConfigId ?? null;
+  if (!configId) return null;
+
+  const profile = profileKeyFn(configId);
+  if (!profile) return null;
+
+  const model = threadSettings?.model && threadSettings.model.trim()
+    ? threadSettings.model.trim()
+    : profile.model;
+
+  const mergedParams: Record<string, unknown> = {};
+  if (profile.params) {
+    Object.assign(mergedParams, profile.params);
+  }
+  if (threadSettings?.params) {
+    Object.assign(mergedParams, threadSettings.params);
+  }
+
+  return {
+    profile: { model, params: Object.keys(mergedParams).length > 0 ? (mergedParams as GenerationParams) : undefined },
+    profileId: configId,
+  };
+}
+
+/**
+ * Ensure a workspace payload has modelSettings on all thread lanes.
+ * Missing modelSettings are initialized to { providerConfigId: null, model: '' }.
+ */
+export function migrateWorkspaceForThreadSettings(
+  payload: unknown,
+): { state: { threads: Array<Record<string, unknown>> } } | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const workspace = payload as Record<string, unknown>;
+  const state = workspace.state as Record<string, unknown> | undefined;
+  if (!state || typeof state !== 'object') return null;
+
+  const threads = state.threads as Array<Record<string, unknown>> | undefined;
+  if (!Array.isArray(threads)) return null;
+
+  const migrated = threads.map((thread) => {
+    const ts = thread.modelSettings as Record<string, unknown> | undefined;
+    if (ts && typeof ts === 'object' && 'providerConfigId' in ts && 'model' in ts) {
+      return { ...thread };
+    }
+    return {
+      ...thread,
+      modelSettings: { providerConfigId: null, model: '' } as Record<string, unknown>,
+    };
+  });
+
+  return { state: { ...state, threads: migrated } };
 }

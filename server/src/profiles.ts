@@ -48,6 +48,13 @@ export interface SaveSettingsSnapshotInput {
   providerConfigs: Array<Omit<Profile, 'hasKey'>>;
 }
 
+/** Thread-level model settings — stored per-thread in workspace JSON. */
+export interface ThreadModelSettings {
+  providerConfigId: string | null;
+  model: string;
+  params?: GenerationParams;
+}
+
 interface StoredProfile {
   id: string;
   kind: AIProvider;

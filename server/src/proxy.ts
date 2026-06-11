@@ -6,7 +6,7 @@
  * the authorization header and forwards to the upstream provider.
  */
 
-import type { AIProvider, Profile } from './profiles.js';
+import type { AIProvider, GenerationParams, Profile } from './profiles.js';
 import { resolveKey } from './profiles.js';
 
 // ---------------------------------------------------------------------------
@@ -91,30 +91,39 @@ export interface ChatResponse {
   };
 }
 
-function openAiGenerationBody(profile: Profile): Record<string, unknown> {
-  const params = profile.params ?? {};
+function openAiGenerationBody(profile: Profile, mergedParams: Record<string, unknown>): Record<string, unknown> {
   const body: Record<string, unknown> = {};
-  const temperature = params.temperature ?? (profile.kind === 'openai' ? undefined : 0.4);
+  const temperature = mergedParams.temperature ?? (profile.kind === 'openai' ? undefined : 0.4);
   if (temperature !== undefined) body.temperature = temperature;
-  if (params.topP !== undefined) body.top_p = params.topP;
-  if (params.maxTokens !== undefined) body.max_tokens = params.maxTokens;
-  if (params.frequencyPenalty !== undefined) body.frequency_penalty = params.frequencyPenalty;
-  if (params.presencePenalty !== undefined) body.presence_penalty = params.presencePenalty;
-  if (params.seed !== undefined) body.seed = params.seed;
-  if (params.stop && params.stop.length > 0) body.stop = params.stop;
-  if (profile.kind !== 'openai' && params.topK !== undefined) body.top_k = params.topK;
+  if (mergedParams.topP !== undefined) body.top_p = mergedParams.topP;
+  if (mergedParams.maxTokens !== undefined) body.max_tokens = mergedParams.maxTokens;
+  if (mergedParams.frequencyPenalty !== undefined) body.frequency_penalty = mergedParams.frequencyPenalty;
+  if (mergedParams.presencePenalty !== undefined) body.presence_penalty = mergedParams.presencePenalty;
+  if (mergedParams.seed !== undefined) body.seed = mergedParams.seed;
+  if (mergedParams.stop && Array.isArray(mergedParams.stop)) body.stop = mergedParams.stop;
+  if (profile.kind !== 'openai' && mergedParams.topK !== undefined) body.top_k = mergedParams.topK;
   return body;
 }
 
-export async function chatCompletion(profile: Profile, req: ChatRequest): Promise<ChatResponse> {
+export async function chatCompletion(
+  profile: Profile,
+  req: ChatRequest,
+  threadOverrides?: { model?: string; params?: GenerationParams },
+): Promise<ChatResponse> {
   // Custom providers may not require an API key
   const apiKey = resolveKey(profile.id, { optional: profile.kind === 'openai-compatible-custom' });
   const baseUrl = resolveBaseUrl(profile.baseUrl, profile.kind);
 
-  if (profile.kind === 'anthropic') {
-    return anthropicChat(baseUrl, apiKey, profile, req);
+  const resolvedModel = threadOverrides?.model ?? profile.model;
+  const mergedParams: Record<string, unknown> = { ...(profile.params ?? {}) };
+  if (threadOverrides?.params) {
+    Object.assign(mergedParams, threadOverrides.params);
   }
-  return openaiCompatibleChat(baseUrl, apiKey, profile, req);
+
+  if (profile.kind === 'anthropic') {
+    return anthropicChat(baseUrl, apiKey, profile, req, resolvedModel, mergedParams);
+  }
+  return openaiCompatibleChat(baseUrl, apiKey, profile, req, resolvedModel, mergedParams);
 }
 
 // ---------------------------------------------------------------------------
@@ -126,18 +135,20 @@ async function anthropicChat(
   apiKey: string,
   profile: Profile,
   req: ChatRequest,
+  resolvedModel: string,
+  mergedParams: Record<string, unknown>,
 ): Promise<ChatResponse> {
-  const params = profile.params ?? {};
   const body: Record<string, unknown> = {
-    model: profile.model,
-    max_tokens: params.maxTokens ?? 1024,
+    model: resolvedModel,
+    max_tokens: (mergedParams.maxTokens as number) ?? 1024,
     messages: req.messages.filter((message) => message.role !== 'system'),
   };
   if (req.systemPrompt) body.system = req.systemPrompt;
-  if (params.temperature !== undefined) body.temperature = params.temperature;
-  if (params.topP !== undefined) body.top_p = params.topP;
-  if (params.topK !== undefined) body.top_k = params.topK;
-  if (params.stop && params.stop.length > 0) body.stop_sequences = params.stop;
+  if (mergedParams.temperature !== undefined) body.temperature = mergedParams.temperature;
+  if (mergedParams.topP !== undefined) body.top_p = mergedParams.topP;
+  if (mergedParams.topK !== undefined) body.top_k = mergedParams.topK;
+  if (mergedParams.stop && Array.isArray(mergedParams.stop)) body.stop_sequences = mergedParams.stop;
+  if (mergedParams.stop_sequences) body.stop_sequences = mergedParams.stop_sequences;
 
   const res = await fetch(`${baseUrl}/messages`, {
     method: 'POST',
@@ -181,15 +192,17 @@ async function openaiCompatibleChat(
   apiKey: string,
   profile: Profile,
   req: ChatRequest,
+  resolvedModel: string,
+  mergedParams: Record<string, unknown>,
 ): Promise<ChatResponse> {
   const messages: Array<{ role: string; content: unknown }> = [];
   if (req.systemPrompt) messages.push({ role: 'system', content: req.systemPrompt });
   messages.push(...req.messages);
 
   const payloadBase = {
-    model: profile.model,
+    model: resolvedModel,
     messages,
-    ...openAiGenerationBody(profile),
+    ...openAiGenerationBody(profile, mergedParams),
   };
 
   const headers: Record<string, string> = {
