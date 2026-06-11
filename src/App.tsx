@@ -223,7 +223,15 @@ export default function App() {
     () => workspaceStore.workspaces.find((entry) => entry.id === workspaceStore.activeWorkspaceId) ?? workspaceStore.workspaces[0] ?? null,
     [workspaceStore],
   );
-  const state = activeWorkspaceEntry?.state ?? createWorkspaceEntry('Workspace').state;
+  const rawState = activeWorkspaceEntry?.state ?? null;
+  const state: LoomspaceState = rawState && rawState.threads != null
+    ? rawState
+    : (() => {
+        const ws = createWorkspaceEntry('Workspace');
+        // Guarantee threads exists even if migration produced undefined
+        if (!Array.isArray((ws.state as any).threads)) ws.state = { ...ws.state, threads: [] } as LoomspaceState;
+        return ws.state;
+      })();
   const setState = (nextState: SetStateAction<LoomspaceState>) => {
     setWorkspaceStore((current) => {
       const activeIndex = current.workspaces.findIndex((entry) => entry.id === current.activeWorkspaceId);
