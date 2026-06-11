@@ -11,3 +11,4 @@ data/
 dist/
 node_modules/
 *.tsbuildinfo
+graphify-out/cost.json
