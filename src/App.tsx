@@ -220,10 +220,10 @@ function sameProviderModelSource(left: AIProviderConfig, right: AIProviderConfig
 export default function App() {
   const [workspaceStore, setWorkspaceStore] = useState<PersistedWorkspaceStore>(() => loadWorkspaceStore());
   const activeWorkspaceEntry = useMemo(
-    () => workspaceStore.workspaces.find((entry) => entry.id === workspaceStore.activeWorkspaceId) ?? workspaceStore.workspaces[0],
+    () => workspaceStore.workspaces.find((entry) => entry.id === workspaceStore.activeWorkspaceId) ?? workspaceStore.workspaces[0] ?? null,
     [workspaceStore],
   );
-  const state = activeWorkspaceEntry.state;
+  const state = activeWorkspaceEntry?.state ?? createWorkspaceEntry('Workspace').state;
   const setState = (nextState: SetStateAction<LoomspaceState>) => {
     setWorkspaceStore((current) => {
       const activeIndex = current.workspaces.findIndex((entry) => entry.id === current.activeWorkspaceId);
