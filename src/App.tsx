@@ -36,6 +36,7 @@ import {
   apiChat,
   apiClearKey,
   apiFetchModels,
+  apiGetProfile,
   apiLoadSettings,
   apiLoadWorkspaceStore,
   apiSaveSettings,
@@ -243,14 +244,29 @@ export default function App() {
   };
   const [settings, setSettings] = useState<AISettings>(() => loadSettings());
   const [composerStates, setComposerStates] = useState<Record<string, ComposerState>>({});
-  const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [chatErrors, setChatErrors] = useState<Record<string, string>>({});
   const [providerError, setProviderError] = useState<string | null>(null);
   const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
   const [persistenceReady, setPersistenceReady] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
-  const [rightPanelOpen, setRightPanelOpen] = useState(false);
+  const [chatPanelState, setChatPanelState] = useState<{ isOpen: boolean; openThreadIds: string[]; activeThreadId: string | null }>(() => ({
+    isOpen: false,
+    openThreadIds: [],
+    activeThreadId: null,
+  }));
+  const rightPanelOpen = chatPanelState.isOpen;
+  const setRightPanelOpen = (next: SetStateAction<boolean>) => {
+    setChatPanelState((current) => ({
+      ...current,
+      isOpen: typeof next === 'function' ? next(current.isOpen) : next,
+    }));
+  };
   const [rightPanelMaximized, setRightPanelMaximized] = useState(false);
+  // Per-thread locks as state (not ref) so lock changes trigger re-renders.
+  // A Set is not directly serializable, so we store an array and derive a Set.
+  const [threadRequestLockIds, setThreadRequestLockIds] = useState<string[]>([]);
+  const threadRequestLockSet = useMemo(() => new Set(threadRequestLockIds), [threadRequestLockIds]);
   const [focusMode, setFocusMode] = useState(false);
   const [focusSidebarOpen, setFocusSidebarOpen] = useState(true);
   const [focusParamsOpen, setFocusParamsOpen] = useState(false);
@@ -307,6 +323,8 @@ export default function App() {
   const initialLocalWorkspaceStoreRef = useRef(workspaceStore);
   const initialLocalSettingsRef = useRef(settings);
   const persistenceReadyRef = useRef(false);
+  const stateRef = useRef(state);
+
   const previousWorkspaceIdRef = useRef(state.workspaceId);
   const viewportRef = useRef<HTMLDivElement>(null);
   const panGesture = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
@@ -406,6 +424,9 @@ export default function App() {
     settingsRef.current = settings;
     saveSettings(settings);
   }, [settings]);
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
   useEffect(() => saveModelCache(modelCache), [modelCache]);
   useEffect(() => {
     if (!persistenceReady) return;
@@ -436,8 +457,13 @@ export default function App() {
     setThreadEditorTargetId(null);
     setThreadEditorDraft(DEFAULT_THREAD_DRAFT);
     setProviderMenuOpen(false);
-    setRightPanelOpen(false);
+    setChatPanelState({
+      isOpen: false,
+      openThreadIds: [],
+      activeThreadId: null,
+    });
     setSettingsNotice(null);
+    setChatErrors({});
     setError(null);
     setCopiedMessageId(null);
     stopSpeaking();
@@ -522,13 +548,13 @@ export default function App() {
   const activeWorkspaceId = state.workspaceId;
   const metrics = useMemo(() => computeMetrics(state), [state]);
   const activeThread = state.threads.find((thread) => thread.id === state.selectedThreadId) ?? null;
-  const activeNode =
-    activeThread?.nodes.find((node) => node.id === state.selectedNodeId) ??
-    (activeThread ? activeThread.nodes.find((node) => node.id === activeThread.activeNodeId) ?? null : null);
-  const composerKey = activeThread ? composerStateKey(activeThread.id, activeNode?.id ?? activeThread.activeNodeId) : null;
-  const composerState = composerKey ? composerStates[composerKey] ?? EMPTY_COMPOSER_STATE : EMPTY_COMPOSER_STATE;
-  const composerDraft = composerState.draft;
-  const composerAttachments = composerState.attachments;
+  const activeChatThreadId = chatPanelState.activeThreadId && chatPanelState.openThreadIds.includes(chatPanelState.activeThreadId)
+    ? chatPanelState.activeThreadId
+    : chatPanelState.openThreadIds.at(-1) ?? null;
+  const activeChatThread = activeChatThreadId
+    ? state.threads.find((thread) => thread.id === activeChatThreadId) ?? null
+    : null;
+  const chatScrollThread = focusMode ? activeThread : activeChatThread;
   const activeProviderConfig =
     settings.providerConfigs.find((config) => config.id === settings.activeProviderConfigId) ?? settings.providerConfigs[0] ?? null;
   const settingsLockState = activeProviderConfig ? (activeProviderConfig.hasEncryptedApiKey ? (activeProviderConfig.apiKey.trim() ? 'unlocked' : 'locked') : 'none') : 'none';
@@ -568,21 +594,19 @@ export default function App() {
     [modelCache, activeProviderConfig],
   );
 
-  const messageUsage = useMemo(() => {
-    const map = new Map<string, { input: number; output: number; model: string; cost: number }>();
-    if (!activeThread) return map;
-    for (const node of activeThread.nodes) {
+  function messageUsageFor(thread: ThreadLane, messageId: string) {
+    for (const node of thread.nodes) {
       if (node.kind !== 'chat' || !node.usage) continue;
-      const record = {
+      if (!node.messages.some((message) => message.id === messageId)) continue;
+      return {
         input: node.usage.inputTokens,
         output: node.usage.outputTokens,
         model: node.model,
         cost: node.usage.estimatedCostUsd ?? 0,
       };
-      for (const message of node.messages) map.set(message.id, record);
     }
-    return map;
-  }, [activeThread]);
+    return null;
+  }
   const settingsEditorModels = useMemo(
     () => modelsForConfig(modelCache, settingsEditorConfig, settingsEditorConfig?.model ?? ''),
     [modelCache, settingsEditorConfig],
@@ -749,7 +773,7 @@ export default function App() {
 
   useEffect(() => {
     scrollChatToBottom('smooth');
-  }, [activeThread?.context.length, rightPanelOpen, focusMode]);
+  }, [chatScrollThread?.context.length, rightPanelOpen, focusMode]);
 
   useEffect(() => {
     const messages = focusMode ? focusMessagesRef.current : rightPanelOpen ? rightPanelMessagesRef.current : null;
@@ -757,7 +781,7 @@ export default function App() {
     const observer = new ResizeObserver(() => scrollChatToBottom());
     for (const child of Array.from(messages.children)) observer.observe(child);
     return () => observer.disconnect();
-  }, [activeThread?.id, activeThread?.context.length, rightPanelOpen, focusMode]);
+  }, [chatScrollThread?.id, chatScrollThread?.context.length, rightPanelOpen, focusMode]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -773,7 +797,7 @@ export default function App() {
       if (onboardingVisible) { dismissOnboarding(); return; }
       if (focusMode) { setFocusMode(false); return; }
       if (navMenuOpen) { setNavMenuOpen(false); return; }
-      if (rightPanelOpen) { setRightPanelOpen(false); return; }
+      if (rightPanelOpen) { closeActiveChatThread(); return; }
       if (forkDraft) { cancelForkSelection(); return; }
       if (contextLinkMode) { setContextLinkMode(null); return; }
     };
@@ -783,7 +807,7 @@ export default function App() {
       window.removeEventListener('keydown', onKeyDown, true);
       document.removeEventListener('keydown', onKeyDown, true);
     };
-  }, [shortcutsOpen, aiSettingsModalOpen, threadEditorOpen, workspaceManagerOpen, nodePreviewModal, onboardingVisible, rightPanelOpen, contextLinkMode, forkDraft, focusMode]);
+  }, [shortcutsOpen, aiSettingsModalOpen, threadEditorOpen, workspaceManagerOpen, nodePreviewModal, onboardingVisible, rightPanelOpen, activeChatThreadId, contextLinkMode, forkDraft, focusMode]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -890,8 +914,77 @@ export default function App() {
     return boundedPan(panX, panY, zoom, width, height, nextCanvasWidth, nextCanvasHeight);
   }
 
+  function openChatThread(threadId: string) {
+    setChatPanelState((current) => ({
+      isOpen: true,
+      openThreadIds: current.openThreadIds.includes(threadId) ? current.openThreadIds : [...current.openThreadIds, threadId],
+      activeThreadId: threadId,
+    }));
+    setState((current) => ({
+      ...current,
+      selectedThreadId: threadId,
+      selectedNodeId: current.threads.find((thread) => thread.id === threadId)?.activeNodeId ?? null,
+    }));
+  }
+
+  function closeChatThread(threadId: string) {
+    setChatPanelState((current) => {
+      const openThreadIds = current.openThreadIds.filter((entry) => entry !== threadId);
+      const nextActiveThreadId = current.activeThreadId === threadId ? openThreadIds.at(-1) ?? null : current.activeThreadId;
+      if (current.activeThreadId === threadId && nextActiveThreadId) {
+        setState((currentState) => ({
+          ...currentState,
+          selectedThreadId: nextActiveThreadId,
+          selectedNodeId: currentState.threads.find((thread) => thread.id === nextActiveThreadId)?.activeNodeId ?? null,
+        }));
+      }
+      return {
+        isOpen: openThreadIds.length > 0 ? current.isOpen : false,
+        openThreadIds,
+        activeThreadId: nextActiveThreadId,
+      };
+    });
+  }
+
+  function closeActiveChatThread() {
+    const threadId = activeChatThreadId;
+    if (!threadId) {
+      setRightPanelOpen(false);
+      return;
+    }
+    closeChatThread(threadId);
+  }
+
+  function toggleChatPanelVisibility() {
+    setChatPanelState((current) => {
+      if (current.isOpen) {
+        return { ...current, isOpen: false };
+      }
+      const fallbackThreadId = current.activeThreadId
+        ?? current.openThreadIds.at(-1)
+        ?? state.selectedThreadId
+        ?? state.threads[0]?.id
+        ?? null;
+      const openThreadIds = fallbackThreadId && !current.openThreadIds.includes(fallbackThreadId)
+        ? [...current.openThreadIds, fallbackThreadId]
+        : current.openThreadIds;
+      if (fallbackThreadId) {
+        setState((currentState) => ({
+          ...currentState,
+          selectedThreadId: fallbackThreadId,
+          selectedNodeId: currentState.threads.find((thread) => thread.id === fallbackThreadId)?.activeNodeId ?? null,
+        }));
+      }
+      return {
+        isOpen: true,
+        openThreadIds,
+        activeThreadId: fallbackThreadId,
+      };
+    });
+  }
+
   function selectThread(threadId: string, nodeId?: string | null) {
-    setRightPanelOpen(true);
+    if (rightPanelOpen) openChatThread(threadId);
     setLeftPanelOpen(false);
     setState((current) => ({
       ...current,
@@ -1022,7 +1115,7 @@ export default function App() {
         ...focusCanvasOnThread(nextThreads, thread, current.threads.length, current.zoom),
       };
     });
-    setRightPanelOpen(true);
+    openChatThread(thread.id);
     cancelForkSelection();
     setError(null);
   }
@@ -1053,7 +1146,7 @@ export default function App() {
           ...focusCanvasOnThread(nextThreads, thread, current.threads.length, current.zoom),
         };
       });
-      setRightPanelOpen(true);
+      openChatThread(thread.id);
       cancelForkSelection();
     } else if (threadEditorTargetId) {
       setState((current) => ({
@@ -1100,25 +1193,73 @@ export default function App() {
     }
     return activeConfig;
   }
+  function isThreadRequestBusy(thread: ThreadLane | null) {
+    if (!thread) return false;
+    // Only live request locks should disable sending; persisted "pending" nodes are just UI state.
+    return threadRequestLockSet.has(thread.id);
+  }
+
+  // Check if any thread is currently in-flight. Used to guard the entire send surface.
+  function anyThreadRequestBusy() {
+    return threadRequestLockIds.length > 0;
+  }
+
+  function acquireThreadLock(threadId: string) {
+    setThreadRequestLockIds((current) => {
+      if (current.includes(threadId)) return current;
+      return [...current, threadId];
+    });
+  }
+
+  function releaseThreadLock(threadId: string) {
+    setThreadRequestLockIds((current) => current.filter((id) => id !== threadId));
+  }
+
+  // Drafts are isolated per thread and active node so switching chats never steals text.
+  function composerSnapshotForThread(thread: ThreadLane | null) {
+    if (!thread) return { key: null, state: EMPTY_COMPOSER_STATE };
+    const nodeId = thread.id === state.selectedThreadId
+      ? (state.selectedNodeId ?? thread.activeNodeId)
+      : thread.activeNodeId;
+    const key = composerStateKey(thread.id, nodeId);
+    return { key, state: composerStates[key] ?? EMPTY_COMPOSER_STATE };
+  }
+  // Track thread-specific failures separately so one bad request doesn't mask another.
+
+  function setThreadChatError(threadId: string, message: string) {
+    setChatErrors((current) => ({ ...current, [threadId]: message }));
+  }
+
+  function clearThreadChatError(threadId: string) {
+    setChatErrors((current) => {
+      if (!(threadId in current)) return current;
+      const next = { ...current };
+      delete next[threadId];
+      return next;
+    });
+  }
 
 
-  async function sendMessage(closeAfter = false) {
-    if (sending) return;
-    if (!activeThread) {
+  async function sendMessage(targetThread: ThreadLane | null, closeAfter = false) {
+    if (!targetThread) {
       setError('Select or create a thread before sending.');
       return;
     }
+    if (isThreadRequestBusy(targetThread)) return;
+
     const activeConfig = ensureSendableConfig('send');
     if (!activeConfig) return;
 
-    const sourceComposerKey = composerKey;
-    const composerStateForSend = composerState;
+    const composer = composerSnapshotForThread(targetThread);
+    const composerStateForSend = composer.state;
     const userText = composerStateForSend.draft.trim();
     if (!userText && composerStateForSend.attachments.length === 0) {
-      setError('Write a message or attach a file before sending.');
+      setThreadChatError(targetThread.id, 'Write a message or attach a file before sending.');
       return;
     }
 
+    const requestThreadId = targetThread.id;
+    const threadSnapshot = targetThread;
     const userMessage: ChatMessage = {
       id: `msg-${crypto.randomUUID()}`,
       role: 'user',
@@ -1126,17 +1267,21 @@ export default function App() {
       text: userText,
     };
     const pendingChatNode = createChatNode('Thinking…', [userMessage], activeConfig.model, undefined, 'pending');
-    const pendingComposerKey = composerStateKey(activeThread.id, pendingChatNode.id);
+    const pendingComposerKey = composerStateKey(requestThreadId, pendingChatNode.id);
+    const shouldFocusPending = closeAfter || focusMode || stateRef.current.selectedThreadId === requestThreadId;
 
-    setSending(true);
+    // Reserve only this thread while the provider call is in flight.
+    acquireThreadLock(requestThreadId);
     setError(null);
-    updateComposerState(sourceComposerKey, () => EMPTY_COMPOSER_STATE);
-    if (closeAfter) setRightPanelOpen(false);
+    clearThreadChatError(requestThreadId);
+    updateComposerState(composer.key, () => EMPTY_COMPOSER_STATE);
+    if (closeAfter) closeChatThread(requestThreadId);
+
     setState((current) => ({
       ...current,
       version: current.version + 1,
       threads: current.threads.map((thread) =>
-        thread.id === activeThread.id
+        thread.id === requestThreadId
           ? {
               ...thread,
               status: 'active',
@@ -1146,24 +1291,24 @@ export default function App() {
             }
           : thread,
       ),
-      selectedThreadId: activeThread.id,
-      selectedNodeId: pendingChatNode.id,
+      ...(shouldFocusPending ? { selectedThreadId: requestThreadId, selectedNodeId: pendingChatNode.id } : {}),
     }));
 
     try {
-      const { assistantText, usage } = await requestAiReply(activeConfig, activeThread, [...activeThread.context, userMessage]);
+      const { assistantText, usage } = await requestAiReply(activeConfig, threadSnapshot, [...threadSnapshot.context, userMessage]);
       const assistantMessage: ChatMessage = {
         id: `msg-${crypto.randomUUID().slice(0, 8)}`,
         role: 'assistant',
         content: createTextMessage(assistantText),
         text: assistantText,
       };
+      const shouldKeepSelection = closeAfter || stateRef.current.selectedThreadId === requestThreadId;
 
       setState((current) => ({
         ...current,
         version: current.version + 1,
         threads: current.threads.map((thread) => {
-          if (thread.id !== activeThread.id) return thread;
+          if (thread.id !== requestThreadId) return thread;
           return {
             ...thread,
             context: [...thread.context, assistantMessage],
@@ -1181,29 +1326,34 @@ export default function App() {
             activeNodeId: pendingChatNode.id,
           };
         }),
-        selectedThreadId: activeThread.id,
-        selectedNodeId: pendingChatNode.id,
+        ...(shouldKeepSelection ? { selectedThreadId: requestThreadId, selectedNodeId: pendingChatNode.id } : {}),
       }));
     } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'AI request failed';
+      const shouldSurfaceError = closeAfter || stateRef.current.selectedThreadId === requestThreadId;
+
+      updateComposerState(pendingComposerKey, () => composerStateForSend);
       setState((current) => ({
         ...current,
         version: current.version + 1,
-        threads: current.threads.map((thread) => {
-          if (thread.id !== activeThread.id) return thread;
-          return {
-            ...thread,
-            nodes: thread.nodes.map((node) =>
-              node.id === pendingChatNode.id && node.kind === 'chat'
-                ? { ...node, status: 'error' }
-                : node,
-            ),
-          };
-        }),
+        threads: current.threads.map((thread) =>
+          thread.id === requestThreadId
+            ? {
+                ...thread,
+                nodes: thread.nodes.map((node) =>
+                  node.id === pendingChatNode.id && node.kind === 'chat'
+                    ? { ...node, summary: 'Request failed', status: 'error' }
+                    : node,
+                ),
+              }
+            : thread,
+        ),
+        ...(shouldSurfaceError ? { selectedThreadId: requestThreadId, selectedNodeId: pendingChatNode.id } : {}),
       }));
-      updateComposerState(pendingComposerKey, () => composerStateForSend);
-      setError(err instanceof Error ? err.message : 'AI request failed');
+      setThreadChatError(requestThreadId, errorMessage);
+      if (shouldSurfaceError) setError(errorMessage);
     } finally {
-      setSending(false);
+      releaseThreadLock(requestThreadId);
     }
   }
 
@@ -1294,31 +1444,41 @@ export default function App() {
     speakNext();
   }
 
-  async function retryAssistantMessage(messageId: string) {
-    if (!activeThread || sending) return;
+  async function retryAssistantMessage(messageId: string, targetThread: ThreadLane | null) {
+    if (!targetThread) return;
+    if (isThreadRequestBusy(targetThread)) return;
+
     const activeConfig = ensureSendableConfig('retry');
     if (!activeConfig) return;
 
-    const assistantIndex = activeThread.context.findIndex((message) => message.id === messageId && message.role === 'assistant');
-    if (assistantIndex !== activeThread.context.length - 1) {
-      setError('Only the latest assistant response can be retried safely.');
-      return;
-    }
-    const sourceNode = activeThread.nodes.find((node): node is ThreadChatNode => node.kind === 'chat' && node.messages.some((message) => message.id === messageId));
-    const userMessage = sourceNode?.messages.find((message) => message.role === 'user') ?? [...activeThread.context.slice(0, assistantIndex)].reverse().find((message) => message.role === 'user');
-    if (!sourceNode || !userMessage) {
-      setError('Could not find the prompt for this response.');
+    const assistantIndex = targetThread.context.findIndex((message) => message.id === messageId && message.role === 'assistant');
+    if (assistantIndex !== targetThread.context.length - 1) {
+      setThreadChatError(targetThread.id, 'Only the latest assistant response can be retried safely.');
       return;
     }
 
-    const requestMessages = activeThread.context.slice(0, assistantIndex);
-    setSending(true);
+    const sourceNode = targetThread.nodes.find((node): node is ThreadChatNode => node.kind === 'chat' && node.messages.some((message) => message.id === messageId));
+    const userMessage =
+      sourceNode?.messages.find((message) => message.role === 'user')
+      ?? [...targetThread.context.slice(0, assistantIndex)].reverse().find((message) => message.role === 'user');
+    if (!sourceNode || !userMessage) {
+      setThreadChatError(targetThread.id, 'Could not find the prompt for this response.');
+      return;
+    }
+
+    const requestThreadId = targetThread.id;
+    const threadSnapshot = targetThread;
+    const requestMessages = targetThread.context.slice(0, assistantIndex);
+
+    // Retry reuses the same thread and swaps the active chat node back to "pending".
+    acquireThreadLock(requestThreadId);
     setError(null);
+    clearThreadChatError(requestThreadId);
     setState((current) => ({
       ...current,
       version: current.version + 1,
       threads: current.threads.map((thread) =>
-        thread.id === activeThread.id
+        thread.id === requestThreadId
           ? {
               ...thread,
               context: requestMessages,
@@ -1331,23 +1491,25 @@ export default function App() {
             }
           : thread,
       ),
-      selectedThreadId: activeThread.id,
+      selectedThreadId: requestThreadId,
       selectedNodeId: sourceNode.id,
     }));
 
     try {
-      const { assistantText, usage } = await requestAiReply(activeConfig, activeThread, requestMessages);
+      const { assistantText, usage } = await requestAiReply(activeConfig, threadSnapshot, requestMessages);
       const assistantMessage: ChatMessage = {
         id: messageId,
         role: 'assistant',
         content: createTextMessage(assistantText),
         text: assistantText,
       };
+      const shouldKeepSelection = stateRef.current.selectedThreadId === requestThreadId;
+
       setState((current) => ({
         ...current,
         version: current.version + 1,
         threads: current.threads.map((thread) =>
-          thread.id === activeThread.id
+          thread.id === requestThreadId
             ? {
                 ...thread,
                 context: [...requestMessages, assistantMessage],
@@ -1366,28 +1528,34 @@ export default function App() {
               }
             : thread,
         ),
-        selectedThreadId: activeThread.id,
-        selectedNodeId: sourceNode.id,
+        ...(shouldKeepSelection ? { selectedThreadId: requestThreadId, selectedNodeId: sourceNode.id } : {}),
       }));
     } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'AI retry failed';
+      const shouldSurfaceError = stateRef.current.selectedThreadId === requestThreadId;
+
       setState((current) => ({
         ...current,
         version: current.version + 1,
         threads: current.threads.map((thread) =>
-          thread.id === activeThread.id
+          thread.id === requestThreadId
             ? {
                 ...thread,
-                context: activeThread.context,
+                context: threadSnapshot.context,
                 nodes: thread.nodes.map((node) =>
-                  node.id === sourceNode.id && node.kind === 'chat' ? { ...sourceNode, status: 'error' } : node,
+                  node.id === sourceNode.id && node.kind === 'chat'
+                    ? { ...sourceNode, status: 'error' }
+                    : node,
                 ),
               }
             : thread,
         ),
+        ...(shouldSurfaceError ? { selectedThreadId: requestThreadId, selectedNodeId: sourceNode.id } : {}),
       }));
-      setError(err instanceof Error ? err.message : 'AI retry failed');
+      setThreadChatError(requestThreadId, errorMessage);
+      if (shouldSurfaceError) setError(errorMessage);
     } finally {
-      setSending(false);
+      releaseThreadLock(requestThreadId);
     }
   }
 
@@ -1409,6 +1577,7 @@ export default function App() {
   }
 
   function selectNode(threadId: string, nodeId: string) {
+    if (rightPanelOpen) openChatThread(threadId);
     setState((current) => ({
       ...current,
       selectedThreadId: threadId,
@@ -1430,9 +1599,12 @@ export default function App() {
   }
 
   function deselectNode() {
-    setState((current) => ({ ...current, selectedThreadId: null, selectedNodeId: null }));
+    setState((current) => ({
+      ...current,
+      selectedThreadId: rightPanelOpen ? current.selectedThreadId : null,
+      selectedNodeId: null,
+    }));
     setContextLinkMode(null);
-    setRightPanelOpen(false);
     setDeleteMode(null);
   }
 
@@ -1467,10 +1639,17 @@ export default function App() {
     });
 
     clearComposerStatesForThread(threadId);
-
+    setChatPanelState((current) => {
+      const openThreadIds = current.openThreadIds.filter((entry) => entry !== threadId);
+      const nextActiveThreadId = current.activeThreadId === threadId ? openThreadIds.at(-1) ?? null : current.activeThreadId;
+      return {
+        isOpen: openThreadIds.length > 0 ? current.isOpen : false,
+        openThreadIds,
+        activeThreadId: nextActiveThreadId,
+      };
+    });
     setContextLinkMode((mode) => (mode?.sourceThreadId === threadId ? null : mode));
     setDeleteMode(null);
-    setRightPanelOpen(false);
   }
 
   function enterDeleteMode(threadId: string, nodeId: string) {
@@ -1671,9 +1850,8 @@ export default function App() {
       return changed ? next : current;
     });
   }
-
   async function requestSaveKey(configId: string) {
-    const targetConfig = settings.providerConfigs.find((config) => config.id === configId) ?? null;
+    const targetConfig = settingsRef.current.providerConfigs.find((config) => config.id === configId) ?? null;
     const candidate = targetConfig?.apiKey.trim() ?? '';
     if (!targetConfig) {
       const message = 'No profile found.';
@@ -1687,7 +1865,7 @@ export default function App() {
       setSettingsNotice(message);
       return;
     }
-    // Custom provider without a key: just acknowledge, don't try to save.
+    // Custom providers can still run keyless; saving only matters when a key was typed.
     if (targetConfig.kind === 'openai-compatible-custom' && !candidate && !targetConfig.hasEncryptedApiKey) {
       setSettingsNotice('No API key to save. The profile can be used without a key.');
       return;
@@ -1697,17 +1875,18 @@ export default function App() {
     setProviderError(null);
     setSettingsNotice(null);
     try {
-      // Flush current settings to the backend first so the profile is guaranteed to
-      // exist before we attempt to store its key (avoids "Profile not found" when the
-      // 400ms auto-save debounce hasn't fired yet for a newly-created profile).
+      // Persist the profile row first so the key save endpoint has a stable target.
       await apiSaveSettings(serializeSettingsForBackend(settingsRef.current));
       await apiStoreKey(configId, candidate);
       clearProviderSecret(configId);
-      updateProviderConfig(configId, { apiKey: '', hasEncryptedApiKey: true });
+
+      const refreshed = await apiGetProfile(configId);
+      updateProviderConfig(configId, { apiKey: '', hasEncryptedApiKey: refreshed.hasKey });
+
       const nextConfig = settingsRef.current.providerConfigs.find((config) => config.id === configId) ?? null;
-      setSettingsNotice('Key saved to the backend.');
+      setSettingsNotice(refreshed.hasKey ? 'Key saved to the backend.' : 'Key save did not persist.');
       if (nextConfig) {
-        await fetchModelsForConfig({ ...nextConfig, apiKey: '', hasEncryptedApiKey: true }, { requireKey: false, updateSelectedModel: true });
+        await fetchModelsForConfig({ ...nextConfig, apiKey: '', hasEncryptedApiKey: refreshed.hasKey }, { requireKey: false, updateSelectedModel: true });
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Saving the key failed.';
@@ -1837,7 +2016,7 @@ export default function App() {
     setThreadEditorOpen(false);
     setThreadEditorTargetId(null);
     setThreadEditorDraft(DEFAULT_THREAD_DRAFT);
-    setRightPanelOpen(false);
+    setChatPanelState({ isOpen: false, openThreadIds: [], activeThreadId: null });
     setProviderMenuOpen(false);
     setContextLinkMode(null);
     setContextLinkPointer(null);
@@ -2145,9 +2324,9 @@ export default function App() {
     setState((current) => ({ ...current, zoom: 1, ...centered }));
   }
 
-  const selectedThreadUsage = activeThread ? summarizeThreadUsage(activeThread) : null;
-  const remainingContext = activeThread && selectedThreadUsage && activeProviderConfig?.model.trim()
-    ? Math.max(getModelWindow(activeProviderConfig.model) - selectedThreadUsage.totalTokens, 0)
+  const activeChatThreadUsage = activeChatThread ? summarizeThreadUsage(activeChatThread) : null;
+  const activeChatRemainingContext = activeChatThread && activeChatThreadUsage && activeProviderConfig?.model.trim()
+    ? Math.max(getModelWindow(activeProviderConfig.model) - activeChatThreadUsage.totalTokens, 0)
     : 0;
   const settingsEditorModelsLoading = settingsEditorConfig ? modelsLoadingConfigId === settingsEditorConfig.id : false;
   const settingsEditorHasCachedModels = settingsEditorConfig ? Boolean(modelCache[settingsEditorConfig.id] ?? modelCache[providerModelCacheKey(settingsEditorConfig)]) : false;
@@ -2262,16 +2441,16 @@ export default function App() {
         </div>
         {isLast && (<>
           <div className="action-line-v" style={{ top: CHAT_HEIGHT, left: NODE_WIDTH / 2 }} />
-          <button type="button" className="action-node-ghost" style={{ top: CHAT_HEIGHT + 36, left: 0 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setRightPanelOpen(true); }}>
+          <button type="button" className="action-node-ghost" style={{ top: CHAT_HEIGHT + 36, left: 0 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); openChatThread(thread.id); }}>
             <span>Open chat</span>
           </button>
         </>)}
       </>
     );
   };
-
-  const renderChatMessage = (message: ChatMessage, isLatestAssistant: boolean) => {
-    const usage = messageUsage.get(message.id);
+  const renderChatMessage = (thread: ThreadLane, message: ChatMessage, isLatestAssistant: boolean) => {
+    const usage = messageUsageFor(thread, message.id);
+    const threadBusy = isThreadRequestBusy(thread);
     const messageText = getMessageText(message) || message.text || '';
     return (
       <article
@@ -2287,7 +2466,7 @@ export default function App() {
           <div className="chat-message-actions">
             <button type="button" onClick={() => copyText(messageText, message.id)} aria-label="Copy message">{copiedMessageId === message.id ? 'Copied' : 'Copy'}</button>
             <button type="button" onClick={() => listenToMessage(message.id, messageText)} aria-label={speakingMessageId === message.id ? 'Stop reading message' : 'Read message aloud'}>{speakingMessageId === message.id ? 'Stop' : 'Listen'}</button>
-            {isLatestAssistant ? <button type="button" onClick={() => retryAssistantMessage(message.id)} disabled={sending} aria-label="Retry response">Retry</button> : null}
+            {isLatestAssistant ? <button type="button" onClick={() => retryAssistantMessage(message.id, thread)} disabled={threadBusy} aria-label="Retry response">Retry</button> : null}
           </div>
         </div>
         <FormattedMessage text={messageText} rich={message.role === 'assistant'} />
@@ -2312,12 +2491,18 @@ export default function App() {
     );
   };
 
-  const renderComposer = (opts: { fileInputId: string; placeholder: string; onEscape: () => void; autoFocus?: boolean }) => (
+  const renderComposer = (opts: { thread: ThreadLane | null; fileInputId: string; placeholder: string; onEscape: () => void; autoFocus?: boolean }) => {
+    const composer = composerSnapshotForThread(opts.thread);
+    const threadBusy = isThreadRequestBusy(opts.thread);
+    const chatError = opts.thread ? chatErrors[opts.thread.id] : null;
+    const composerDraft = composer.state.draft;
+    const composerAttachments = composer.state.attachments;
+    return (
     <div className="mini-chat-composer">
       <textarea
         autoFocus={opts.autoFocus}
         value={composerDraft}
-        onChange={(e) => updateComposerState(composerKey, (current) => ({ ...current, draft: e.target.value }))}
+        onChange={(e) => updateComposerState(composer.key, (current) => ({ ...current, draft: e.target.value }))}
         placeholder={opts.placeholder}
         rows={3}
         onKeyDown={(e) => {
@@ -2325,7 +2510,7 @@ export default function App() {
           if (e.key !== 'Enter') return;
           if (e.shiftKey) return;
           e.preventDefault();
-          if (e.ctrlKey || e.metaKey) { sendMessage(true); } else { sendMessage(); }
+          if (e.ctrlKey || e.metaKey) { sendMessage(opts.thread, true); } else { sendMessage(opts.thread); }
         }}
       />
       {composerAttachments.length > 0 && (
@@ -2337,13 +2522,13 @@ export default function App() {
               ) : (
                 <div className="document-preview">📄 {att.filename}</div>
               )}
-              <button onClick={() => updateComposerState(composerKey, (current) => ({ ...current, attachments: current.attachments.filter((attachment) => attachment.id !== att.id) }))} className="remove-attachment">×</button>
+              <button onClick={() => updateComposerState(composer.key, (current) => ({ ...current, attachments: current.attachments.filter((attachment) => attachment.id !== att.id) }))} className="remove-attachment">×</button>
             </div>
           ))}
         </div>
       )}
       {settingsLockState === 'locked' ? <p className="muted">Using the key saved on the backend for this profile.</p> : null}
-      {error ? <p className="error">{error}</p> : null}
+      {chatError ? <p className="error">{chatError}</p> : error ? <p className="error">{error}</p> : null}
       <div className="mini-chat-actions">
         <input
           type="file"
@@ -2374,8 +2559,8 @@ export default function App() {
                 errors.push(`Failed to process ${file.name}`);
               }
             }
-            if (errors.length > 0) setError(errors.join('\n'));
-            if (newAttachments.length > 0) updateComposerState(composerKey, (current) => ({ ...current, attachments: [...current.attachments, ...newAttachments] }));
+            if (errors.length > 0 && opts.thread) setChatErrors((current) => ({ ...current, [opts.thread!.id]: errors.join('\n') }));
+            if (newAttachments.length > 0) updateComposerState(composer.key, (current) => ({ ...current, attachments: [...current.attachments, ...newAttachments] }));
             e.target.value = '';
           }}
           style={{ display: 'none' }}
@@ -2383,14 +2568,15 @@ export default function App() {
         <label htmlFor={opts.fileInputId} className="file-upload-button mini-chat-attach">📎</label>
         <button
           className="mini-chat-send"
-          onClick={() => sendMessage()}
-          disabled={sending}
+          onClick={() => sendMessage(opts.thread)}
+          disabled={threadBusy}
         >
-          {sending ? 'Thinking…' : !activeProviderConfig ? 'Add AI profile' : 'Send'}
+          {threadBusy ? 'Thinking…' : !activeProviderConfig ? 'Add AI profile' : 'Send'}
         </button>
       </div>
     </div>
-  );
+    );
+  };
 
   function focusNewThread() {
     const baseThread = createThread('New chat', '', state.threads.length);
@@ -2514,14 +2700,14 @@ export default function App() {
                       <p className="focus-greeting-sub">Send a message to start this chat.</p>
                     </div>
                   ) : (
-                    activeThread.context.map((m) => renderChatMessage(m, m.role === 'assistant' && activeThread.context[activeThread.context.length - 1]?.id === m.id))
+                    activeThread.context.map((m) => renderChatMessage(activeThread, m, m.role === 'assistant' && activeThread.context[activeThread.context.length - 1]?.id === m.id))
                   )}
                   <div ref={focusEndRef} className="chat-scroll-anchor" aria-hidden="true" />
                 </div>
               </div>
               <div className="focus-composer-bar">
                 <div className="focus-column">
-                  {renderComposer({ fileInputId: 'file-upload-focus', placeholder: 'Message your thread…', onEscape: () => setFocusMode(false), autoFocus: true })}
+                  {renderComposer({ thread: activeThread, fileInputId: 'file-upload-focus', placeholder: 'Message your thread…', onEscape: () => setFocusMode(false), autoFocus: true })}
                 </div>
               </div>
             </>
@@ -2975,7 +3161,7 @@ export default function App() {
                             {!rightPanelOpen && isSelected && isLast ? (
                               <>
                                 <div className="action-line-v" style={{ top: titleHeight, left: NODE_WIDTH / 2 }} />
-                                <button type="button" className="action-node-ghost" style={{ top: titleHeight + 36, left: 0 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); setRightPanelOpen(true); }}>
+                                <button type="button" className="action-node-ghost" style={{ top: titleHeight + 36, left: 0 }} aria-label="Open chat" onClick={(e) => { e.stopPropagation(); openChatThread(thread.id); }}>
                                   <span>Open chat</span>
                                 </button>
                               </>
@@ -3020,7 +3206,7 @@ export default function App() {
                                 if (contextLinkMode) return;
                                 selectNode(thread.id, node.id);
                                 if (nodeIndex === lane.nodes.length - 1) {
-                                  setRightPanelOpen(true);
+                                  openChatThread(thread.id);
                                   return;
                                 }
                                 if (ctxNode.messages.length > 0) {
@@ -3043,7 +3229,6 @@ export default function App() {
                         );
                       }
 
-                      const chatNode = node;
                       const isSelected = thread.id === state.selectedThreadId && node.id === state.selectedNodeId;
                       const ctxPart = contextLinkMode?.sourceThreadId === thread.id
                         ? contextLinkMode.selectedNodes.find((s) => s.nodeId === node.id) ?? null
@@ -3052,6 +3237,7 @@ export default function App() {
                       const isContextTarget = contextLinkMode?.intent === 'link' && thread.id !== contextLinkMode.sourceThreadId;
                       const isContextSnapTarget = contextLinkSnapTarget?.threadId === thread.id && contextLinkSnapTarget.nodeId === node.id;
                       const showDots = isSelected || (contextLinkMode?.dotNodeId === node.id && contextLinkMode.sourceThreadId === thread.id);
+                      const chatNode = node;
 
                       return (
                         <div
@@ -3061,7 +3247,7 @@ export default function App() {
                           data-node-id={node.id}
                         >
                           <div
-                            className={`chat-node ${isSelected ? 'selected' : ''} ${chatNode.status === 'pending' ? 'sending' : ''} ${chatNode.status === 'unread' && !(rightPanelOpen && thread.id === state.selectedThreadId) ? 'responded' : ''} ${isContextSource ? 'context-source-selected' : ''} ${isContextTarget ? 'context-target' : ''} ${isContextSnapTarget ? 'context-link-snap-target' : ''}`}
+                            className={`chat-node ${isSelected ? 'selected' : ''} ${chatNode.status === 'pending' ? 'sending' : ''} ${chatNode.status === 'error' ? 'error' : ''} ${chatNode.status === 'unread' && !(rightPanelOpen && thread.id === state.selectedThreadId) ? 'responded' : ''} ${isContextSource ? 'context-source-selected' : ''} ${isContextTarget ? 'context-target' : ''} ${isContextSnapTarget ? 'context-link-snap-target' : ''}`}
                             style={{ position: 'relative', top: 0, left: 0 }}
                             onClick={(e) => {
                               e.stopPropagation();
@@ -3079,7 +3265,7 @@ export default function App() {
                               if (contextLinkMode) return;
                               selectNode(thread.id, node.id);
                               if (nodeIndex === lane.nodes.length - 1) {
-                                setRightPanelOpen(true);
+                                openChatThread(thread.id);
                                 return;
                               }
                               if (chatNode.messages.length > 0) {
@@ -3123,14 +3309,45 @@ export default function App() {
         </section>
         <aside className="panel right">
           {rightPanelOpen ? (
-            activeThread ? (
+            activeChatThread ? (
               <div className="chat-dock">
+                <div className="chat-dock-tabs" role="tablist" aria-label="Open chats">
+                  {chatPanelState.openThreadIds.map((threadId) => {
+                    const thread = state.threads.find((entry) => entry.id === threadId);
+                    if (!thread) return null;
+                    const isActive = threadId === activeChatThreadId;
+                    return (
+                      <div key={thread.id} className={`chat-dock-tab ${isActive ? 'active' : ''}`}>
+                        <button
+                          type="button"
+                          className="chat-dock-tab-main"
+                          role="tab"
+                          aria-selected={isActive}
+                          onClick={() => selectThread(thread.id, thread.activeNodeId)}
+                        >
+                          <span className="chat-dock-tab-label">{thread.title}</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="quiet chat-dock-tab-close"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            closeChatThread(thread.id);
+                          }}
+                          aria-label={`Close ${thread.title}`}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
                 <div className="mini-chat-header">
-                  <span className="mini-chat-title">{activeThread.title}</span>
+                  <span className="mini-chat-title">{activeChatThread.title}</span>
                   <div className="mini-chat-header-actions">
-                    <button type="button" className="quiet mini-chat-icon" onClick={() => openThreadEditor('edit', activeThread)} aria-label="Edit thread" title="Edit thread"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M11.5 2.5a1.5 1.5 0 0 1 2.12 2.12L5 13.24l-3 .76.76-3 8.74-8.5z"/></svg></button>
+                    <button type="button" className="quiet mini-chat-icon" onClick={() => openThreadEditor('edit', activeChatThread)} aria-label="Edit thread" title="Edit thread"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M11.5 2.5a1.5 1.5 0 0 1 2.12 2.12L5 13.24l-3 .76.76-3 8.74-8.5z"/></svg></button>
                     <button type="button" className="quiet mini-chat-maximize" onClick={() => setRightPanelMaximized((current) => !current)} aria-label={rightPanelMaximized ? 'Restore chat panel width' : 'Widen chat panel'} title={rightPanelMaximized ? 'Restore' : 'Widen'}>{rightPanelMaximized ? '▢' : '□'}</button>
-                    <button type="button" className="quiet mini-chat-close" onClick={() => setRightPanelOpen(false)} aria-label="Close chat">×</button>
+                    <button type="button" className="quiet mini-chat-close" onClick={() => closeActiveChatThread()} aria-label="Close chat">×</button>
                   </div>
                 </div>
                 <div className="chat-dock-meta">
@@ -3140,7 +3357,7 @@ export default function App() {
                       <span className="chat-dock-provider-label">{activeProviderConfig ? `${activeProviderConfig.label} · ${activeProviderConfig.model || 'no model'}` : 'No AI profile'}</span>
                       <svg className={`chat-dock-caret ${providerMenuOpen ? 'open' : ''}`} width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><polyline points="2 4 5 7 8 4"/></svg>
                     </button>
-                    <span className="pill chat-dock-context" title="Context tokens remaining">{remainingContext.toLocaleString()} left</span>
+                    <span className="pill chat-dock-context" title="Context tokens remaining">{activeChatRemainingContext.toLocaleString()} left</span>
                   </div>
                   {providerMenuOpen ? (
                     <div className="chat-dock-provider-menu">
@@ -3178,18 +3395,18 @@ export default function App() {
                       )}
                     </div>
                   ) : null}
-                  {selectedThreadUsage ? (
+                  {activeChatThreadUsage ? (
                     <details className="chat-dock-usage-summary">
                       <summary>
                         <span className="chat-dock-usage-caret" aria-hidden="true">▸</span>
-                        <span className="chat-dock-usage-headline"><strong>{selectedThreadUsage.totalTokens.toLocaleString()}</strong> tokens</span>
-                        <span className="chat-dock-usage-cost">${selectedThreadUsage.estimatedCostUsd.toFixed(4)}</span>
+                        <span className="chat-dock-usage-headline"><strong>{activeChatThreadUsage.totalTokens.toLocaleString()}</strong> tokens</span>
+                        <span className="chat-dock-usage-cost">${activeChatThreadUsage.estimatedCostUsd.toFixed(4)}</span>
                       </summary>
                       <div className="usage-grid chat-dock-usage">
-                        <div><span>Input</span><strong>{selectedThreadUsage.inputTokens.toLocaleString()}</strong></div>
-                        <div><span>Output</span><strong>{selectedThreadUsage.outputTokens.toLocaleString()}</strong></div>
-                        <div><span>Total</span><strong>{selectedThreadUsage.totalTokens.toLocaleString()}</strong></div>
-                        <div><span>Cost est.</span><strong>${selectedThreadUsage.estimatedCostUsd.toFixed(4)}</strong></div>
+                        <div><span>Input</span><strong>{activeChatThreadUsage.inputTokens.toLocaleString()}</strong></div>
+                        <div><span>Output</span><strong>{activeChatThreadUsage.outputTokens.toLocaleString()}</strong></div>
+                        <div><span>Total</span><strong>{activeChatThreadUsage.totalTokens.toLocaleString()}</strong></div>
+                        <div><span>Cost est.</span><strong>${activeChatThreadUsage.estimatedCostUsd.toFixed(4)}</strong></div>
                       </div>
                     </details>
                   ) : null}
@@ -3228,20 +3445,20 @@ export default function App() {
                   ) : null}
                 </div>
                 <div className="mini-chat-messages" ref={rightPanelMessagesRef}>
-                  {activeThread.context.length === 0 ? (
+                  {activeChatThread.context.length === 0 ? (
                     <p className="muted">No messages yet. Send the first one.</p>
                   ) : (
-                    activeThread.context.map((message) =>
-                      renderChatMessage(message, message.role === 'assistant' && activeThread.context[activeThread.context.length - 1]?.id === message.id),
+                    activeChatThread.context.map((message) =>
+                      renderChatMessage(activeChatThread, message, message.role === 'assistant' && activeChatThread.context[activeChatThread.context.length - 1]?.id === message.id),
                     )
                   )}
                   <div ref={rightPanelEndRef} className="chat-scroll-anchor" aria-hidden="true" />
                 </div>
-                {renderComposer({ fileInputId: 'file-upload', placeholder: 'Ask the thread something', onEscape: () => setRightPanelOpen(false), autoFocus: true })}
+                {renderComposer({ thread: activeChatThread, fileInputId: 'file-upload', placeholder: 'Ask the thread something', onEscape: () => closeActiveChatThread(), autoFocus: true })}
               </div>
             ) : (
               <div className="panel-empty">
-                <p className="muted">Select a thread to start chatting.</p>
+                <p className="muted">Open a chat to start chatting.</p>
               </div>
             )
           ) : null}
@@ -3276,7 +3493,7 @@ export default function App() {
             <button type="button" className={`status-btn status-panel-btn ${bottomPanelOpen ? 'active' : ''}`} aria-pressed={bottomPanelOpen} onClick={() => setBottomPanelOpen((open) => !open)} aria-label="Toggle bottom panel" title="Bottom panel">
               <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><rect x="1.5" y="9.5" width="13" height="4" fill="currentColor" stroke="none"/></svg>
             </button>
-            <button type="button" className={`status-btn status-panel-btn ${rightPanelOpen ? 'active' : ''}`} aria-pressed={rightPanelOpen} onClick={() => setRightPanelOpen((open) => !open)} aria-label="Toggle chat panel" title="Chat panel">
+            <button type="button" className={`status-btn status-panel-btn ${rightPanelOpen ? 'active' : ''}`} aria-pressed={rightPanelOpen} onClick={toggleChatPanelVisibility} aria-label="Chat panel" title="Chat panel">
               <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/><rect x="10" y="2.5" width="4.5" height="11" fill="currentColor" stroke="none"/></svg>
             </button>
           </div>
