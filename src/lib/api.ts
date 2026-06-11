@@ -80,13 +80,10 @@ export interface ChatResponsePayload {
 type ApiError = Error & { status?: number };
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const token = localStorage.getItem('loomspace.auth.token');
-  const authHeader: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
-      ...authHeader,
       ...init?.headers,
     },
   });
@@ -225,50 +222,4 @@ export async function apiHealthCheck(): Promise<boolean> {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Auth
-// ---------------------------------------------------------------------------
 
-export interface AuthTokenResponse {
-  access_token: string;
-  token_type: string;
-}
-
-export interface AuthUser {
-  id: string;
-  username: string;
-  created_at: string;
-}
-
-export async function apiRegister(username: string, password: string): Promise<AuthTokenResponse> {
-  return apiFetch<AuthTokenResponse>('/api/auth/register', {
-    method: 'POST',
-    body: JSON.stringify({ username, password }),
-  });
-}
-
-export async function apiLogin(username: string, password: string): Promise<AuthTokenResponse> {
-  return apiFetch<AuthTokenResponse>('/api/auth/login', {
-    method: 'POST',
-    body: JSON.stringify({ username, password }),
-  });
-}
-
-export async function apiGetMe(): Promise<AuthUser> {
-  return apiFetch<AuthUser>('/api/auth/me');
-}
-
-/** Store the auth token in localStorage so apiFetch sends it automatically. */
-export function setAuthToken(token: string): void {
-  localStorage.setItem('loomspace.auth.token', token);
-}
-
-/** Clear the stored auth token (logout). */
-export function clearAuthToken(): void {
-  localStorage.removeItem('loomspace.auth.token');
-}
-
-/** Returns true when a token is currently stored. Does not validate expiry. */
-export function hasAuthToken(): boolean {
-  return localStorage.getItem('loomspace.auth.token') !== null;
-}

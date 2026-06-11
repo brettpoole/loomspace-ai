@@ -34,9 +34,9 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from sqlalchemy import delete, select
 
 from app.database import AsyncSessionLocal
-from app.models import Profile, User, Workspace
-from app.persistence import SETTINGS_ROW_ID, WORKSPACE_STORE_ROW_ID, reserved_row_id, reserved_workspace_ids
-from app.security import decrypt_api_key, encrypt_api_key, hash_password
+from app.models import Profile, Workspace
+from app.persistence import SETTINGS_ROW_ID, WORKSPACE_STORE_ROW_ID, load_settings_blob, params_by_profile_id, save_reserved_json
+from app.security import decrypt_api_key, encrypt_api_key
 
 
 @dataclass
@@ -63,12 +63,7 @@ def parse_args() -> argparse.Namespace:
 
     to_fastapi = subparsers.add_parser(
         "node-to-fastapi",
-        help="Replace one FastAPI user's durable data with the contents of server/data.",
-    )
-    to_fastapi.add_argument("--username", required=True, help="Target FastAPI username.")
-    to_fastapi.add_argument(
-        "--password",
-        help="Password to create the user if it does not already exist.",
+        help="Replace the FastAPI backend data with the contents of server/data.",
     )
     to_fastapi.add_argument(
         "--node-data-secret",
@@ -78,9 +73,8 @@ def parse_args() -> argparse.Namespace:
 
     to_node = subparsers.add_parser(
         "fastapi-to-node",
-        help="Export one FastAPI user's durable data into server/data, overwriting the Node backend files.",
+        help="Export the FastAPI backend data into server/data, overwriting the Node backend files.",
     )
-    to_node.add_argument("--username", required=True, help="Source FastAPI username.")
     to_node.add_argument(
         "--node-data-secret",
         default=os.environ.get("DATA_SECRET"),
@@ -186,31 +180,6 @@ def load_node_active_provider_id(data_dir: Path, profiles: list[NodeProfile]) ->
     return profiles[0].id if profiles else ""
 
 
-async def get_user(session, username: str) -> User | None:
-    result = await session.execute(select(User).where(User.username == username))
-    return result.scalar_one_or_none()
-
-
-async def require_user(session, username: str) -> User:
-    user = await get_user(session, username)
-    if user is None:
-        raise SystemExit(f'User "{username}" not found.')
-    return user
-
-
-async def ensure_user(session, username: str, password: str | None) -> User:
-    user = await get_user(session, username)
-    if user is not None:
-        return user
-    if not password:
-        raise SystemExit(f'User "{username}" does not exist. Re-run with --password to create it.')
-    user = User(username=username, hashed_password=hash_password(password))
-    session.add(user)
-    await session.commit()
-    await session.refresh(user)
-    return user
-
-
 async def sync_node_to_fastapi(args: argparse.Namespace) -> None:
     if not args.node_data_secret:
         raise SystemExit("node-to-fastapi requires --node-data-secret or DATA_SECRET in the environment.")
@@ -222,10 +191,13 @@ async def sync_node_to_fastapi(args: argparse.Namespace) -> None:
     keys_dir = data_dir / "keys"
 
     async with AsyncSessionLocal() as session:
-        user = await ensure_user(session, args.username, args.password)
-
-        await session.execute(delete(Profile).where(Profile.user_id == user.id))
-        await session.execute(delete(Workspace).where(Workspace.user_id == user.id))
+        # Clear existing data
+        await session.execute(delete(Profile))
+        for reserved_id in (SETTINGS_ROW_ID, WORKSPACE_STORE_ROW_ID):
+            result = await session.execute(select(Workspace).where(Workspace.id == reserved_id))
+            row = result.scalar_one_or_none()
+            if row:
+                await session.delete(row)
         await session.commit()
 
         provider_params_by_id: dict[str, dict[str, Any]] = {}
@@ -244,7 +216,6 @@ async def sync_node_to_fastapi(args: argparse.Namespace) -> None:
             session.add(
                 Profile(
                     id=profile.id,
-                    user_id=user.id,
                     kind=profile.kind,
                     label=profile.label,
                     model=profile.model,
@@ -257,8 +228,8 @@ async def sync_node_to_fastapi(args: argparse.Namespace) -> None:
             "activeProviderConfigId": active_provider_id,
             "providerParamsById": provider_params_by_id,
         }
-        session.add(Workspace(id=reserved_row_id(SETTINGS_ROW_ID, user.id), user_id=user.id, data=settings_blob))
-        session.add(Workspace(id=reserved_row_id(WORKSPACE_STORE_ROW_ID, user.id), user_id=user.id, data=workspace_store))
+        await save_reserved_json(SETTINGS_ROW_ID, settings_blob, session)
+        await save_reserved_json(WORKSPACE_STORE_ROW_ID, workspace_store, session)
 
         workspace_count = 0
         for item in workspace_store.get("workspaces", []):
@@ -268,12 +239,12 @@ async def sync_node_to_fastapi(args: argparse.Namespace) -> None:
             state = item.get("state")
             if not isinstance(workspace_id, str) or state is None:
                 continue
-            session.add(Workspace(id=workspace_id, user_id=user.id, data=state))
+            session.add(Workspace(id=workspace_id, data=state))
             workspace_count += 1
 
         await session.commit()
 
-    print(f'Imported {len(profiles)} profiles, {imported_keys} saved keys, and {workspace_count} workspaces into FastAPI user "{args.username}".')
+    print(f'Imported {len(profiles)} profiles, {imported_keys} saved keys, and {workspace_count} workspaces into FastAPI backend.')
 
 
 async def sync_fastapi_to_node(args: argparse.Namespace) -> None:
@@ -285,42 +256,23 @@ async def sync_fastapi_to_node(args: argparse.Namespace) -> None:
     workspaces_dir = data_dir / "workspaces"
 
     async with AsyncSessionLocal() as session:
-        user = await require_user(session, args.username)
-
-        profiles_result = await session.execute(select(Profile).where(Profile.user_id == user.id))
+        profiles_result = await session.execute(select(Profile))
         profiles = list(profiles_result.scalars().all())
 
-        settings_row_result = await session.execute(
-            select(Workspace).where(
-                Workspace.id == reserved_row_id(SETTINGS_ROW_ID, user.id),
-                Workspace.user_id == user.id,
-            )
-        )
-        settings_row = settings_row_result.scalar_one_or_none()
-        settings_blob = settings_row.data if settings_row and isinstance(settings_row.data, dict) else {}
-        provider_params_by_id = settings_blob.get("providerParamsById") if isinstance(settings_blob.get("providerParamsById"), dict) else {}
+        settings_blob = await load_settings_blob(session)
+        provider_params_by_id = params_by_profile_id(settings_blob)
 
-        workspace_store_result = await session.execute(
-            select(Workspace).where(
-                Workspace.id == reserved_row_id(WORKSPACE_STORE_ROW_ID, user.id),
-                Workspace.user_id == user.id,
-            )
-        )
-        workspace_store_row = workspace_store_result.scalar_one_or_none()
+        result = await session.execute(select(Workspace).where(Workspace.id == WORKSPACE_STORE_ROW_ID))
+        workspace_store_row = result.scalar_one_or_none()
 
         if workspace_store_row and isinstance(workspace_store_row.data, dict):
             workspace_store = workspace_store_row.data
         else:
-            workspace_rows_result = await session.execute(
-                select(Workspace).where(
-                    Workspace.user_id == user.id,
-                    Workspace.id.not_in(reserved_workspace_ids(user.id)),
-                )
-            )
-            workspace_rows = list(workspace_rows_result.scalars().all())
+            all_workspaces_result = await session.execute(select(Workspace))
+            all_workspaces = list(all_workspaces_result.scalars().all())
             workspace_store = {
-                "activeWorkspaceId": workspace_rows[0].id if workspace_rows else "",
-                "workspaces": [{"id": row.id, "state": row.data} for row in workspace_rows],
+                "activeWorkspaceId": all_workspaces[0].id if all_workspaces else "",
+                "workspaces": [{"id": row.id, "state": row.data} for row in all_workspaces],
             }
 
     node_profiles: list[dict[str, Any]] = []
@@ -372,7 +324,7 @@ async def sync_fastapi_to_node(args: argparse.Namespace) -> None:
             if path.stem not in valid_workspace_ids:
                 path.unlink()
 
-    print(f'Exported {len(profiles)} profiles and {len(valid_workspace_ids)} workspaces from FastAPI user "{args.username}" into {data_dir}.')
+    print(f'Exported {len(profiles)} profiles and {len(valid_workspace_ids)} workspaces from FastAPI backend into {data_dir}.')
 
 
 async def main() -> None:
