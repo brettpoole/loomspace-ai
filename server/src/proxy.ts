@@ -140,7 +140,7 @@ async function anthropicChat(
 ): Promise<ChatResponse> {
   const body: Record<string, unknown> = {
     model: resolvedModel,
-    max_tokens: (mergedParams.maxTokens as number) ?? 1024,
+    max_tokens: (mergedParams.maxTokens as number) ?? 4096,
     messages: req.messages.filter((message) => message.role !== 'system'),
   };
   if (req.systemPrompt) body.system = req.systemPrompt;
