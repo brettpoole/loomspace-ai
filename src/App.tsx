@@ -9,6 +9,7 @@ import {
   createChatNode,
   createContextNode,
   createWorkspaceEntry,
+  createWorkspaceState,
   createProviderConfig,
   createThread,
   deleteProviderConfig,
@@ -371,16 +372,26 @@ export default function App() {
     // Ensure workspace store data always has threads array (defend against
     // backend data that was saved before threads existed or is stale).
     const sanitizeWorkspaceStore = (store: PersistedWorkspaceStore): PersistedWorkspaceStore => {
+      const defaultState = createWorkspaceState();
       return {
         ...store,
         workspaces: store.workspaces.map((entry) => {
-          const s = entry.state;
-          const threads = Array.isArray(s.threads) ? s.threads : [];
+          const s = entry.state as Partial<LoomspaceState>;
+          // Fill in any missing/null fields that the backend might have
+          // (e.g. title, workspaceId, threads from older versions)
           return {
             ...entry,
             state: {
-              ...s,
-              threads,
+              title: typeof s.title === 'string' && s.title.trim() ? s.title.trim() : defaultState.title,
+              workspaceId: typeof s.workspaceId === 'string' && s.workspaceId ? s.workspaceId : defaultState.workspaceId,
+              threads: Array.isArray(s.threads) ? s.threads : [],
+              selectedThreadId: typeof s.selectedThreadId === 'string' ? s.selectedThreadId : null,
+              selectedNodeId: typeof s.selectedNodeId === 'string' ? s.selectedNodeId : null,
+              densityOverlay: typeof s.densityOverlay === 'boolean' ? s.densityOverlay : defaultState.densityOverlay,
+              panX: typeof s.panX === 'number' && Number.isFinite(s.panX) ? s.panX : defaultState.panX,
+              panY: typeof s.panY === 'number' && Number.isFinite(s.panY) ? s.panY : defaultState.panY,
+              zoom: typeof s.zoom === 'number' && Number.isFinite(s.zoom) ? s.zoom : defaultState.zoom,
+              version: typeof s.version === 'number' ? s.version : defaultState.version,
             } as LoomspaceState,
           };
         }),
