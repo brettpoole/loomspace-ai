@@ -318,12 +318,13 @@ export function clearSettingsCookies() {
 }
 
 export function computeMetrics(state: LoomspaceState): FabricMetrics {
-  const chatCount = state.threads.reduce((sum, thread) => sum + thread.nodes.filter((node) => node.kind === 'chat').length, 0);
-  const nodeCount = state.threads.reduce((sum, thread) => sum + thread.nodes.length, 0);
-  const density = chatCount / Math.max(state.threads.length || 1, 1);
-  const saturation = Math.min(1, nodeCount / Math.max(state.threads.length * 6 || 1, 1));
+  const threads = Array.isArray(state.threads) ? state.threads : [];
+  const chatCount = threads.reduce((sum, thread) => sum + (Array.isArray(thread.nodes) ? thread.nodes.filter((node) => node.kind === 'chat').length : 0), 0);
+  const nodeCount = threads.reduce((sum, thread) => sum + (Array.isArray(thread.nodes) ? thread.nodes.length : 0), 0);
+  const density = chatCount / Math.max(threads.length || 1, 1);
+  const saturation = Math.min(1, nodeCount / Math.max(threads.length * 6 || 1, 1));
 
-  return { threadCount: state.threads.length, nodeCount, chatCount, density, saturation };
+  return { threadCount: threads.length, nodeCount, chatCount, density, saturation };
 }
 
 export function summarize(text: string, limit = 60) {
