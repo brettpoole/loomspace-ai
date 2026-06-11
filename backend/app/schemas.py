@@ -1,5 +1,5 @@
 from typing import Any
-from datetime import datetime
+
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 
@@ -12,31 +12,6 @@ class CamelModel(BaseModel):
         populate_by_name=True,
         from_attributes=True,
     )
-
-
-# ---------------------------------------------------------------------------
-# Auth
-# ---------------------------------------------------------------------------
-
-class RegisterRequest(BaseModel):
-    username: str
-    password: str
-
-
-class LoginRequest(BaseModel):
-    username: str
-    password: str
-
-
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-
-
-class UserOut(CamelModel):
-    id: str
-    username: str
-    created_at: datetime
 
 
 # ---------------------------------------------------------------------------

@@ -4,9 +4,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.models import Profile, User
+from app.models import Profile
 from app.persistence import load_settings_blob, params_by_profile_id
-from app.routers.auth import get_current_user
 from app.schemas import ChatRequest, ChatResponse, ChatUsage, ModelsResponse
 from app.security import decrypt_api_key
 
@@ -28,18 +27,16 @@ def _resolve_base_url(base_url: str | None, kind: str) -> str:
 
 async def _get_profile_with_key(
     profile_id: str,
-    current_user: User,
     db: AsyncSession,
-) -> tuple[Profile, str]:
-    result = await db.execute(
-        select(Profile).where(Profile.id == profile_id, Profile.user_id == current_user.id)
-    )
+) -> tuple[Profile, str | None]:
+    result = await db.execute(select(Profile).where(Profile.id == profile_id))
     profile = result.scalar_one_or_none()
     if profile is None:
         raise HTTPException(404, f"Profile {profile_id} not found")
-    if profile.encrypted_api_key is None:
-        raise HTTPException(400, f"No API key stored for profile {profile_id}")
-    return profile, decrypt_api_key(profile.encrypted_api_key)
+    key: str | None = None
+    if profile.encrypted_api_key is not None:
+        key = decrypt_api_key(profile.encrypted_api_key)
+    return profile, key
 
 
 def _generation_params_for_profile(settings_blob: dict, profile_id: str) -> dict:
@@ -73,11 +70,14 @@ def _openai_generation_body(profile: Profile, params: dict) -> dict:
 @router.get("/ai/models/{profile_id}", response_model=ModelsResponse)
 async def fetch_models(
     profile_id: str,
-    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    profile, api_key = await _get_profile_with_key(profile_id, current_user, db)
+    profile, api_key = await _get_profile_with_key(profile_id, db)
     base_url = _resolve_base_url(profile.base_url, profile.kind)
+    if api_key is None:
+        if profile.kind in ("anthropic", "openrouter"):
+            raise HTTPException(400, f"No API key stored for profile {profile_id}")
+        # openai-compatible-custom (e.g. local llama-cpp) may not need a key
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             if profile.kind == "anthropic":
@@ -91,10 +91,10 @@ async def fetch_models(
                     entry["id"] for entry in (data.get("data") or []) if entry.get("id")
                 )
             else:
-                response = await client.get(
-                    f"{base_url}/models",
-                    headers={"Authorization": f"Bearer {api_key}"},
-                )
+                headers: dict = {}
+                if api_key:
+                    headers["Authorization"] = f"Bearer {api_key}"
+                response = await client.get(f"{base_url}/models", headers=headers)
                 response.raise_for_status()
                 data = response.json()
                 if profile.kind == "openrouter":
@@ -122,13 +122,15 @@ async def fetch_models(
 @router.post("/ai/chat", response_model=ChatResponse)
 async def chat(
     body: ChatRequest,
-    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    profile, api_key = await _get_profile_with_key(body.profile_id, current_user, db)
+    profile, api_key = await _get_profile_with_key(body.profile_id, db)
     base_url = _resolve_base_url(profile.base_url, profile.kind)
+    if api_key is None:
+        if profile.kind in ("anthropic", "openrouter"):
+            raise HTTPException(400, f"No API key stored for profile {body.profile_id}")
     messages = [{"role": message.role, "content": message.content} for message in body.messages]
-    params = _generation_params_for_profile(await load_settings_blob(current_user, db), profile.id)
+    params = _generation_params_for_profile(await load_settings_blob(db), profile.id)
     try:
         async with httpx.AsyncClient(timeout=120) as client:
             if profile.kind == "anthropic":
@@ -161,7 +163,7 @@ async def chat(
 async def _anthropic_chat(
     client: httpx.AsyncClient,
     base_url: str,
-    api_key: str,
+    api_key: str | None,
     model: str,
     messages: list[dict],
     system_prompt: str | None,
@@ -217,7 +219,7 @@ async def _anthropic_chat(
 async def _openai_compatible_chat(
     client: httpx.AsyncClient,
     base_url: str,
-    api_key: str,
+    api_key: str | None,
     profile: Profile,
     messages: list[dict],
     system_prompt: str | None,
@@ -228,10 +230,9 @@ async def _openai_compatible_chat(
         combined.append({"role": "system", "content": system_prompt})
     combined.extend(messages)
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
+    headers: dict = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
     if profile.kind == "openrouter":
         headers["X-App-Name"] = "Loomspace"
 
