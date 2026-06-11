@@ -1,0 +1,402 @@
+{
+  "backend/alembic/env.py": {
+    "mtime": 1780884239.7535355,
+    "ast_hash": "ca640eb70878e4050dca30c220cf8380",
+    "semantic_hash": "ca640eb70878e4050dca30c220cf8380"
+  },
+  "backend/alembic/versions/0001_initial.py": {
+    "mtime": 1780884239.7535355,
+    "ast_hash": "b6d84673bc8fdfdfe9171856f23e508d",
+    "semantic_hash": "b6d84673bc8fdfdfe9171856f23e508d"
+  },
+  "backend/app/__init__.py": {
+    "mtime": 1780884239.7546377,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "backend/app/config.py": {
+    "mtime": 1781150820.4159243,
+    "ast_hash": "0dbd7ba16002deffb7bb9ab190b53816",
+    "semantic_hash": ""
+  },
+  "backend/app/database.py": {
+    "mtime": 1780884239.7580247,
+    "ast_hash": "e26b257965ec10619d94f399739fe0d5",
+    "semantic_hash": "e26b257965ec10619d94f399739fe0d5"
+  },
+  "backend/app/main.py": {
+    "mtime": 1781150686.9141178,
+    "ast_hash": "b8e05f3e3fc2ce55c0bbdea04ad9eaf2",
+    "semantic_hash": ""
+  },
+  "backend/app/models.py": {
+    "mtime": 1781150785.485968,
+    "ast_hash": "f6419028366ae1c7f0ea9b4ae092e5e9",
+    "semantic_hash": ""
+  },
+  "backend/app/persistence.py": {
+    "mtime": 1781150761.7540004,
+    "ast_hash": "7dc30e85a21b732bb66034cc6ed22950",
+    "semantic_hash": ""
+  },
+  "backend/app/routers/__init__.py": {
+    "mtime": 1780884239.7580247,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "backend/app/routers/profiles.py": {
+    "mtime": 1781152724.4038162,
+    "ast_hash": "5fc08569fde16df8ebe22d289e19a2cc",
+    "semantic_hash": ""
+  },
+  "backend/app/routers/proxy.py": {
+    "mtime": 1781150676.6931357,
+    "ast_hash": "b502384de1b5ab69234ac7eaeb1f9474",
+    "semantic_hash": ""
+  },
+  "backend/app/routers/workspace.py": {
+    "mtime": 1781150630.2672238,
+    "ast_hash": "60e873b15a02ceadffe311f9602a6cca",
+    "semantic_hash": ""
+  },
+  "backend/app/schemas.py": {
+    "mtime": 1781150808.9469383,
+    "ast_hash": "db4e06c9d8b703a21957111151e63929",
+    "semantic_hash": ""
+  },
+  "backend/app/security.py": {
+    "mtime": 1781150847.0328941,
+    "ast_hash": "1b8e4bb40c2f7e5958c6fbf216566426",
+    "semantic_hash": ""
+  },
+  "backend/scripts/sync_storage.py": {
+    "mtime": 1781150973.455192,
+    "ast_hash": "81b03751e5b444df1d67dc60b9a217cb",
+    "semantic_hash": ""
+  },
+  "package.json": {
+    "mtime": 1779327712.1343887,
+    "ast_hash": "1255f57fee570e68451e780e0bc07b3f",
+    "semantic_hash": "1255f57fee570e68451e780e0bc07b3f"
+  },
+  "server/package.json": {
+    "mtime": 1780884239.7640245,
+    "ast_hash": "f8d420c68d6a9a065f90a9cec8014d77",
+    "semantic_hash": "f8d420c68d6a9a065f90a9cec8014d77"
+  },
+  "server/src/index.ts": {
+    "mtime": 1781147514.5083017,
+    "ast_hash": "18b8c487c6610cf5c9bc528a2fa3ec0e",
+    "semantic_hash": "18b8c487c6610cf5c9bc528a2fa3ec0e"
+  },
+  "server/src/profiles.ts": {
+    "mtime": 1781147514.5093017,
+    "ast_hash": "f953221fded4ae97c8a942ea20a54a90",
+    "semantic_hash": "f953221fded4ae97c8a942ea20a54a90"
+  },
+  "server/src/proxy.ts": {
+    "mtime": 1781147514.5093017,
+    "ast_hash": "7e6225f1220b4b17bdef4775322303a7",
+    "semantic_hash": "7e6225f1220b4b17bdef4775322303a7"
+  },
+  "server/src/workspace.ts": {
+    "mtime": 1781147514.5093017,
+    "ast_hash": "91539bd20cba727783658eeb11e838d2",
+    "semantic_hash": "91539bd20cba727783658eeb11e838d2"
+  },
+  "server/tsconfig.json": {
+    "mtime": 1781147514.5103018,
+    "ast_hash": "0d2237c915c88c881a87d24fe4e993bf",
+    "semantic_hash": "0d2237c915c88c881a87d24fe4e993bf"
+  },
+  "src/App.tsx": {
+    "mtime": 1781147514.5113018,
+    "ast_hash": "2310736ec02a933fa9a566eda8fdad59",
+    "semantic_hash": "2310736ec02a933fa9a566eda8fdad59"
+  },
+  "src/lib/api.ts": {
+    "mtime": 1781150727.486051,
+    "ast_hash": "d60b048ab3cdc89177fd4ec422a973c1",
+    "semantic_hash": ""
+  },
+  "src/lib/mediaUtils.ts": {
+    "mtime": 1780884575.9377093,
+    "ast_hash": "4df2fa8a4be8fc9cb3a4649d4313a7cd",
+    "semantic_hash": "4df2fa8a4be8fc9cb3a4649d4313a7cd"
+  },
+  "src/lib/sample.ts": {
+    "mtime": 1779308491.4714828,
+    "ast_hash": "20ecd683aac19f5581efe5a9c540ad32",
+    "semantic_hash": "20ecd683aac19f5581efe5a9c540ad32"
+  },
+  "src/lib/store.ts": {
+    "mtime": 1781147514.5123017,
+    "ast_hash": "c8fa923c57a189f62142ee1d362fbfa7",
+    "semantic_hash": "c8fa923c57a189f62142ee1d362fbfa7"
+  },
+  "src/lib/types.ts": {
+    "mtime": 1780884575.938471,
+    "ast_hash": "9289a3654d9c13deed47a6b7fcaaebbb",
+    "semantic_hash": "9289a3654d9c13deed47a6b7fcaaebbb"
+  },
+  "src/main.tsx": {
+    "mtime": 1779995416.0285199,
+    "ast_hash": "6634ea74975d43310b8a034fc89a66ea",
+    "semantic_hash": "6634ea74975d43310b8a034fc89a66ea"
+  },
+  "tsconfig.json": {
+    "mtime": 1780884239.7670245,
+    "ast_hash": "76004342921a28c803a178e6b5ecef93",
+    "semantic_hash": "76004342921a28c803a178e6b5ecef93"
+  },
+  "tsconfig.node.json": {
+    "mtime": 1779169612.238226,
+    "ast_hash": "83f66a104040100e99e7a55be42f83da",
+    "semantic_hash": "83f66a104040100e99e7a55be42f83da"
+  },
+  "vite.config.ts": {
+    "mtime": 1781147514.5123017,
+    "ast_hash": "c3f2c6178754ffeb5c52ae2a478f56a3",
+    "semantic_hash": "c3f2c6178754ffeb5c52ae2a478f56a3"
+  },
+  "IMPLEMENTATION_PLAN.md": {
+    "mtime": 1779496044.826648,
+    "ast_hash": "b748d84288b2efa2b9cdd9fea924862b",
+    "semantic_hash": "b748d84288b2efa2b9cdd9fea924862b"
+  },
+  "MEDIA_HANDLING_DESIGN.md": {
+    "mtime": 1779496044.827648,
+    "ast_hash": "21eb3e020c2cea512e0531817f6f137f",
+    "semantic_hash": "21eb3e020c2cea512e0531817f6f137f"
+  },
+  "README.md": {
+    "mtime": 1781147514.5064373,
+    "ast_hash": "6618db5d0fd9c0ec21abb6c3bfa0a255",
+    "semantic_hash": "6618db5d0fd9c0ec21abb6c3bfa0a255"
+  },
+  "app.yaml": {
+    "mtime": 1780884239.7510245,
+    "ast_hash": "d3b4826aefa7c532eba2f54c08a4b175",
+    "semantic_hash": "d3b4826aefa7c532eba2f54c08a4b175"
+  },
+  "docker-compose.yml": {
+    "mtime": 1780884239.7630246,
+    "ast_hash": "b8cc5f8cd9dcbf1f35bc6d24d19f5596",
+    "semantic_hash": "b8cc5f8cd9dcbf1f35bc6d24d19f5596"
+  },
+  "index.html": {
+    "mtime": 1779327712.1343887,
+    "ast_hash": "ea96f17d3ee4c47def18306c3598bff8",
+    "semantic_hash": "ea96f17d3ee4c47def18306c3598bff8"
+  },
+  "requirements.txt": {
+    "mtime": 1780884239.7630246,
+    "ast_hash": "57a7e9f845ade7844748513c5fa567bb",
+    "semantic_hash": "57a7e9f845ade7844748513c5fa567bb"
+  },
+  "backend/alembic/versions/0002_remove_user_model.py": {
+    "mtime": 1781151041.6177385,
+    "ast_hash": "d26d960ddfeb12ff2cd8c2167149b03b",
+    "semantic_hash": ""
+  },
+  "/home/user/Development/loomspace-ai/backend/alembic/env.py": {
+    "mtime": 1780884239.7535355,
+    "ast_hash": "ca640eb70878e4050dca30c220cf8380",
+    "semantic_hash": "ca640eb70878e4050dca30c220cf8380"
+  },
+  "/home/user/Development/loomspace-ai/backend/alembic/versions/0001_initial.py": {
+    "mtime": 1780884239.7535355,
+    "ast_hash": "b6d84673bc8fdfdfe9171856f23e508d",
+    "semantic_hash": "b6d84673bc8fdfdfe9171856f23e508d"
+  },
+  "/home/user/Development/loomspace-ai/backend/alembic/versions/0002_remove_user_model.py": {
+    "mtime": 1781151041.6177385,
+    "ast_hash": "d26d960ddfeb12ff2cd8c2167149b03b",
+    "semantic_hash": "d26d960ddfeb12ff2cd8c2167149b03b"
+  },
+  "/home/user/Development/loomspace-ai/backend/app/__init__.py": {
+    "mtime": 1780884239.7546377,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "/home/user/Development/loomspace-ai/backend/app/config.py": {
+    "mtime": 1781150820.4159243,
+    "ast_hash": "0dbd7ba16002deffb7bb9ab190b53816",
+    "semantic_hash": "0dbd7ba16002deffb7bb9ab190b53816"
+  },
+  "/home/user/Development/loomspace-ai/backend/app/database.py": {
+    "mtime": 1780884239.7580247,
+    "ast_hash": "e26b257965ec10619d94f399739fe0d5",
+    "semantic_hash": "e26b257965ec10619d94f399739fe0d5"
+  },
+  "/home/user/Development/loomspace-ai/backend/app/main.py": {
+    "mtime": 1781150686.9141178,
+    "ast_hash": "b8e05f3e3fc2ce55c0bbdea04ad9eaf2",
+    "semantic_hash": "b8e05f3e3fc2ce55c0bbdea04ad9eaf2"
+  },
+  "/home/user/Development/loomspace-ai/backend/app/models.py": {
+    "mtime": 1781150785.485968,
+    "ast_hash": "f6419028366ae1c7f0ea9b4ae092e5e9",
+    "semantic_hash": "f6419028366ae1c7f0ea9b4ae092e5e9"
+  },
+  "/home/user/Development/loomspace-ai/backend/app/persistence.py": {
+    "mtime": 1781150761.7540004,
+    "ast_hash": "7dc30e85a21b732bb66034cc6ed22950",
+    "semantic_hash": "7dc30e85a21b732bb66034cc6ed22950"
+  },
+  "/home/user/Development/loomspace-ai/backend/app/routers/__init__.py": {
+    "mtime": 1780884239.7580247,
+    "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
+    "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  "/home/user/Development/loomspace-ai/backend/app/routers/profiles.py": {
+    "mtime": 1781152724.4038162,
+    "ast_hash": "5fc08569fde16df8ebe22d289e19a2cc",
+    "semantic_hash": "5fc08569fde16df8ebe22d289e19a2cc"
+  },
+  "/home/user/Development/loomspace-ai/backend/app/routers/proxy.py": {
+    "mtime": 1781150676.6931357,
+    "ast_hash": "b502384de1b5ab69234ac7eaeb1f9474",
+    "semantic_hash": "b502384de1b5ab69234ac7eaeb1f9474"
+  },
+  "/home/user/Development/loomspace-ai/backend/app/routers/workspace.py": {
+    "mtime": 1781150630.2672238,
+    "ast_hash": "60e873b15a02ceadffe311f9602a6cca",
+    "semantic_hash": "60e873b15a02ceadffe311f9602a6cca"
+  },
+  "/home/user/Development/loomspace-ai/backend/app/schemas.py": {
+    "mtime": 1781150808.9469383,
+    "ast_hash": "db4e06c9d8b703a21957111151e63929",
+    "semantic_hash": "db4e06c9d8b703a21957111151e63929"
+  },
+  "/home/user/Development/loomspace-ai/backend/app/security.py": {
+    "mtime": 1781150847.0328941,
+    "ast_hash": "1b8e4bb40c2f7e5958c6fbf216566426",
+    "semantic_hash": "1b8e4bb40c2f7e5958c6fbf216566426"
+  },
+  "/home/user/Development/loomspace-ai/backend/scripts/sync_storage.py": {
+    "mtime": 1781150973.455192,
+    "ast_hash": "81b03751e5b444df1d67dc60b9a217cb",
+    "semantic_hash": "81b03751e5b444df1d67dc60b9a217cb"
+  },
+  "/home/user/Development/loomspace-ai/package.json": {
+    "mtime": 1779327712.1343887,
+    "ast_hash": "1255f57fee570e68451e780e0bc07b3f",
+    "semantic_hash": "1255f57fee570e68451e780e0bc07b3f"
+  },
+  "/home/user/Development/loomspace-ai/server/package.json": {
+    "mtime": 1780884239.7640245,
+    "ast_hash": "f8d420c68d6a9a065f90a9cec8014d77",
+    "semantic_hash": "f8d420c68d6a9a065f90a9cec8014d77"
+  },
+  "/home/user/Development/loomspace-ai/server/src/index.ts": {
+    "mtime": 1781147514.5083017,
+    "ast_hash": "18b8c487c6610cf5c9bc528a2fa3ec0e",
+    "semantic_hash": "18b8c487c6610cf5c9bc528a2fa3ec0e"
+  },
+  "/home/user/Development/loomspace-ai/server/src/profiles.ts": {
+    "mtime": 1781147514.5093017,
+    "ast_hash": "f953221fded4ae97c8a942ea20a54a90",
+    "semantic_hash": "f953221fded4ae97c8a942ea20a54a90"
+  },
+  "/home/user/Development/loomspace-ai/server/src/proxy.ts": {
+    "mtime": 1781147514.5093017,
+    "ast_hash": "7e6225f1220b4b17bdef4775322303a7",
+    "semantic_hash": "7e6225f1220b4b17bdef4775322303a7"
+  },
+  "/home/user/Development/loomspace-ai/server/src/workspace.ts": {
+    "mtime": 1781147514.5093017,
+    "ast_hash": "91539bd20cba727783658eeb11e838d2",
+    "semantic_hash": "91539bd20cba727783658eeb11e838d2"
+  },
+  "/home/user/Development/loomspace-ai/server/tsconfig.json": {
+    "mtime": 1781147514.5103018,
+    "ast_hash": "0d2237c915c88c881a87d24fe4e993bf",
+    "semantic_hash": "0d2237c915c88c881a87d24fe4e993bf"
+  },
+  "/home/user/Development/loomspace-ai/src/App.tsx": {
+    "mtime": 1781147514.5113018,
+    "ast_hash": "2310736ec02a933fa9a566eda8fdad59",
+    "semantic_hash": "2310736ec02a933fa9a566eda8fdad59"
+  },
+  "/home/user/Development/loomspace-ai/src/lib/api.ts": {
+    "mtime": 1781150727.486051,
+    "ast_hash": "d60b048ab3cdc89177fd4ec422a973c1",
+    "semantic_hash": "d60b048ab3cdc89177fd4ec422a973c1"
+  },
+  "/home/user/Development/loomspace-ai/src/lib/mediaUtils.ts": {
+    "mtime": 1780884575.9377093,
+    "ast_hash": "4df2fa8a4be8fc9cb3a4649d4313a7cd",
+    "semantic_hash": "4df2fa8a4be8fc9cb3a4649d4313a7cd"
+  },
+  "/home/user/Development/loomspace-ai/src/lib/sample.ts": {
+    "mtime": 1779308491.4714828,
+    "ast_hash": "20ecd683aac19f5581efe5a9c540ad32",
+    "semantic_hash": "20ecd683aac19f5581efe5a9c540ad32"
+  },
+  "/home/user/Development/loomspace-ai/src/lib/store.ts": {
+    "mtime": 1781147514.5123017,
+    "ast_hash": "c8fa923c57a189f62142ee1d362fbfa7",
+    "semantic_hash": "c8fa923c57a189f62142ee1d362fbfa7"
+  },
+  "/home/user/Development/loomspace-ai/src/lib/types.ts": {
+    "mtime": 1780884575.938471,
+    "ast_hash": "9289a3654d9c13deed47a6b7fcaaebbb",
+    "semantic_hash": "9289a3654d9c13deed47a6b7fcaaebbb"
+  },
+  "/home/user/Development/loomspace-ai/src/main.tsx": {
+    "mtime": 1779995416.0285199,
+    "ast_hash": "6634ea74975d43310b8a034fc89a66ea",
+    "semantic_hash": "6634ea74975d43310b8a034fc89a66ea"
+  },
+  "/home/user/Development/loomspace-ai/tsconfig.json": {
+    "mtime": 1780884239.7670245,
+    "ast_hash": "76004342921a28c803a178e6b5ecef93",
+    "semantic_hash": "76004342921a28c803a178e6b5ecef93"
+  },
+  "/home/user/Development/loomspace-ai/tsconfig.node.json": {
+    "mtime": 1779169612.238226,
+    "ast_hash": "83f66a104040100e99e7a55be42f83da",
+    "semantic_hash": "83f66a104040100e99e7a55be42f83da"
+  },
+  "/home/user/Development/loomspace-ai/vite.config.ts": {
+    "mtime": 1781147514.5123017,
+    "ast_hash": "c3f2c6178754ffeb5c52ae2a478f56a3",
+    "semantic_hash": "c3f2c6178754ffeb5c52ae2a478f56a3"
+  },
+  "/home/user/Development/loomspace-ai/IMPLEMENTATION_PLAN.md": {
+    "mtime": 1779496044.826648,
+    "ast_hash": "b748d84288b2efa2b9cdd9fea924862b",
+    "semantic_hash": "b748d84288b2efa2b9cdd9fea924862b"
+  },
+  "/home/user/Development/loomspace-ai/MEDIA_HANDLING_DESIGN.md": {
+    "mtime": 1779496044.827648,
+    "ast_hash": "21eb3e020c2cea512e0531817f6f137f",
+    "semantic_hash": "21eb3e020c2cea512e0531817f6f137f"
+  },
+  "/home/user/Development/loomspace-ai/README.md": {
+    "mtime": 1781147514.5064373,
+    "ast_hash": "6618db5d0fd9c0ec21abb6c3bfa0a255",
+    "semantic_hash": "6618db5d0fd9c0ec21abb6c3bfa0a255"
+  },
+  "/home/user/Development/loomspace-ai/app.yaml": {
+    "mtime": 1780884239.7510245,
+    "ast_hash": "d3b4826aefa7c532eba2f54c08a4b175",
+    "semantic_hash": "d3b4826aefa7c532eba2f54c08a4b175"
+  },
+  "/home/user/Development/loomspace-ai/docker-compose.yml": {
+    "mtime": 1780884239.7630246,
+    "ast_hash": "b8cc5f8cd9dcbf1f35bc6d24d19f5596",
+    "semantic_hash": "b8cc5f8cd9dcbf1f35bc6d24d19f5596"
+  },
+  "/home/user/Development/loomspace-ai/index.html": {
+    "mtime": 1779327712.1343887,
+    "ast_hash": "ea96f17d3ee4c47def18306c3598bff8",
+    "semantic_hash": "ea96f17d3ee4c47def18306c3598bff8"
+  },
+  "/home/user/Development/loomspace-ai/requirements.txt": {
+    "mtime": 1780884239.7630246,
+    "ast_hash": "57a7e9f845ade7844748513c5fa567bb",
+    "semantic_hash": "57a7e9f845ade7844748513c5fa567bb"
+  }
+}
