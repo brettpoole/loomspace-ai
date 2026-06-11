@@ -93,7 +93,7 @@ async def _upsert(
     if body.api_key:
         profile.encrypted_api_key = encrypt_api_key(body.api_key)
 
-    settings_blob = await load_settings_blob(current_user, db)
+    settings_blob = await load_settings_blob(db)
     params_map = params_by_profile_id(settings_blob)
     params_payload = _params_payload(body.params)
     if params_payload:
@@ -103,7 +103,7 @@ async def _upsert(
     settings_blob["providerParamsById"] = params_map
     if not settings_blob.get("activeProviderConfigId"):
         settings_blob["activeProviderConfigId"] = profile.id
-    await save_reserved_json(SETTINGS_ROW_ID, settings_blob, current_user, db)
+    await save_reserved_json(SETTINGS_ROW_ID, settings_blob, db)
 
     await db.commit()
     await db.refresh(profile)
