@@ -69,6 +69,13 @@ export interface ThreadContextNode {
 
 export type ThreadNode = ThreadTitleNode | ThreadChatNode | ThreadContextNode;
 
+/** Thread-level model override settings. When set, the thread uses these instead of the global provider config. */
+export interface ThreadModelSettings {
+  providerConfigId: string | null;
+  model: string;
+  params?: GenerationParams;
+}
+
 export interface ThreadLane {
   id: string;
   color: string;
@@ -79,6 +86,7 @@ export interface ThreadLane {
   nodes: ThreadNode[];
   activeNodeId: string | null;
   infoOpen: boolean;
+  modelSettings?: ThreadModelSettings;
 }
 
 export interface GenerationParams {

@@ -392,6 +392,16 @@ export function updateThreadDescription(thread: ThreadLane, description: string)
   return updateThreadDetails(thread, { title: thread.title, description });
 }
 
+export function updateThreadModelSettings(
+  thread: ThreadLane,
+  modelSettings: { providerConfigId: string | null; model: string; params?: GenerationParams },
+): ThreadLane {
+  return {
+    ...thread,
+    modelSettings: { ...modelSettings },
+  };
+}
+
 export function createContextNode(
   source: { id: string; title: string; color: string },
   sourceNodeIds: string[],

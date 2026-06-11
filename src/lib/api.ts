@@ -1,4 +1,4 @@
-import type { GenerationParams, PersistedWorkspaceEntry, PersistedWorkspaceStore } from './types';
+import type { GenerationParams, PersistedWorkspaceEntry, PersistedWorkspaceStore, ThreadModelSettings } from './types';
 
 /**
  * Backend API client for LoomSpace.
@@ -62,6 +62,7 @@ export interface ChatRequestPayload {
   profileId: string;
   messages: Array<{ role: string; content: unknown }>;
   systemPrompt?: string;
+  threadModelSettings?: ThreadModelSettings;
 }
 
 export interface ChatResponsePayload {

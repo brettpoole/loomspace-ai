@@ -48,7 +48,7 @@ import {
   type UpsertProfileInput,
 } from './profiles.js';
 import { chatCompletion, fetchModels } from './proxy.js';
-import { loadWorkspace, loadWorkspaceStore, saveWorkspace, saveWorkspaceStore } from './workspace.js';
+import { loadWorkspace, loadWorkspaceStore, migrateWorkspaceForThreadSettings, resolveThreadModelSettings, saveWorkspace, saveWorkspaceStore } from './workspace.js';
 import { loadSettingsUpdatedAt } from './profiles.js';
 
 if (!process.env.DATA_SECRET) {
@@ -283,6 +283,13 @@ app.get('/api/ai/models/:profileId', async (c) => {
 app.get('/api/workspaces', (c) => {
   const { store, updatedAt } = loadWorkspaceStore();
   if (!store) return c.json({ error: 'Workspace store not found' }, 404);
+  // Migrate on read so old clients can be upgraded transparently
+  const migrated = migrateWorkspaceForThreadSettings(store);
+  if (migrated) {
+    // Persist the migrated state back to disk
+    saveWorkspaceStore(migrated.state);
+    return c.json({ ...migrated.state, updatedAt });
+  }
   return c.json({ ...store, updatedAt });
 });
 
@@ -310,7 +317,10 @@ app.put('/api/workspaces', async (c) => {
     }
   }
 
-  saveWorkspaceStore(body);
+  // Migrate workspace payloads to include thread model settings
+  const migrated = migrateWorkspaceForThreadSettings(body);
+  const payloadToSave = migrated ?? body;
+  saveWorkspaceStore(payloadToSave);
   return c.json({ ok: true });
 });
 

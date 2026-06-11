@@ -30,6 +30,7 @@ import {
   threadWithActiveNode,
   threadWithInfo,
   updateThreadDetails,
+  updateThreadModelSettings,
   updateThreadTitle,
 } from './lib/store';
 import {
@@ -73,6 +74,7 @@ import type {
   ThreadChatNode,
   ThreadContextNode,
   ThreadLane,
+  ThreadModelSettings,
   ThreadNode,
   TokenUsage,
 } from './lib/types';
@@ -2413,8 +2415,15 @@ export default function App() {
   }
 
   const activeChatThreadUsage = activeChatThread ? summarizeThreadUsage(activeChatThread) : null;
-  const activeChatRemainingContext = activeChatThread && activeChatThreadUsage && activeProviderConfig?.model.trim()
-    ? Math.max(getModelWindow(activeProviderConfig.model) - activeChatThreadUsage.totalTokens, 0)
+  // Use thread's effective model (or fall back to global) for remaining context calc
+  const activeChatEffectiveConfig = activeChatThread
+    ? (settings.providerConfigs.find(c => c.id === activeChatThread.modelSettings?.providerConfigId) ?? activeProviderConfig)
+    : activeProviderConfig;
+  const activeChatEffectiveModel = activeChatThread
+    ? (activeChatThread.modelSettings?.model || activeChatEffectiveConfig?.model)
+    : activeProviderConfig?.model;
+  const activeChatRemainingContext = activeChatThread && activeChatThreadUsage && activeChatEffectiveModel?.trim()
+    ? Math.max(getModelWindow(activeChatEffectiveModel) - activeChatThreadUsage.totalTokens, 0)
     : 0;
   const settingsEditorModelsLoading = settingsEditorConfig ? modelsLoadingConfigId === settingsEditorConfig.id : false;
   const settingsEditorHasCachedModels = settingsEditorConfig ? Boolean(modelCache[settingsEditorConfig.id] ?? modelCache[providerModelCacheKey(settingsEditorConfig)]) : false;
@@ -2744,20 +2753,34 @@ export default function App() {
               {settings.providerConfigs.length > 1 && activeProviderConfig ? (
                 <select
                   className="focus-provider-select"
-                  value={activeProviderConfig.id}
-                  onChange={(e) => changeSettingsProvider(e.target.value)}
-                  aria-label="AI Provider"
+                  value={activeThread?.modelSettings?.providerConfigId ?? activeProviderConfig.id}
+                  onChange={(e) => {
+                    if (!activeThread) return;
+                    const ts = activeThread.modelSettings ?? { providerConfigId: activeProviderConfig.id, model: '' };
+                    updateThreadModelSettings(activeThread, { ...ts, providerConfigId: e.target.value, model: '' });
+                  }}
+                  aria-label="Thread AI Provider"
                 >
                   {settings.providerConfigs.map((config) => (
                     <option key={config.id} value={config.id}>{config.label}</option>
                   ))}
                 </select>
               ) : null}
-              {settings.providerConfigs.length > 0 && activeProviderConfig ? (
-                <select className="focus-model-select" value={activeProviderConfig.model} onChange={(e) => updateProviderConfig(activeProviderConfig.id, { model: e.target.value })} aria-label="Model">
-                  {settingsModels.length === 0 ? <option value={activeProviderConfig.model}>{activeProviderConfig.model || 'no model'}</option> : settingsModels.map((m) => <option key={m} value={m}>{m}</option>)}
-                </select>
-              ) : (
+              {settings.providerConfigs.length > 0 && activeProviderConfig ? (() => {
+                // Effective model: thread override or global
+                const effectiveModel = activeThread?.modelSettings?.model || activeProviderConfig.model;
+                const effectiveConfigId = activeThread?.modelSettings?.providerConfigId ?? activeProviderConfig.id;
+                const effectiveConfig = settings.providerConfigs.find(c => c.id === effectiveConfigId) ?? activeProviderConfig;
+                return (
+                  <select className="focus-model-select" value={effectiveModel} onChange={(e) => {
+                    if (!activeThread) return;
+                    const ts = activeThread.modelSettings ?? { providerConfigId: effectiveConfigId, model: '' };
+                    updateThreadModelSettings(activeThread, { ...ts, model: e.target.value });
+                  }} aria-label="Thread Model">
+                    {settingsModels.length === 0 ? <option value={effectiveModel}>{effectiveModel || 'no model'}</option> : settingsModels.map((m) => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                );
+              })() : (
                 <button type="button" className="quiet focus-add-profile" onClick={() => openProviderSetup()}>Add AI profile</button>
               )}
               {activeProviderConfig ? (
@@ -3455,7 +3478,15 @@ export default function App() {
                   <div className="chat-dock-meta-bar">
                     <button type="button" className="chat-dock-provider" onClick={() => setProviderMenuOpen((open) => !open)} aria-expanded={providerMenuOpen} aria-label="Thread AI provider" title="Thread AI provider">
                       <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="8" cy="8" r="2.5"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.05 3.05l1.41 1.41M11.54 11.54l1.41 1.41M3.05 12.95l1.41-1.41M11.54 4.46l1.41-1.41"/></svg>
-                      <span className="chat-dock-provider-label">{activeProviderConfig ? `${activeProviderConfig.label} · ${activeProviderConfig.model || 'no model'}` : 'No AI profile'}</span>
+                      {activeChatThread ? (() => {
+                        const threadTs = activeChatThread.modelSettings;
+                        const configId = threadTs?.providerConfigId ?? activeProviderConfig?.id;
+                        const config = settings.providerConfigs.find(c => c.id === configId) ?? activeProviderConfig;
+                        const model = threadTs?.model || config?.model || 'no model';
+                        return <span className="chat-dock-provider-label">{config ? `${config.label} · ${model}` : 'No AI profile'}</span>;
+                      })() : (
+                        activeProviderConfig ? <span className="chat-dock-provider-label">{`${activeProviderConfig.label} · ${activeProviderConfig.model || 'no model'}`}</span> : <span className="chat-dock-provider-label">No AI profile</span>
+                      )}
                       <svg className={`chat-dock-caret ${providerMenuOpen ? 'open' : ''}`} width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><polyline points="2 4 5 7 8 4"/></svg>
                     </button>
                     <span className="pill chat-dock-context" title="Context tokens remaining">{activeChatRemainingContext.toLocaleString()} left</span>
@@ -3465,34 +3496,52 @@ export default function App() {
                       {settings.providerConfigs.length === 0 ? (
                         <button type="button" className="mini-chat-add-profile" onClick={addProviderProfile}>Add AI profile to chat</button>
                       ) : (
-                        <>
-                          <label className="chat-dock-field">
-                            <span>Profile</span>
-                            <select
-                              value={activeProviderConfig?.id ?? ''}
-                              onChange={(event) => {
-                                changeSettingsProvider(event.target.value);
-                              }}
-                            >
-                              {settings.providerConfigs.map((config) => (
-                                <option key={config.id} value={config.id}>{config.label}</option>
-                              ))}
-                            </select>
-                          </label>
-                          {activeProviderConfig ? (
-                            <label className="chat-dock-field">
-                              <span>Model</span>
-                              <select
-                                value={activeProviderConfig.model}
-                                onChange={(e) => updateProviderConfig(activeProviderConfig.id, { model: e.target.value })}
-                              >
-                                {settingsModels.map((m) => <option key={m} value={m}>{m}</option>)}
-                              </select>
-                            </label>
-                          ) : null}
-                          {activeProviderConfig ? renderModelParams(activeProviderConfig) : null}
-                          <button type="button" className="quiet chat-dock-manage" onClick={() => openProviderSetup()}>Manage profiles</button>
-                        </>
+                        activeChatThread ? (() => {
+                          const threadTs = activeChatThread.modelSettings;
+                          const effectiveConfigId = threadTs?.providerConfigId ?? activeProviderConfig?.id ?? '';
+                          const effectiveConfig = settings.providerConfigs.find(c => c.id === effectiveConfigId) ?? activeProviderConfig;
+                          const effectiveModel = threadTs?.model || effectiveConfig?.model || '';
+                          return (
+                            <>
+                              <label className="chat-dock-field">
+                                <span>Profile</span>
+                                <select
+                                  value={effectiveConfigId}
+                                  onChange={(event) => {
+                                    const newTs: ThreadModelSettings = {
+                                      providerConfigId: event.target.value,
+                                      model: threadTs?.model ?? '',
+                                      params: threadTs?.params,
+                                    };
+                                    updateThreadModelSettings(activeChatThread, newTs);
+                                  }}
+                                >
+                                  {settings.providerConfigs.map((config) => (
+                                    <option key={config.id} value={config.id}>{config.label}</option>
+                                  ))}
+                                </select>
+                              </label>
+                              <label className="chat-dock-field">
+                                <span>Model</span>
+                                <select
+                                  value={effectiveModel}
+                                  onChange={(e) => {
+                                    const newTs: ThreadModelSettings = {
+                                      providerConfigId: effectiveConfigId,
+                                      model: e.target.value,
+                                      params: threadTs?.params,
+                                    };
+                                    updateThreadModelSettings(activeChatThread, newTs);
+                                  }}
+                                >
+                                  {settingsModels.map((m) => <option key={m} value={m}>{m}</option>)}
+                                </select>
+                              </label>
+                              {effectiveConfig ? renderModelParams(effectiveConfig) : null}
+                              <button type="button" className="quiet chat-dock-manage" onClick={() => openProviderSetup()}>Manage profiles</button>
+                            </>
+                          );
+                        })() : null
                       )}
                     </div>
                   ) : null}
@@ -4101,25 +4150,49 @@ function formatMessageForOpenAI(message: ChatMessage) {
   return { role, content };
 }
 
+/**
+ * Resolve the effective model + params for a thread by merging thread-level
+ * overrides on top of the global provider config. Falls back to the global
+ * config when the thread has no model settings.
+ */
+function resolveThreadConfig(config: AIProviderConfig, thread: ThreadLane): AIProviderConfig & { threadParams?: GenerationParams } {
+  const ts = thread.modelSettings;
+  if (!ts) return { ...config, threadParams: undefined };
+  const params: Record<string, unknown> = { ...(config.params ?? {}) };
+  if (ts.params) Object.assign(params, ts.params);
+  return {
+    ...config,
+    model: ts.model?.trim() || config.model,
+    params: Object.keys(params).length > 0 ? (params as GenerationParams) : undefined,
+    threadParams: ts.params,
+  };
+}
+
 async function requestAiReply(config: AIProviderConfig, thread: ThreadLane, messages: ChatMessage[]) {
-  if (!config.apiKey.trim() && config.hasEncryptedApiKey) {
-    const response = await apiChat({
-      profileId: config.id,
+  const effective = resolveThreadConfig(config, thread);
+  const threadModelSettings = thread.modelSettings;
+  if (!effective.apiKey.trim() && effective.hasEncryptedApiKey) {
+    const apiPayload: import('./lib/api').ChatRequestPayload = {
+      profileId: effective.id,
       systemPrompt: SYSTEM_PROMPT(thread),
-      messages: config.kind === 'anthropic'
+      messages: effective.kind === 'anthropic'
         ? messages.filter((message) => message.role !== 'system').map(formatMessageForAnthropic)
         : messages.map(formatMessageForOpenAI),
-    });
+    };
+    if (threadModelSettings) {
+      apiPayload.threadModelSettings = { providerConfigId: threadModelSettings.providerConfigId, model: threadModelSettings.model, params: threadModelSettings.params };
+    }
+    const response = await apiChat(apiPayload);
     return {
       assistantText: response.assistantText,
       usage: response.usage
-        ? normalizeUsage(config.model, response.usage.inputTokens, response.usage.outputTokens, response.usage.totalTokens)
+        ? normalizeUsage(effective.model, response.usage.inputTokens, response.usage.outputTokens, response.usage.totalTokens)
         : undefined,
     };
   }
-  if (config.kind === 'anthropic') return requestAnthropic(config, thread, messages);
-  if (config.kind === 'openrouter') return requestOpenRouter(config, thread, messages);
-  return requestOpenAiCompatible(config, thread, messages);
+  if (effective.kind === 'anthropic') return requestAnthropic(effective, thread, messages, effective.threadParams);
+  if (effective.kind === 'openrouter') return requestOpenRouter(effective, thread, messages, effective.threadParams);
+  return requestOpenAiCompatible(effective, thread, messages, effective.threadParams);
 }
 
 function hydrateSettingsFromBackend(payload: ServerSettingsPayload): AISettings {
@@ -4206,6 +4279,21 @@ function openAiGenerationBody(config: AIProviderConfig): Record<string, unknown>
   return body;
 }
 
+/** Variant that takes params + kind directly (for thread-merged params). */
+function openAiGenerationBodyForParams(params: Record<string, unknown>, kind: AIProvider): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  const temperature = params.temperature ?? (kind === 'openai' ? undefined : 0.4);
+  if (temperature !== undefined) body.temperature = temperature;
+  if (params.topP !== undefined) body.top_p = params.topP;
+  if (params.maxTokens !== undefined) body.max_tokens = params.maxTokens;
+  if (params.frequencyPenalty !== undefined) body.frequency_penalty = params.frequencyPenalty;
+  if (params.presencePenalty !== undefined) body.presence_penalty = params.presencePenalty;
+  if (params.seed !== undefined) body.seed = params.seed;
+  if (params.stop && Array.isArray(params.stop) && params.stop.length > 0) body.stop = params.stop;
+  if (kind !== 'openai' && params.topK !== undefined) body.top_k = params.topK;
+  return body;
+}
+
 const PARAM_META: Record<Exclude<keyof GenerationParams, 'stop'>, { label: string; min: number; max: number; step: number; control: 'range' | 'number'; default: number }> = {
   temperature: { label: 'Temperature', min: 0, max: 2, step: 0.01, control: 'range', default: 0.7 },
   topP: { label: 'Top P (nucleus)', min: 0, max: 1, step: 0.01, control: 'range', default: 1 },
@@ -4216,8 +4304,11 @@ const PARAM_META: Record<Exclude<keyof GenerationParams, 'stop'>, { label: strin
   seed: { label: 'Seed', min: 0, max: 2147483647, step: 1, control: 'number', default: 0 },
 };
 
-async function requestOpenRouter(config: AIProviderConfig, thread: ThreadLane, messages: ChatMessage[]) {
+async function requestOpenRouter(config: AIProviderConfig, thread: ThreadLane, messages: ChatMessage[], threadParams?: GenerationParams) {
   const baseUrl = resolveBaseUrl(config.baseUrl, config.kind);
+  // Merge thread params over config params (thread takes priority)
+  const mergedParams: Record<string, unknown> = { ...(config.params ?? {}) };
+  if (threadParams) Object.assign(mergedParams, threadParams);
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
@@ -4233,7 +4324,7 @@ async function requestOpenRouter(config: AIProviderConfig, thread: ThreadLane, m
         { role: 'system', content: SYSTEM_PROMPT(thread) },
         ...messages.map(formatMessageForOpenAI),
       ],
-      ...openAiGenerationBody(config),
+      ...openAiGenerationBodyForParams(mergedParams, config.kind),
     }),
   });
 
@@ -4274,8 +4365,11 @@ async function requestOpenRouter(config: AIProviderConfig, thread: ThreadLane, m
   return { assistantText, usage };
 }
 
-async function requestOpenAiCompatible(config: AIProviderConfig, thread: ThreadLane, messages: ChatMessage[]) {
+async function requestOpenAiCompatible(config: AIProviderConfig, thread: ThreadLane, messages: ChatMessage[], threadParams?: GenerationParams) {
   const baseUrl = resolveBaseUrl(config.baseUrl, config.kind);
+  // Merge thread params over config params (thread takes priority)
+  const mergedParams: Record<string, unknown> = { ...(config.params ?? {}) };
+  if (threadParams) Object.assign(mergedParams, threadParams);
   const payloadBase = {
     model: config.model,
     messages: [
@@ -4283,7 +4377,7 @@ async function requestOpenAiCompatible(config: AIProviderConfig, thread: ThreadL
       ...messages.map(formatMessageForOpenAI),
     ],
   };
-  const genBody = openAiGenerationBody(config);
+  const genBody = openAiGenerationBodyForParams(mergedParams, config.kind);
 
   const send = async (includeTemperature: boolean) => {
     const body: Record<string, unknown> = { ...payloadBase, ...genBody };
@@ -4359,8 +4453,12 @@ function formatMessageForAnthropic(message: ChatMessage) {
   return { role, content };
 }
 
-async function requestAnthropic(config: AIProviderConfig, thread: ThreadLane, messages: ChatMessage[]) {
+async function requestAnthropic(config: AIProviderConfig, thread: ThreadLane, messages: ChatMessage[], threadParams?: GenerationParams) {
   const baseUrl = resolveBaseUrl(config.baseUrl, config.kind);
+  // Merge thread params over config params (thread takes priority)
+  const mergedParams: Record<string, unknown> = { ...(config.params ?? {}) };
+  if (threadParams) Object.assign(mergedParams, threadParams);
+  const maxTokens = (mergedParams.maxTokens as number | undefined) ?? 1024;
   const response = await fetch(`${baseUrl}/messages`, {
     method: 'POST',
     headers: {
@@ -4371,11 +4469,11 @@ async function requestAnthropic(config: AIProviderConfig, thread: ThreadLane, me
     },
     body: JSON.stringify({
       model: config.model,
-      max_tokens: config.params?.maxTokens ?? 1024,
-      ...(config.params?.temperature !== undefined ? { temperature: config.params.temperature } : {}),
-      ...(config.params?.topP !== undefined ? { top_p: config.params.topP } : {}),
-      ...(config.params?.topK !== undefined ? { top_k: config.params.topK } : {}),
-      ...(config.params?.stop && config.params.stop.length > 0 ? { stop_sequences: config.params.stop } : {}),
+      max_tokens: maxTokens,
+      ...(mergedParams.temperature !== undefined ? { temperature: mergedParams.temperature } : {}),
+      ...(mergedParams.topP !== undefined ? { top_p: mergedParams.topP } : {}),
+      ...(mergedParams.topK !== undefined ? { top_k: mergedParams.topK } : {}),
+      ...(mergedParams.stop && Array.isArray(mergedParams.stop) && mergedParams.stop.length > 0 ? { stop_sequences: mergedParams.stop } : {}),
       system: SYSTEM_PROMPT(thread),
       messages: messages
         .filter((message) => message.role !== 'system')
