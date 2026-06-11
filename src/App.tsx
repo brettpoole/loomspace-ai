@@ -368,6 +368,25 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
 
+    // Ensure workspace store data always has threads array (defend against
+    // backend data that was saved before threads existed or is stale).
+    const sanitizeWorkspaceStore = (store: PersistedWorkspaceStore): PersistedWorkspaceStore => {
+      return {
+        ...store,
+        workspaces: store.workspaces.map((entry) => {
+          const s = entry.state;
+          const threads = Array.isArray(s.threads) ? s.threads : [];
+          return {
+            ...entry,
+            state: {
+              ...s,
+              threads,
+            } as LoomspaceState,
+          };
+        }),
+      };
+    };
+
     const bootstrapPersistence = async () => {
       const localWorkspaceStore = initialLocalWorkspaceStoreRef.current;
       const localSettings = initialLocalSettingsRef.current;
@@ -379,7 +398,7 @@ export default function App() {
         ]);
         if (cancelled) return;
 
-        const nextWorkspaceStore = remoteWorkspaceStore ?? localWorkspaceStore;
+        const nextWorkspaceStore = remoteWorkspaceStore ? sanitizeWorkspaceStore(remoteWorkspaceStore) : localWorkspaceStore;
         const nextSettings = remoteSettings ? hydrateSettingsFromBackend(remoteSettings) : localSettings;
         workspaceStoreRef.current = nextWorkspaceStore;
         settingsRef.current = nextSettings;
