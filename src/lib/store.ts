@@ -140,7 +140,7 @@ function newWorkspaceId() {
 }
 
 export function createWorkspaceState(title = sampleState.title, workspaceId = newWorkspaceId()): LoomspaceState {
-  const nextTitle = title.trim() || sampleState.title;
+  const nextTitle = typeof title === 'string' && title.trim() ? title.trim() : sampleState.title;
   return {
     ...structuredClone(sampleState),
     workspaceId,
