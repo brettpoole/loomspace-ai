@@ -2975,6 +2975,21 @@ button.btn-danger:disabled {
   color: #60708d;
 }
 
+/* Sync conflict bar — light theme */
+:root[data-theme='light'] .sync-conflict-bar {
+  background: #fef3c7;
+  color: #92400e;
+  border-bottom-color: #f59e0b;
+}
+
+:root[data-theme='light'] .sync-conflict-dismiss {
+  color: #92400e;
+}
+
+:root[data-theme='light'] .sync-conflict-dismiss:hover {
+  color: #78350f;
+}
+
 :root[data-theme='light'] .brand-mark {
   color: #0b9f70;
   background:
@@ -3790,6 +3805,50 @@ button.btn-danger:disabled {
   padding-top: 14px;
   border-top: 1px dashed rgba(255, 255, 255, 0.1);
   display: flex;
+}
+
+/* ---- Sync conflict bar ---- */
+.sync-conflict-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: var(--amber-900, #4a2c0a);
+  color: var(--amber-100, #fef3c7);
+  font-size: 13px;
+  line-height: 1.4;
+  border-bottom: 1px solid var(--amber-700, #b45309);
+  animation: sync-conflict-pulse 2s ease-in-out infinite;
+}
+
+.sync-conflict-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.sync-conflict-text {
+  flex: 1;
+}
+
+.sync-conflict-dismiss {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 4px;
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+
+.sync-conflict-dismiss:hover {
+  opacity: 1;
+}
+
+@keyframes sync-conflict-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.75; }
 }
 
 /* ---- Runtime model controls (chat dock + focus popover) ---- */

@@ -9,6 +9,8 @@ from app.models import User, Workspace
 
 SETTINGS_ROW_ID = "__loomspace_settings__"
 WORKSPACE_STORE_ROW_ID = "__loomspace_workspace_store__"
+WORKSPACE_STORE_UPDATED_AT_ROW_ID = "__loomspace_workspace_store_updated_at__"
+SETTINGS_UPDATED_AT_ROW_ID = "__loomspace_settings_updated_at__"
 
 
 def reserved_row_id(row_id: str, user_id: str) -> str:
@@ -19,7 +21,42 @@ def reserved_workspace_ids(user_id: str) -> set[str]:
     return {
         reserved_row_id(SETTINGS_ROW_ID, user_id),
         reserved_row_id(WORKSPACE_STORE_ROW_ID, user_id),
+        reserved_row_id(WORKSPACE_STORE_UPDATED_AT_ROW_ID, user_id),
+        reserved_row_id(SETTINGS_UPDATED_AT_ROW_ID, user_id),
     }
+
+
+async def save_updated_at(
+    row_id: str,
+    ts: str,
+    current_user: User,
+    db: AsyncSession,
+) -> None:
+    """Save a timestamp for conflict detection."""
+    scoped = reserved_row_id(row_id, current_user.id)
+    result = await db.execute(
+        select(Workspace).where(
+            Workspace.id == scoped,
+            Workspace.user_id == current_user.id,
+        )
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        db.add(Workspace(id=scoped, user_id=current_user.id, data={"updatedAt": ts}))
+        return
+    row.data = {"updatedAt": ts}
+
+
+async def load_updated_at(
+    row_id: str,
+    current_user: User,
+    db: AsyncSession,
+) -> str | None:
+    """Load the stored timestamp (ISO 8601) for conflict detection."""
+    blob = await load_reserved_json(row_id, current_user, db)
+    if blob is None:
+        return None
+    return blob.get("updatedAt")
 
 
 async def load_reserved_json(

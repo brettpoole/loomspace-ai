@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -7,7 +8,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models import Profile, User
-from app.persistence import SETTINGS_ROW_ID, load_settings_blob, params_by_profile_id, save_reserved_json
+from app.persistence import (
+    SETTINGS_ROW_ID,
+    load_reserved_json,
+    load_settings_blob,
+    load_updated_at,
+    params_by_profile_id,
+    save_reserved_json,
+    save_updated_at,
+)
 from app.routers.auth import get_current_user
 from app.schemas import (
     GenerationParams,
@@ -195,12 +204,35 @@ async def update_profile(
     return _to_out(profile, params_map)
 
 
-@router.put("/settings", response_model=SettingsSnapshot)
+@router.put("/settings")
 async def save_settings(
     body: SaveSettingsRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    last_sync_at: str | None = body.last_sync_at
+
+    # Conflict detection: check if another client has newer data
+    if last_sync_at:
+        server_updated_at = await load_updated_at(SETTINGS_ROW_ID, current_user, db)
+        if server_updated_at and server_updated_at > last_sync_at:
+            settings_blob = await load_settings_blob(current_user, db)
+            profiles = await _list_user_profiles(current_user, db)
+            params_map = params_by_profile_id(settings_blob)
+            active_id = settings_blob.get("activeProviderConfigId", "")
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "CONFLICT",
+                    "message": "Server data is newer. Please sync.",
+                    "serverUpdatedAt": server_updated_at,
+                    "serverSettingsSnapshot": {
+                        "activeProviderConfigId": active_id,
+                        "providerConfigs": [_to_out(p, params_map) for p in profiles],
+                    },
+                },
+            )
+
     existing_profiles = {profile.id: profile for profile in await _list_user_profiles(current_user, db)}
 
     # Sanitize and validate each incoming profile
@@ -244,6 +276,9 @@ async def save_settings(
 
     await db.commit()
 
+    # Update the conflict-detection timestamp
+    await save_updated_at(SETTINGS_ROW_ID, datetime.now(timezone.utc).isoformat(), current_user, db)
+
     refreshed_profiles = await _list_user_profiles(current_user, db)
     refreshed_map = {profile.id: profile for profile in refreshed_profiles}
     return SettingsSnapshot(
@@ -256,13 +291,14 @@ async def save_settings(
     )
 
 
-@router.get("/settings", response_model=SettingsSnapshot)
+@router.get("/settings")
 async def load_settings(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     profiles = await _list_user_profiles(current_user, db)
     settings_blob = await load_settings_blob(current_user, db)
+    updated_at = await load_updated_at(SETTINGS_ROW_ID, current_user, db)
     if not profiles and not settings_blob:
         raise HTTPException(404, "Settings not found")
 
@@ -272,10 +308,11 @@ async def load_settings(
     if active_provider_config_id not in profile_ids:
         active_provider_config_id = profiles[0].id if profiles else ""
 
-    return SettingsSnapshot(
-        active_provider_config_id=active_provider_config_id,
-        provider_configs=[_to_out(profile, params_map) for profile in profiles],
-    )
+    return {
+        "activeProviderConfigId": active_provider_config_id,
+        "providerConfigs": [_to_out(profile, params_map) for profile in profiles],
+        "updatedAt": updated_at,
+    }
 
 
 @router.delete("/profiles/{profile_id}")

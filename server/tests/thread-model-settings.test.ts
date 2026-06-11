@@ -145,7 +145,8 @@ function loadWorkspaceStoreFromDir(dataDir: string) {
   const origDir = process.env.DATA_DIR;
   process.env.DATA_DIR = dataDir;
   try {
-    return loadWorkspaceStore();
+    const result = loadWorkspaceStore();
+    return result.store;
   } finally {
     if (origDir !== undefined) process.env.DATA_DIR = origDir;
     else delete process.env.DATA_DIR;
@@ -169,7 +170,8 @@ function loadSettingsSnapshotFromDir(dataDir: string) {
   const origDir = process.env.DATA_DIR;
   process.env.DATA_DIR = dataDir;
   try {
-    return loadSettingsSnapshot();
+    const result = loadSettingsSnapshot();
+    return result.snapshot;
   } finally {
     if (origDir !== undefined) process.env.DATA_DIR = origDir;
     else delete process.env.DATA_DIR;

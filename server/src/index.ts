@@ -49,6 +49,7 @@ import {
 } from './profiles.js';
 import { chatCompletion, fetchModels } from './proxy.js';
 import { loadWorkspace, loadWorkspaceStore, saveWorkspace, saveWorkspaceStore } from './workspace.js';
+import { loadSettingsUpdatedAt } from './profiles.js';
 
 if (!process.env.DATA_SECRET) {
   console.error('[loomspace] FATAL: DATA_SECRET environment variable is not set.');
@@ -84,13 +85,13 @@ app.get('/api/health', (c) => c.json({ status: 'ok', ts: Date.now() }));
 // ---------------------------------------------------------------------------
 
 app.get('/api/settings', (c) => {
-  const snapshot = loadSettingsSnapshot();
+  const { snapshot, updatedAt } = loadSettingsSnapshot();
   if (!snapshot) return c.json({ error: 'Settings not found' }, 404);
-  return c.json(snapshot);
+  return c.json({ ...snapshot, updatedAt });
 });
 
 app.put('/api/settings', async (c) => {
-  let body: Partial<SaveSettingsSnapshotInput>;
+  let body: Partial<SaveSettingsSnapshotInput> & { lastSyncAt?: string };
   try {
     body = await c.req.json();
   } catch {
@@ -111,6 +112,23 @@ app.put('/api/settings', async (c) => {
 
   if (providerConfigs.length !== body.providerConfigs.length) {
     return c.json({ error: 'Each provider config must include id, kind, label, and model' }, 400);
+  }
+
+  // Conflict detection: check if another client has newer data
+  if (body.lastSyncAt) {
+    const serverUpdatedAt = loadSettingsUpdatedAt();
+    if (serverUpdatedAt && serverUpdatedAt > body.lastSyncAt) {
+      const snapshot = loadSettingsSnapshot();
+      return c.json(
+        {
+          code: 'CONFLICT',
+          message: 'Server data is newer. Please sync.',
+          serverUpdatedAt,
+          serverSettingsSnapshot: snapshot.snapshot,
+        },
+        409,
+      );
+    }
   }
 
   try {
@@ -263,18 +281,35 @@ app.get('/api/ai/models/:profileId', async (c) => {
 // ---------------------------------------------------------------------------
 
 app.get('/api/workspaces', (c) => {
-  const data = loadWorkspaceStore();
-  if (!data) return c.json({ error: 'Workspace store not found' }, 404);
-  return c.json(data);
+  const { store, updatedAt } = loadWorkspaceStore();
+  if (!store) return c.json({ error: 'Workspace store not found' }, 404);
+  return c.json({ ...store, updatedAt });
 });
 
 app.put('/api/workspaces', async (c) => {
-  let body: unknown;
+  let body: { lastSyncAt?: string };
   try {
     body = await c.req.json();
   } catch {
     return c.json({ error: 'Invalid JSON' }, 400);
   }
+
+  // Conflict detection: check if another client has newer data
+  if (body.lastSyncAt) {
+    const { store: serverStore, updatedAt: serverUpdatedAt } = loadWorkspaceStore();
+    if (serverUpdatedAt && serverUpdatedAt > body.lastSyncAt) {
+      return c.json(
+        {
+          code: 'CONFLICT',
+          message: 'Server data is newer. Please sync.',
+          serverUpdatedAt,
+          serverWorkspaceStore: serverStore,
+        },
+        409,
+      );
+    }
+  }
+
   saveWorkspaceStore(body);
   return c.json({ ok: true });
 });

@@ -40,9 +40,13 @@ import {
   apiLoadSettings,
   apiLoadWorkspaceStore,
   apiSaveSettings,
+  apiSaveSettingsWithSync,
   apiSaveWorkspaceStore,
+  apiSaveWorkspaceStoreWithSync,
   apiStoreKey,
+  isServerConflictError,
   type SaveServerSettingsPayload,
+  type ServerConflictError,
   type ServerSettingsPayload,
 } from './lib/api';
 import {
@@ -248,6 +252,8 @@ export default function App() {
   const [chatErrors, setChatErrors] = useState<Record<string, string>>({});
   const [providerError, setProviderError] = useState<string | null>(null);
   const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
+  const [syncConflict, setSyncConflict] = useState<ServerConflictError | null>(null);
+  const pendingWriteRef = useRef<{ settings?: SaveServerSettingsPayload; workspace?: PersistedWorkspaceStore } | null>(null);
   const [persistenceReady, setPersistenceReady] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
   const [chatPanelState, setChatPanelState] = useState<{ isOpen: boolean; openThreadIds: string[]; activeThreadId: string | null }>(() => ({
@@ -357,6 +363,53 @@ export default function App() {
     return () => media?.removeEventListener('change', applyTheme);
   }, [themeMode]);
 
+  // ---------------------------------------------------------------------------
+  // Sync conflict handling
+  // ---------------------------------------------------------------------------
+
+  async function handleSyncConflict(conflict: ServerConflictError) {
+    setSyncConflict(conflict);
+
+    // Store pending write for retry after merge
+    const pending: typeof pendingWriteRef.current = { ...pendingWriteRef.current };
+    pendingWriteRef.current = null;
+
+    try {
+      // Refresh everything from server
+      const remoteSettings = await apiLoadSettings();
+      const remoteWorkspaceStore = await apiLoadWorkspaceStore();
+
+      if (remoteSettings) {
+        setSettings(hydrateSettingsFromBackend(remoteSettings));
+      }
+      if (remoteWorkspaceStore) {
+        setWorkspaceStore(remoteWorkspaceStore);
+      }
+
+      setSyncConflict(null);
+
+      // Retry any pending writes that were queued
+      if (pending) {
+        if (pending.settings) {
+          const settingsResult = await apiSaveSettingsWithSync(pending.settings);
+          if (settingsResult === null) {
+            // Conflict again — re-queue
+            pendingWriteRef.current = { ...pending, settings: pending.settings };
+          }
+        }
+        if (pending.workspace) {
+          const ok = await apiSaveWorkspaceStoreWithSync(pending.workspace);
+          if (!ok) {
+            // Conflict again — re-queue
+            pendingWriteRef.current = { ...pending, workspace: pending.workspace };
+          }
+        }
+      }
+    } catch {
+      // If refresh also fails, keep the conflict banner visible
+    }
+  }
+
   useEffect(() => {
     let cancelled = false;
 
@@ -379,11 +432,17 @@ export default function App() {
         setSettings(nextSettings);
 
         if (!remoteWorkspaceStore) {
-          await apiSaveWorkspaceStore(localWorkspaceStore);
+          const wsOk = await apiSaveWorkspaceStoreWithSync(localWorkspaceStore);
+          if (!wsOk) {
+            // Conflict during initial sync — handled via conflict UI
+          }
         }
 
         if (!remoteSettings) {
-          await apiSaveSettings(serializeSettingsForBackend(localSettings));
+          const settingsResult = await apiSaveSettingsWithSync(serializeSettingsForBackend(localSettings));
+          if (settingsResult === null) {
+            // Conflict during initial sync — handled via conflict UI
+          }
           const localPlaintextKeys = localSettings.providerConfigs.filter((config) => config.apiKey.trim());
           await Promise.all(localPlaintextKeys.map((config) => apiStoreKey(config.id, config.apiKey.trim())));
           if (localSettings.providerConfigs.some((config) => config.hasEncryptedApiKey && !config.apiKey.trim())) {
@@ -430,15 +489,35 @@ export default function App() {
   useEffect(() => saveModelCache(modelCache), [modelCache]);
   useEffect(() => {
     if (!persistenceReady) return;
-    const handle = window.setTimeout(() => {
-      void apiSaveWorkspaceStore(workspaceStoreRef.current).catch(() => undefined);
+    const handle = window.setTimeout(async () => {
+      const store = workspaceStoreRef.current;
+      const ok = await apiSaveWorkspaceStoreWithSync(store);
+      if (!ok) {
+        // Conflict detected — queue for retry and show indicator
+        pendingWriteRef.current = { ...pendingWriteRef.current, workspace: store };
+        const err = new Error('Sync conflict detected — another tab or device may have updated the workspace') as ServerConflictError;
+        err.status = 409;
+        err.code = 'CONFLICT';
+        err.serverUpdatedAt = new Date().toISOString();
+        handleSyncConflict(err);
+      }
     }, WORKSPACE_SAVE_DEBOUNCE_MS);
     return () => window.clearTimeout(handle);
   }, [workspaceStore, persistenceReady]);
   useEffect(() => {
     if (!persistenceReady) return;
-    const handle = window.setTimeout(() => {
-      void apiSaveSettings(serializeSettingsForBackend(settingsRef.current)).catch(() => undefined);
+    const handle = window.setTimeout(async () => {
+      const payload = serializeSettingsForBackend(settingsRef.current);
+      const result = await apiSaveSettingsWithSync(payload);
+      if (result === null) {
+        // Conflict detected — queue for retry and show indicator
+        pendingWriteRef.current = { ...pendingWriteRef.current, settings: payload };
+        const err = new Error('Sync conflict detected — another tab or device may have updated settings') as ServerConflictError;
+        err.status = 409;
+        err.code = 'CONFLICT';
+        err.serverUpdatedAt = new Date().toISOString();
+        handleSyncConflict(err);
+      }
     }, WORKSPACE_SAVE_DEBOUNCE_MS);
     return () => window.clearTimeout(handle);
   }, [settings, persistenceReady]);
@@ -1876,7 +1955,16 @@ export default function App() {
     setSettingsNotice(null);
     try {
       // Persist the profile row first so the key save endpoint has a stable target.
-      await apiSaveSettings(serializeSettingsForBackend(settingsRef.current));
+      const settingsResult = await apiSaveSettingsWithSync(serializeSettingsForBackend(settingsRef.current));
+      if (settingsResult === null) {
+        setSettingsNotice('Settings save conflict — retrying after merge.');
+        // Retry once more after merge
+        const retryResult = await apiSaveSettingsWithSync(serializeSettingsForBackend(settingsRef.current));
+        if (retryResult === null) {
+          setProviderError('Could not save settings. Please refresh and try again.');
+          return;
+        }
+      }
       await apiStoreKey(configId, candidate);
       clearProviderSecret(configId);
 
@@ -2840,6 +2928,19 @@ export default function App() {
 
   return (
     <div className="app-shell">
+      {syncConflict ? (
+        <div className="sync-conflict-bar" role="alert" aria-live="polite">
+          <span className="sync-conflict-icon" aria-hidden="true">⚠</span>
+          <span className="sync-conflict-text">
+            Sync conflict — your data may be out of date. Merging from server now…
+          </span>
+          <button type="button" className="sync-conflict-dismiss" onClick={() => {
+            pendingWriteRef.current = null;
+            setSyncConflict(null);
+            setSettingsNotice('Sync conflict dismissed. Refresh the page for a clean state.');
+          }} aria-label="Dismiss sync conflict">✕</button>
+        </div>
+      ) : null}
       {focusMode ? renderFocusMode() : (
       <>
       <header className="topbar">

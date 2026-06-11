@@ -83,6 +83,7 @@ const DATA_DIR = process.env.DATA_DIR ?? join(process.cwd(), 'data');
 const PROFILES_FILE = join(DATA_DIR, 'profiles.json');
 const SETTINGS_FILE = join(DATA_DIR, 'settings.json');
 const KEYS_DIR = join(DATA_DIR, 'keys');
+const SETTINGS_UPDATED_AT_FILE = join(DATA_DIR, 'settings-updated-at.json');
 
 function ensureDirs() {
   mkdirSync(DATA_DIR, { recursive: true });
@@ -239,6 +240,26 @@ function profileHasKey(id: string) {
   return existsSync(keyPath(id));
 }
 
+// ---------------------------------------------------------------------------
+// Settings version tracking
+// ---------------------------------------------------------------------------
+
+function saveSettingsUpdatedAt(ts: string): void {
+  ensureDirs();
+  writeFileSync(SETTINGS_UPDATED_AT_FILE, JSON.stringify({ updatedAt: ts }, null, 2), 'utf8');
+}
+
+export function loadSettingsUpdatedAt(): string | null {
+  ensureDirs();
+  if (!existsSync(SETTINGS_UPDATED_AT_FILE)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(SETTINGS_UPDATED_AT_FILE, 'utf8')) as { updatedAt?: string };
+    return parsed.updatedAt ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function toPublicProfile(profile: StoredProfile): Profile {
   return {
     ...profile,
@@ -328,6 +349,7 @@ export function saveSettingsSnapshot(input: SaveSettingsSnapshotInput): Settings
     ? input.activeProviderConfigId
     : nextProfiles[0]?.id ?? '';
   writeStoredSettings({ activeProviderConfigId });
+  saveSettingsUpdatedAt(new Date().toISOString());
 
   return {
     activeProviderConfigId,
@@ -336,16 +358,22 @@ export function saveSettingsSnapshot(input: SaveSettingsSnapshotInput): Settings
 }
 
 /** Load the full provider-settings snapshot. Returns null when nothing is stored yet. */
-export function loadSettingsSnapshot(): SettingsSnapshot | null {
+export function loadSettingsSnapshot(): { snapshot: SettingsSnapshot | null; updatedAt: string | null } {
   const providerConfigs = listProfiles();
   const storedSettings = readStoredSettings();
-  if (providerConfigs.length === 0 && !storedSettings?.activeProviderConfigId) return null;
-  return {
-    activeProviderConfigId: providerConfigs.some((profile) => profile.id === storedSettings?.activeProviderConfigId)
-      ? storedSettings?.activeProviderConfigId ?? providerConfigs[0]?.id ?? ''
-      : providerConfigs[0]?.id ?? '',
-    providerConfigs,
-  };
+  const updatedAt = loadSettingsUpdatedAt();
+
+  let snapshot: SettingsSnapshot | null = null;
+  if (providerConfigs.length > 0 || storedSettings?.activeProviderConfigId) {
+    snapshot = {
+      activeProviderConfigId: providerConfigs.some((profile) => profile.id === storedSettings?.activeProviderConfigId)
+        ? storedSettings?.activeProviderConfigId ?? providerConfigs[0]?.id ?? ''
+        : providerConfigs[0]?.id ?? '',
+      providerConfigs,
+    };
+  }
+
+  return { snapshot, updatedAt };
 }
 
 /** Delete a profile and its stored key. */

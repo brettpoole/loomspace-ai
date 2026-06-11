@@ -13,6 +13,7 @@ import type { GenerationParams, ThreadModelSettings } from './profiles.js';
 const DATA_DIR = process.env.DATA_DIR ?? join(process.cwd(), 'data');
 const WS_DIR = join(DATA_DIR, 'workspaces');
 const WORKSPACE_STORE_FILE = join(DATA_DIR, 'workspace-store.json');
+const WORKSPACE_STORE_UPDATED_AT_FILE = join(DATA_DIR, 'workspace-store-updated-at.json');
 
 function ensureDir() {
   mkdirSync(DATA_DIR, { recursive: true });
@@ -51,38 +52,62 @@ export function listWorkspaceIds(): string[] {
 }
 
 /** Load the full workspace collection. Falls back to the legacy file-per-workspace layout. */
-export function loadWorkspaceStore(): unknown | null {
+export function loadWorkspaceStore(): { store: unknown | null; updatedAt: string | null } {
   ensureDir();
+  let store: unknown | null = null;
+
   if (existsSync(WORKSPACE_STORE_FILE)) {
     try {
-      return JSON.parse(readFileSync(WORKSPACE_STORE_FILE, 'utf8'));
+      store = JSON.parse(readFileSync(WORKSPACE_STORE_FILE, 'utf8'));
     } catch {
-      return null;
+      // leave store as null
     }
   }
 
-  const workspaceIds = listWorkspaceIds();
-  if (workspaceIds.length === 0) return null;
+  if (store === null) {
+    const workspaceIds = listWorkspaceIds();
+    if (workspaceIds.length === 0) return { store: null, updatedAt: loadWorkspaceStoreUpdatedAt() };
 
-  const workspaces: Array<{ id: string; state: unknown }> = [];
-  for (const id of workspaceIds) {
-    const state = loadWorkspace(id);
-    if (state === null) continue;
-    workspaces.push({ id, state });
+    const workspaces: Array<{ id: string; state: unknown }> = [];
+    for (const id of workspaceIds) {
+      const state = loadWorkspace(id);
+      if (state === null) continue;
+      workspaces.push({ id, state });
+    }
+
+    const firstWorkspace = workspaces[0];
+    if (firstWorkspace) {
+      store = {
+        activeWorkspaceId: firstWorkspace.id,
+        workspaces,
+      };
+    }
   }
 
-  const firstWorkspace = workspaces[0];
-  if (!firstWorkspace) return null;
-  return {
-    activeWorkspaceId: firstWorkspace.id,
-    workspaces,
-  };
+  return { store, updatedAt: loadWorkspaceStoreUpdatedAt() };
 }
 
 /** Persist the full workspace collection. */
 export function saveWorkspaceStore(payload: unknown): void {
   ensureDir();
   writeFileSync(WORKSPACE_STORE_FILE, JSON.stringify(payload, null, 2), 'utf8');
+  saveWorkspaceStoreUpdatedAt(new Date().toISOString());
+}
+
+export function saveWorkspaceStoreUpdatedAt(ts: string): void {
+  ensureDir();
+  writeFileSync(WORKSPACE_STORE_UPDATED_AT_FILE, JSON.stringify({ updatedAt: ts }, null, 2), 'utf8');
+}
+
+export function loadWorkspaceStoreUpdatedAt(): string | null {
+  ensureDir();
+  if (!existsSync(WORKSPACE_STORE_UPDATED_AT_FILE)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(WORKSPACE_STORE_UPDATED_AT_FILE, 'utf8')) as { updatedAt?: string };
+    return parsed.updatedAt ?? null;
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------

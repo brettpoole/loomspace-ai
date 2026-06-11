@@ -95,6 +95,7 @@ class SettingsSnapshot(CamelModel):
 class SaveSettingsRequest(CamelModel):
     active_provider_config_id: str
     provider_configs: list[SettingsProfile]
+    last_sync_at: str | None = None  # ISO 8601 timestamp for conflict detection
 
 
 # ---------------------------------------------------------------------------
