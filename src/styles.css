@@ -1418,6 +1418,16 @@ button.icon-btn {
   animation-duration: 1.4s;
 }
 
+.chat-node.error {
+  border-color: rgba(255, 116, 116, 0.52);
+  box-shadow: 0 0 0 1px rgba(255, 116, 116, 0.08), 0 18px 50px rgba(0, 0, 0, 0.35);
+}
+
+.chat-node.error::after {
+  opacity: 0.7;
+  background: radial-gradient(circle, rgba(255, 116, 116, 0.28), transparent 68%);
+}
+
 @keyframes nodeSendingBorder {
   0%, 100% {
     border-color: rgba(126, 168, 255, 0.3);
@@ -2532,6 +2542,58 @@ button.btn-danger:disabled {
   overflow: hidden;
 }
 
+.chat-dock-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.chat-dock-tab {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  max-width: 190px;
+}
+
+.chat-dock-tab-main {
+  min-width: 0;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-dock-tab.active .chat-dock-tab-main {
+  border-color: rgba(124, 247, 194, 0.45);
+  background: rgba(124, 247, 194, 0.08);
+  color: #d4f7e7;
+}
+
+.chat-dock-tab-label {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-dock-tab-close {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 15px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
 .mini-chat-header {
   display: flex;
   justify-content: space-between;
@@ -3020,6 +3082,26 @@ button.btn-danger:disabled {
 :root[data-theme='light'] .bottom-dock,
 :root[data-theme='light'] .chat-dock {
   background: rgba(248, 251, 255, 0.82);
+}
+
+:root[data-theme='light'] .chat-dock-tabs {
+  border-bottom-color: rgba(24, 37, 63, 0.1);
+}
+
+:root[data-theme='light'] .chat-dock-tab-main {
+  background: rgba(255, 255, 255, 0.7);
+  border-color: rgba(24, 37, 63, 0.12);
+  color: #2a3852;
+}
+
+:root[data-theme='light'] .chat-dock-tab.active .chat-dock-tab-main {
+  border-color: rgba(20, 154, 111, 0.32);
+  background: rgba(20, 154, 111, 0.12);
+  color: #0f7a52;
+}
+
+:root[data-theme='light'] .chat-dock-tab-close {
+  color: #60708d;
 }
 
 :root[data-theme='light'] .pill,
