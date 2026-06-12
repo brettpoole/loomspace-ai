@@ -25,9 +25,9 @@
     "semantic_hash": "e26b257965ec10619d94f399739fe0d5"
   },
   "/home/user/Development/loomspace-ai/backend/app/main.py": {
-    "mtime": 1781209804.7638066,
-    "ast_hash": "dac3dd10ff734cd136b70157e631bc58",
-    "semantic_hash": "dac3dd10ff734cd136b70157e631bc58"
+    "mtime": 1781239668.4411623,
+    "ast_hash": "6a05949ada8995173d035b2c7442d614",
+    "semantic_hash": "6a05949ada8995173d035b2c7442d614"
   },
   "/home/user/Development/loomspace-ai/backend/app/models.py": {
     "mtime": 1781203472.5828009,
@@ -44,25 +44,20 @@
     "ast_hash": "d41d8cd98f00b204e9800998ecf8427e",
     "semantic_hash": "d41d8cd98f00b204e9800998ecf8427e"
   },
-  "/home/user/Development/loomspace-ai/backend/app/routers/auth.py": {
-    "mtime": 1781203472.5828009,
-    "ast_hash": "0bfdf65b2d23ff09409549d7a4bf5a26",
-    "semantic_hash": "0bfdf65b2d23ff09409549d7a4bf5a26"
-  },
   "/home/user/Development/loomspace-ai/backend/app/routers/profiles.py": {
-    "mtime": 1781213514.2624202,
-    "ast_hash": "c4cb1a56b174c718ac3ded77fd9cea0c",
-    "semantic_hash": "c4cb1a56b174c718ac3ded77fd9cea0c"
+    "mtime": 1781239671.9811745,
+    "ast_hash": "2b20d20c747757116e060ba3783d6034",
+    "semantic_hash": "2b20d20c747757116e060ba3783d6034"
   },
   "/home/user/Development/loomspace-ai/backend/app/routers/proxy.py": {
-    "mtime": 1781209804.7638066,
-    "ast_hash": "13e9267f738fe95638e5b61f63ede725",
-    "semantic_hash": "13e9267f738fe95638e5b61f63ede725"
+    "mtime": 1781239673.4391792,
+    "ast_hash": "29aaa4310c9fc57d829ba0a1f928eaa3",
+    "semantic_hash": "29aaa4310c9fc57d829ba0a1f928eaa3"
   },
   "/home/user/Development/loomspace-ai/backend/app/routers/workspace.py": {
-    "mtime": 1781213414.3094354,
-    "ast_hash": "b35adf1c3337b72b85aed63c2fd6c4b1",
-    "semantic_hash": "b35adf1c3337b72b85aed63c2fd6c4b1"
+    "mtime": 1781239672.9671776,
+    "ast_hash": "5c60dcd153f0796c4598bbbefbe6f66a",
+    "semantic_hash": "5c60dcd153f0796c4598bbbefbe6f66a"
   },
   "/home/user/Development/loomspace-ai/backend/app/schemas.py": {
     "mtime": 1781213524.2654188,
@@ -74,65 +69,10 @@
     "ast_hash": "3616cc298729b9d0e3726f1eb42b32ff",
     "semantic_hash": "3616cc298729b9d0e3726f1eb42b32ff"
   },
-  "/home/user/Development/loomspace-ai/backend/scripts/sync_storage.py": {
-    "mtime": 1781203472.583801,
-    "ast_hash": "ed80105a1ee637f9016ee32b256aeca4",
-    "semantic_hash": "ed80105a1ee637f9016ee32b256aeca4"
-  },
   "/home/user/Development/loomspace-ai/package.json": {
     "mtime": 1779327712.1343887,
     "ast_hash": "1255f57fee570e68451e780e0bc07b3f",
     "semantic_hash": "1255f57fee570e68451e780e0bc07b3f"
-  },
-  "/home/user/Development/loomspace-ai/server/package.json": {
-    "mtime": 1781204526.5870137,
-    "ast_hash": "86e4b6ea42736ed5522d587d0588e0c2",
-    "semantic_hash": "86e4b6ea42736ed5522d587d0588e0c2"
-  },
-  "/home/user/Development/loomspace-ai/server/src/index.ts": {
-    "mtime": 1781237466.667255,
-    "ast_hash": "4ea0d4189a1488068a8b66b1dfe7771e",
-    "semantic_hash": "4ea0d4189a1488068a8b66b1dfe7771e"
-  },
-  "/home/user/Development/loomspace-ai/server/src/profiles.ts": {
-    "mtime": 1781212596.8559537,
-    "ast_hash": "8e97803f4b6dbe590e29df7b4d03e51d",
-    "semantic_hash": "8e97803f4b6dbe590e29df7b4d03e51d"
-  },
-  "/home/user/Development/loomspace-ai/server/src/proxy.ts": {
-    "mtime": 1781209804.7658064,
-    "ast_hash": "157c1fbc558b643e387e7650fe150861",
-    "semantic_hash": "157c1fbc558b643e387e7650fe150861"
-  },
-  "/home/user/Development/loomspace-ai/server/src/workspace.ts": {
-    "mtime": 1781211492.9278564,
-    "ast_hash": "1bd8fff8498be1fa99fe33fae45cc661",
-    "semantic_hash": "1bd8fff8498be1fa99fe33fae45cc661"
-  },
-  "/home/user/Development/loomspace-ai/server/tests/chat-thread-discrete-models.test.ts": {
-    "mtime": 1781220599.0187268,
-    "ast_hash": "44ec0c69465c86b77388be5621e9457b",
-    "semantic_hash": "44ec0c69465c86b77388be5621e9457b"
-  },
-  "/home/user/Development/loomspace-ai/server/tests/thread-model-settings.test.ts": {
-    "mtime": 1781212636.006901,
-    "ast_hash": "d22bc118bab9963e2d2f5e1a060477c4",
-    "semantic_hash": "d22bc118bab9963e2d2f5e1a060477c4"
-  },
-  "/home/user/Development/loomspace-ai/server/tsconfig.json": {
-    "mtime": 1781205486.4279258,
-    "ast_hash": "c464d7976a3764295084a7d3ca6aeb05",
-    "semantic_hash": "c464d7976a3764295084a7d3ca6aeb05"
-  },
-  "/home/user/Development/loomspace-ai/server/vitest.config.ts": {
-    "mtime": 1781219388.9750068,
-    "ast_hash": "0e844001cb88925bb91e783ce697d206",
-    "semantic_hash": "0e844001cb88925bb91e783ce697d206"
-  },
-  "/home/user/Development/loomspace-ai/server/vitest.setup.ts": {
-    "mtime": 1781219377.3279738,
-    "ast_hash": "03c50b69c0d0618e16a2e1c50d38003c",
-    "semantic_hash": "03c50b69c0d0618e16a2e1c50d38003c"
   },
   "/home/user/Development/loomspace-ai/src/App.tsx": {
     "mtime": 1781237419.7382386,
@@ -140,9 +80,9 @@
     "semantic_hash": "cf313758f41bb7f8e942ea733423c5be"
   },
   "/home/user/Development/loomspace-ai/src/lib/api.ts": {
-    "mtime": 1781218524.6425676,
-    "ast_hash": "550d7a2b4b622c41ee01b58f86141f65",
-    "semantic_hash": "550d7a2b4b622c41ee01b58f86141f65"
+    "mtime": 1781239721.6463404,
+    "ast_hash": "b3c9a84e58efb4e243e0b5c50b6582f5",
+    "semantic_hash": "b3c9a84e58efb4e243e0b5c50b6582f5"
   },
   "/home/user/Development/loomspace-ai/src/lib/mediaUtils.ts": {
     "mtime": 1780884575.9377093,
@@ -200,9 +140,9 @@
     "semantic_hash": "8bb8c00418be416a4a7dfff74c4a641d"
   },
   "/home/user/Development/loomspace-ai/README.md": {
-    "mtime": 1781147514.5064373,
-    "ast_hash": "6618db5d0fd9c0ec21abb6c3bfa0a255",
-    "semantic_hash": "6618db5d0fd9c0ec21abb6c3bfa0a255"
+    "mtime": 1781239714.2423158,
+    "ast_hash": "3cf7b760db5abd635dfb6acb8b302603",
+    "semantic_hash": "3cf7b760db5abd635dfb6acb8b302603"
   },
   "/home/user/Development/loomspace-ai/app.yaml": {
     "mtime": 1780884239.7510245,
@@ -228,5 +168,10 @@
     "mtime": 1781206936.5888324,
     "ast_hash": "da51c53ad65fccb74d9ccbe4df2eec3e",
     "semantic_hash": "da51c53ad65fccb74d9ccbe4df2eec3e"
+  },
+  "/home/user/Development/loomspace-ai/backend/app/routers/deps.py": {
+    "mtime": 1781239661.86714,
+    "ast_hash": "94cb55551d104b14813ce328cc07436c",
+    "semantic_hash": "94cb55551d104b14813ce328cc07436c"
   }
 }
