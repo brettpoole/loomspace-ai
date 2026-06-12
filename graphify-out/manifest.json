@@ -75,9 +75,9 @@
     "semantic_hash": "1255f57fee570e68451e780e0bc07b3f"
   },
   "/home/user/Development/loomspace-ai/src/App.tsx": {
-    "mtime": 1781237419.7382386,
-    "ast_hash": "cf313758f41bb7f8e942ea733423c5be",
-    "semantic_hash": "cf313758f41bb7f8e942ea733423c5be"
+    "mtime": 1781276046.9140966,
+    "ast_hash": "23325cf48cb39848b6464fd3d4e60fbd",
+    "semantic_hash": "23325cf48cb39848b6464fd3d4e60fbd"
   },
   "/home/user/Development/loomspace-ai/src/lib/api.ts": {
     "mtime": 1781239721.6463404,
@@ -173,5 +173,25 @@
     "mtime": 1781239661.86714,
     "ast_hash": "94cb55551d104b14813ce328cc07436c",
     "semantic_hash": "94cb55551d104b14813ce328cc07436c"
+  },
+  "/home/user/Development/loomspace-ai/src/lib/frontendPersistenceService.ts": {
+    "mtime": 1781276018.7839935,
+    "ast_hash": "d089ed451b5f10f6a010d0beed364cfb",
+    "semantic_hash": "d089ed451b5f10f6a010d0beed364cfb"
+  },
+  "/home/user/Development/loomspace-ai/src/lib/providerPresentation.ts": {
+    "mtime": 1781275783.8971019,
+    "ast_hash": "730cc1e35a2ee2512a49ec3f84d72d32",
+    "semantic_hash": "730cc1e35a2ee2512a49ec3f84d72d32"
+  },
+  "/home/user/Development/loomspace-ai/src/lib/settingsSnapshotMapper.ts": {
+    "mtime": 1781275783.708101,
+    "ast_hash": "e1e75a4e727a7aa441064af67525a455",
+    "semantic_hash": "e1e75a4e727a7aa441064af67525a455"
+  },
+  "/home/user/Development/loomspace-ai/src/lib/uiPreferences.ts": {
+    "mtime": 1781275783.6171007,
+    "ast_hash": "ec2ebefa041e692e2aa9bd7f51dcba94",
+    "semantic_hash": "ec2ebefa041e692e2aa9bd7f51dcba94"
   }
 }

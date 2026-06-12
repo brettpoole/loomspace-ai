@@ -24,7 +24,6 @@ import {
   saveModelCache,
   saveSettings,
   saveWorkspaceStore,
-  sanitizeGenerationParams,
   summarize,
   summarizeThreadUsage,
   threadWithActiveNode,
@@ -38,17 +37,9 @@ import {
   apiClearKey,
   apiFetchModels,
   apiGetProfile,
-  apiLoadSettings,
-  apiLoadWorkspaceStore,
-  apiSaveSettings,
   apiSaveSettingsWithSync,
-  apiSaveWorkspaceStore,
-  apiSaveWorkspaceStoreWithSync,
   apiStoreKey,
-  isServerConflictError,
-  type SaveServerSettingsPayload,
   type ServerConflictError,
-  type ServerSettingsPayload,
 } from './lib/api';
 import {
   createTextMessage,
@@ -78,6 +69,11 @@ import type {
   ThreadNode,
   TokenUsage,
 } from './lib/types';
+import { FrontendPersistenceService } from './lib/frontendPersistenceService';
+import { providerPresentationPolicy } from './lib/providerPresentation';
+import { SettingsSnapshotMapper } from './lib/settingsSnapshotMapper';
+import { EMPTY_COMPOSER_STATE, type ComposerState, ThreadChat } from './lib/threadChat';
+import { browserUiPreferences, type ThemeMode } from './lib/uiPreferences';
 
 const LANE_WIDTH = 320;
 const LANE_GAP = 56;
@@ -95,99 +91,10 @@ const CANVAS_MIN_WIDTH = 4000;
 const CANVAS_MIN_HEIGHT = 2400;
 const WORKSPACE_SAVE_DEBOUNCE_MS = 400;
 
-const PANEL_SIZE_KEY = 'loomspace.panels.v1';
 const MIN_PANEL_W = 220;
 const MIN_CANVAS_W = 320;
 const MIN_BOTTOM_H = 120;
 const MAX_BOTTOM_H = 600;
-
-const THEME_MODE_KEY = 'loomspace.theme.v1';
-type ThemeMode = 'auto' | 'light' | 'dark';
-
-function loadThemeMode(): ThemeMode {
-  const stored = localStorage.getItem(THEME_MODE_KEY);
-  return stored === 'light' || stored === 'dark' || stored === 'auto' ? stored : 'auto';
-}
-
-function resolveThemeMode(mode: ThemeMode): 'light' | 'dark' {
-  if (mode !== 'auto') return mode;
-  return window.matchMedia?.('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
-}
-
-
-const TTS_SETTINGS_KEY = 'loomspace.tts.v1';
-const ONBOARDING_SESSION_KEY = 'loomspace.onboarding.dismissed.v1';
-
-function loadTtsSettings(): { voiceURI: string; rate: number } {
-  try {
-    const raw = localStorage.getItem(TTS_SETTINGS_KEY);
-    if (!raw) return { voiceURI: '', rate: 1 };
-    const parsed = JSON.parse(raw) as Partial<{ voiceURI: string; rate: number }>;
-    return {
-      voiceURI: typeof parsed.voiceURI === 'string' ? parsed.voiceURI : '',
-      rate: clamp(Number(parsed.rate) || 1, 0.75, 1.35),
-    };
-  } catch {
-    return { voiceURI: '', rate: 1 };
-  }
-}
-
-function cleanTextForSpeech(text: string) {
-  return text
-    .replace(/```(\w+)?\n[\s\S]*?```/g, (_, lang) => ` Code block${lang ? ` in ${lang}` : ''}. `)
-    .replace(/`([^`]+)`/g, '$1')
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' image ')
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
-    .replace(/^\s{0,3}#{1,6}\s+/gm, '')
-    .replace(/^\s{0,3}>\s?/gm, '')
-    .replace(/^\s*[-*+]\s+/gm, '')
-    .replace(/^\s*\d+\.\s+/gm, '')
-    .replace(/[*_~]{1,3}/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function splitTextForSpeech(text: string, maxLength = 220) {
-  const sentences = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g) ?? [text];
-  const chunks: string[] = [];
-  let current = '';
-  for (const sentence of sentences) {
-    const next = `${current}${current ? ' ' : ''}${sentence.trim()}`.trim();
-    if (next.length <= maxLength) {
-      current = next;
-      continue;
-    }
-    if (current) chunks.push(current);
-    if (sentence.length <= maxLength) {
-      current = sentence.trim();
-      continue;
-    }
-    for (let i = 0; i < sentence.length; i += maxLength) chunks.push(sentence.slice(i, i + maxLength).trim());
-    current = '';
-  }
-  if (current) chunks.push(current);
-  return chunks;
-}
-
-function maxSideWidth(reserved = 0) {
-  const viewport = typeof window === 'undefined' ? 1280 : window.innerWidth;
-  return Math.max(MIN_PANEL_W, Math.round(viewport - MIN_CANVAS_W - reserved));
-}
-function loadPanelSizes(): { left: number; right: number; bottom: number } {
-  const fallback = { left: 300, right: 480, bottom: 260 };
-  try {
-    const raw = localStorage.getItem(PANEL_SIZE_KEY);
-    if (!raw) return fallback;
-    const parsed = JSON.parse(raw) as Partial<{ left: number; right: number; bottom: number }>;
-    return {
-      left: clamp(Number(parsed.left) || fallback.left, MIN_PANEL_W, maxSideWidth()),
-      right: clamp(Number(parsed.right) || fallback.right, MIN_PANEL_W, maxSideWidth()),
-      bottom: clamp(Number(parsed.bottom) || fallback.bottom, MIN_BOTTOM_H, MAX_BOTTOM_H),
-    };
-  } catch {
-    return fallback;
-  }
-}
 
 interface ThreadDraft {
   title: string;
@@ -200,13 +107,6 @@ const DEFAULT_THREAD_DRAFT: ThreadDraft = {
 };
 
 type ModelCache = Record<string, string[]>;
-
-interface ComposerState {
-  draft: string;
-  attachments: MediaAttachment[];
-}
-
-const EMPTY_COMPOSER_STATE: ComposerState = { draft: '', attachments: [] };
 
 function composerStateKey(threadId: string, nodeId?: string | null): string {
   return `${threadId}::${nodeId ?? 'root'}`;
@@ -222,6 +122,15 @@ function sameProviderModelSource(left: AIProviderConfig, right: AIProviderConfig
   const rightBaseUrl = right.baseUrl?.trim().toLowerCase() ?? '';
   return left.kind === right.kind && leftBaseUrl === rightBaseUrl;
 }
+
+const settingsSnapshotMapper = new SettingsSnapshotMapper();
+const persistenceService = new FrontendPersistenceService(settingsSnapshotMapper);
+const panelBounds = {
+  minPanelWidth: MIN_PANEL_W,
+  minCanvasWidth: MIN_CANVAS_W,
+  minBottomHeight: MIN_BOTTOM_H,
+  maxBottomHeight: MAX_BOTTOM_H,
+};
 
 export default function App() {
   const [workspaceStore, setWorkspaceStore] = useState<PersistedWorkspaceStore>(() => loadWorkspaceStore());
@@ -255,7 +164,6 @@ export default function App() {
   const [providerError, setProviderError] = useState<string | null>(null);
   const [settingsNotice, setSettingsNotice] = useState<string | null>(null);
   const [syncConflict, setSyncConflict] = useState<ServerConflictError | null>(null);
-  const pendingWriteRef = useRef<{ settings?: SaveServerSettingsPayload; workspace?: PersistedWorkspaceStore } | null>(null);
   const [persistenceReady, setPersistenceReady] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
   const [chatPanelState, setChatPanelState] = useState<{ isOpen: boolean; openThreadIds: string[]; activeThreadId: string | null }>(() => ({
@@ -282,10 +190,10 @@ export default function App() {
   const [providerMenuOpen, setProviderMenuOpen] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
-  const [panelSizes, setPanelSizes] = useState(loadPanelSizes);
-  const [themeMode, setThemeMode] = useState<ThemeMode>(loadThemeMode);
+  const [panelSizes, setPanelSizes] = useState(() => browserUiPreferences.loadPanelSizes(panelBounds));
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => browserUiPreferences.loadThemeMode());
   const [ttsVoices, setTtsVoices] = useState<SpeechSynthesisVoice[]>([]);
-  const [ttsSettings, setTtsSettings] = useState(loadTtsSettings);
+  const [ttsSettings, setTtsSettings] = useState(() => browserUiPreferences.loadTtsSettings());
   const [panelResizing, setPanelResizing] = useState(false);
   const ttsQueueRef = useRef<{ messageId: string; chunks: string[]; index: number; keepAlive: number | null } | null>(null);
   const panelDragRef = useRef<{ kind: 'left' | 'right' | 'bottom'; origin: number; size: number } | null>(null);
@@ -303,11 +211,7 @@ export default function App() {
   const [workspaceManagerOpen, setWorkspaceManagerOpen] = useState(false);
   const [workspaceDraftTitle, setWorkspaceDraftTitle] = useState('');
   const [onboardingState, setOnboardingState] = useState<'active' | 'providerSkipped' | 'dismissed'>(() => {
-    try {
-      if (sessionStorage.getItem(ONBOARDING_SESSION_KEY) === '1') return 'dismissed';
-    } catch {
-      // Ignore storage failures; onboarding can still run for this page load.
-    }
+    if (browserUiPreferences.isOnboardingDismissed()) return 'dismissed';
     return state.threads.length === 0 && settings.providerConfigs.length === 0 ? 'active' : 'dismissed';
   });
   const [settingsEditorConfigId, setSettingsEditorConfigId] = useState<string | null>(null);
@@ -330,7 +234,6 @@ export default function App() {
   const workspaceStoreRef = useRef(workspaceStore);
   const initialLocalWorkspaceStoreRef = useRef(workspaceStore);
   const initialLocalSettingsRef = useRef(settings);
-  const persistenceReadyRef = useRef(false);
   const stateRef = useRef(state);
 
   const previousWorkspaceIdRef = useRef(state.workspaceId);
@@ -346,7 +249,7 @@ export default function App() {
 
   useEffect(() => {
     const applyTheme = () => {
-      const resolved = resolveThemeMode(themeMode);
+      const resolved = browserUiPreferences.resolveThemeMode(themeMode);
       document.documentElement.dataset.theme = resolved;
       document.documentElement.style.colorScheme = resolved;
       let meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
@@ -357,7 +260,7 @@ export default function App() {
       }
       meta.content = resolved === 'light' ? '#f5f7fb' : '#070b17';
     };
-    localStorage.setItem(THEME_MODE_KEY, themeMode);
+    browserUiPreferences.saveThemeMode(themeMode);
     applyTheme();
     if (themeMode !== 'auto') return;
     const media = window.matchMedia?.('(prefers-color-scheme: light)');
@@ -372,41 +275,11 @@ export default function App() {
   async function handleSyncConflict(conflict: ServerConflictError) {
     setSyncConflict(conflict);
 
-    // Store pending write for retry after merge
-    const pending: typeof pendingWriteRef.current = { ...pendingWriteRef.current };
-    pendingWriteRef.current = null;
-
     try {
-      // Refresh everything from server
-      const remoteSettings = await apiLoadSettings();
-      const remoteWorkspaceStore = await apiLoadWorkspaceStore();
-
-      if (remoteSettings) {
-        setSettings(hydrateSettingsFromBackend(remoteSettings));
-      }
-      if (remoteWorkspaceStore) {
-        setWorkspaceStore(remoteWorkspaceStore);
-      }
-
+      const resolved = await persistenceService.resolveConflict();
+      if (resolved.settings) setSettings(resolved.settings);
+      if (resolved.workspaceStore) setWorkspaceStore(resolved.workspaceStore);
       setSyncConflict(null);
-
-      // Retry any pending writes that were queued
-      if (pending) {
-        if (pending.settings) {
-          const settingsResult = await apiSaveSettingsWithSync(pending.settings);
-          if (settingsResult === null) {
-            // Conflict again — re-queue
-            pendingWriteRef.current = { ...pending, settings: pending.settings };
-          }
-        }
-        if (pending.workspace) {
-          const ok = await apiSaveWorkspaceStoreWithSync(pending.workspace);
-          if (!ok) {
-            // Conflict again — re-queue
-            pendingWriteRef.current = { ...pending, workspace: pending.workspace };
-          }
-        }
-      }
     } catch {
       // If refresh also fails, keep the conflict banner visible
     }
@@ -420,41 +293,13 @@ export default function App() {
       const localSettings = initialLocalSettingsRef.current;
 
       try {
-        const [remoteWorkspaceStore, remoteSettings] = await Promise.all([
-          apiLoadWorkspaceStore(),
-          apiLoadSettings(),
-        ]);
+        const result = await persistenceService.bootstrap(localWorkspaceStore, localSettings);
         if (cancelled) return;
-
-        const nextWorkspaceStore = remoteWorkspaceStore ?? localWorkspaceStore;
-        const nextSettings = remoteSettings ? hydrateSettingsFromBackend(remoteSettings) : localSettings;
-        workspaceStoreRef.current = nextWorkspaceStore;
-        settingsRef.current = nextSettings;
-        setWorkspaceStore(nextWorkspaceStore);
-        setSettings(nextSettings);
-
-        if (!remoteWorkspaceStore) {
-          const wsOk = await apiSaveWorkspaceStoreWithSync(localWorkspaceStore);
-          if (!wsOk) {
-            // Conflict during initial sync — handled via conflict UI
-          }
-        }
-
-        if (!remoteSettings) {
-          const settingsResult = await apiSaveSettingsWithSync(serializeSettingsForBackend(localSettings));
-          if (settingsResult === null) {
-            // Conflict during initial sync — handled via conflict UI
-          }
-          const localPlaintextKeys = localSettings.providerConfigs.filter((config) => config.apiKey.trim());
-          await Promise.all(localPlaintextKeys.map((config) => apiStoreKey(config.id, config.apiKey.trim())));
-          if (localSettings.providerConfigs.some((config) => config.hasEncryptedApiKey && !config.apiKey.trim())) {
-            setSettingsNotice('Legacy browser-only keys need one manual re-save to move them to the backend.');
-          }
-        }
-      } catch {
-        if (!cancelled) {
-          setSettingsNotice('Backend unavailable — using the browser cache until the server is reachable again.');
-        }
+        workspaceStoreRef.current = result.workspaceStore;
+        settingsRef.current = result.settings;
+        setWorkspaceStore(result.workspaceStore);
+        setSettings(result.settings);
+        setSettingsNotice(result.notice);
       } finally {
         if (!cancelled) setPersistenceReady(true);
       }
@@ -465,9 +310,6 @@ export default function App() {
       cancelled = true;
     };
   }, []);
-  useEffect(() => {
-    persistenceReadyRef.current = persistenceReady;
-  }, [persistenceReady]);
   useEffect(() => {
     workspaceStoreRef.current = workspaceStore;
     const handle = window.setTimeout(() => saveWorkspaceStore(workspaceStore), WORKSPACE_SAVE_DEBOUNCE_MS);
@@ -493,33 +335,16 @@ export default function App() {
     if (!persistenceReady) return;
     const handle = window.setTimeout(async () => {
       const store = workspaceStoreRef.current;
-      const ok = await apiSaveWorkspaceStoreWithSync(store);
-      if (!ok) {
-        // Conflict detected — queue for retry and show indicator
-        pendingWriteRef.current = { ...pendingWriteRef.current, workspace: store };
-        const err = new Error('Sync conflict detected — another tab or device may have updated the workspace') as ServerConflictError;
-        err.status = 409;
-        err.code = 'CONFLICT';
-        err.serverUpdatedAt = new Date().toISOString();
-        handleSyncConflict(err);
-      }
+      const conflict = await persistenceService.saveWorkspaceStore(store);
+      if (conflict) void handleSyncConflict(conflict);
     }, WORKSPACE_SAVE_DEBOUNCE_MS);
     return () => window.clearTimeout(handle);
   }, [workspaceStore, persistenceReady]);
   useEffect(() => {
     if (!persistenceReady) return;
     const handle = window.setTimeout(async () => {
-      const payload = serializeSettingsForBackend(settingsRef.current);
-      const result = await apiSaveSettingsWithSync(payload);
-      if (result === null) {
-        // Conflict detected — queue for retry and show indicator
-        pendingWriteRef.current = { ...pendingWriteRef.current, settings: payload };
-        const err = new Error('Sync conflict detected — another tab or device may have updated settings') as ServerConflictError;
-        err.status = 409;
-        err.code = 'CONFLICT';
-        err.serverUpdatedAt = new Date().toISOString();
-        handleSyncConflict(err);
-      }
+      const conflict = await persistenceService.saveSettings(settingsRef.current);
+      if (conflict) void handleSyncConflict(conflict);
     }, WORKSPACE_SAVE_DEBOUNCE_MS);
     return () => window.clearTimeout(handle);
   }, [settings, persistenceReady]);
@@ -621,7 +446,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(TTS_SETTINGS_KEY, JSON.stringify(ttsSettings));
+    browserUiPreferences.saveTtsSettings(ttsSettings);
   }, [ttsSettings]);
 
   const workspaces = workspaceStore.workspaces;
@@ -635,6 +460,8 @@ export default function App() {
   const activeChatThread = activeChatThreadId
     ? state.threads.find((thread) => thread.id === activeChatThreadId) ?? null
     : null;
+  const activeThreadChat = threadChatFor(activeThread);
+  const activeChatThreadChat = threadChatFor(activeChatThread);
   const chatScrollThread = focusMode ? activeThread : activeChatThread;
   const activeProviderConfig =
     settings.providerConfigs.find((config) => config.id === settings.activeProviderConfigId) ?? settings.providerConfigs[0] ?? null;
@@ -1243,37 +1070,6 @@ export default function App() {
     setError(null);
   }
 
-  function ensureSendableConfig(verb: 'send' | 'retry'): AIProviderConfig | null {
-    const activeConfig = activeProviderConfig;
-    if (!activeConfig) {
-      if (verb === 'send') {
-        setError('Add an AI profile to start chatting.');
-        openProviderSetup();
-      } else {
-        setError('Pick an AI profile first.');
-      }
-      return null;
-    }
-    if (
-      !activeConfig.apiKey.trim() &&
-      !activeConfig.hasEncryptedApiKey &&
-      activeConfig.kind !== 'openai-compatible-custom'
-    ) {
-      const message = 'Add your API key to this profile first.';
-      setError(message);
-      setProviderError(message);
-      openProviderSetup(activeConfig.id);
-      return null;
-    }
-    if (!activeConfig.model.trim()) {
-      const message = `Select a model for this AI profile before ${verb === 'send' ? 'sending' : 'retrying'}.`;
-      setError(message);
-      setProviderError(message);
-      openProviderSetup(activeConfig.id);
-      return null;
-    }
-    return activeConfig;
-  }
   function isThreadRequestBusy(thread: ThreadLane | null) {
     if (!thread) return false;
     // Only live request locks should disable sending; persisted "pending" nodes are just UI state.
@@ -1305,6 +1101,24 @@ export default function App() {
     const key = composerStateKey(thread.id, nodeId);
     return { key, state: composerStates[key] ?? EMPTY_COMPOSER_STATE };
   }
+
+  function threadChatFor(thread: ThreadLane | null) {
+    const composer = composerSnapshotForThread(thread);
+    return new ThreadChat({
+      thread,
+      settings,
+      activeProviderConfig,
+      composerKey: composer.key,
+      composerState: composer.state,
+      threadError: thread ? chatErrors[thread.id] ?? null : null,
+      threadBusy: isThreadRequestBusy(thread),
+      updateComposerState,
+      setThreadChatError,
+      setProviderError,
+      setError,
+      openProviderSetup,
+    });
+  }
   // Track thread-specific failures separately so one bad request doesn't mask another.
 
   function setThreadChatError(threadId: string, message: string) {
@@ -1321,27 +1135,23 @@ export default function App() {
   }
 
 
-  async function sendMessage(targetThread: ThreadLane | null, closeAfter = false) {
-    if (!targetThread) {
+  async function sendMessage(chat: ThreadChat | null, closeAfter = false) {
+    const targetThread = chat?.thread ?? null;
+    if (!targetThread || !chat) {
       setError('Select or create a thread before sending.');
       return;
     }
-    if (isThreadRequestBusy(targetThread)) return;
+    if (chat.isBusy) return;
 
-    const activeConfig = ensureSendableConfig('send');
+    const activeConfig = chat.ensureSendableConfig('send');
     if (!activeConfig) return;
 
-    const threadProviderConfigId = targetThread.modelSettings?.providerConfigId;
-    const effectiveBaseConfig = threadProviderConfigId
-      ? (settings.providerConfigs.find(c => c.id === threadProviderConfigId) ?? activeConfig)
-      : activeConfig;
-    const threadEffectiveModel = targetThread.modelSettings?.model || effectiveBaseConfig.model;
-
-    const composer = composerSnapshotForThread(targetThread);
-    const composerStateForSend = composer.state;
+    const effectiveBaseConfig = chat.providerConfig ?? activeConfig;
+    const threadEffectiveModel = chat.model || effectiveBaseConfig.model;
+    const composerStateForSend = chat.composer;
     const userText = composerStateForSend.draft.trim();
     if (!userText && composerStateForSend.attachments.length === 0) {
-      setThreadChatError(targetThread.id, 'Write a message or attach a file before sending.');
+      chat.reportThreadError('Write a message or attach a file before sending.');
       return;
     }
 
@@ -1361,7 +1171,7 @@ export default function App() {
     acquireThreadLock(requestThreadId);
     setError(null);
     clearThreadChatError(requestThreadId);
-    updateComposerState(composer.key, () => EMPTY_COMPOSER_STATE);
+    chat.clearComposer();
     if (closeAfter) closeChatThread(requestThreadId);
 
     setState((current) => ({
@@ -1472,7 +1282,7 @@ export default function App() {
       stopSpeaking();
       return;
     }
-    const spokenText = cleanTextForSpeech(value);
+    const spokenText = browserUiPreferences.cleanTextForSpeech(value);
     if (!spokenText) {
       setError('No text to speak.');
       return;
@@ -1486,7 +1296,7 @@ export default function App() {
       ?? voices.find((candidate) => candidate.default)
       ?? ttsVoices.find((candidate) => candidate.default)
       ?? null;
-    const chunks = splitTextForSpeech(spokenText);
+    const chunks = browserUiPreferences.splitTextForSpeech(spokenText);
     ttsQueueRef.current = {
       messageId,
       chunks,
@@ -1533,15 +1343,13 @@ export default function App() {
 
   async function retryAssistantMessage(messageId: string, targetThread: ThreadLane | null) {
     if (!targetThread) return;
-    if (isThreadRequestBusy(targetThread)) return;
+    const chat = threadChatFor(targetThread);
+    if (chat.isBusy) return;
 
-    const activeConfig = ensureSendableConfig('retry');
+    const activeConfig = chat.ensureSendableConfig('retry');
     if (!activeConfig) return;
 
-    const retryThreadProviderConfigId = targetThread.modelSettings?.providerConfigId;
-    const retryEffectiveBaseConfig = retryThreadProviderConfigId
-      ? (settings.providerConfigs.find(c => c.id === retryThreadProviderConfigId) ?? activeConfig)
-      : activeConfig;
+    const retryEffectiveBaseConfig = chat.providerConfig ?? activeConfig;
 
     const assistantIndex = targetThread.context.findIndex((message) => message.id === messageId && message.role === 'assistant');
     if (assistantIndex !== targetThread.context.length - 1) {
@@ -1997,11 +1805,18 @@ export default function App() {
     setSettingsNotice(null);
     try {
       // Persist the profile row first so the key save endpoint has a stable target.
-      const settingsResult = await apiSaveSettingsWithSync(serializeSettingsForBackend(settingsRef.current));
+      const settingsResult = await apiSaveSettingsWithSync(settingsSnapshotMapper.serialize(settingsRef.current));
       if (settingsResult === null) {
         setSettingsNotice('Settings save conflict — retrying after merge.');
+        await handleSyncConflict({
+          status: 409,
+          code: 'CONFLICT',
+          serverUpdatedAt: new Date().toISOString(),
+          name: 'ConflictError',
+          message: 'Settings save conflict — retrying after merge.',
+        } as ServerConflictError);
         // Retry once more after merge
-        const retryResult = await apiSaveSettingsWithSync(serializeSettingsForBackend(settingsRef.current));
+        const retryResult = await apiSaveSettingsWithSync(settingsSnapshotMapper.serialize(settingsRef.current));
         if (retryResult === null) {
           setProviderError('Could not save settings. Please refresh and try again.');
           return;
@@ -2051,11 +1866,7 @@ export default function App() {
   }
   function dismissOnboarding() {
     setOnboardingState('dismissed');
-    try {
-      sessionStorage.setItem(ONBOARDING_SESSION_KEY, '1');
-    } catch {
-      // Ignore storage failures; dismissal still applies until refresh.
-    }
+    browserUiPreferences.dismissOnboarding();
   }
 
   function openWorkspaceManager() {
@@ -2289,7 +2100,7 @@ export default function App() {
   }
 
   useEffect(() => {
-    try { localStorage.setItem(PANEL_SIZE_KEY, JSON.stringify(panelSizes)); } catch { /* storage may be unavailable */ }
+    browserUiPreferences.savePanelSizes(panelSizes);
   }, [panelSizes]);
 
   function beginPanelResize(kind: 'left' | 'right' | 'bottom', event: PointerEvent<HTMLDivElement>) {
@@ -2304,10 +2115,10 @@ export default function App() {
     const drag = panelDragRef.current;
     if (!drag) return;
     if (drag.kind === 'left') {
-      const max = maxSideWidth(rightPanelOpen && !rightPanelMaximized ? panelSizes.right : 0);
+      const max = browserUiPreferences.maxSideWidth(panelBounds, rightPanelOpen && !rightPanelMaximized ? panelSizes.right : 0);
       setPanelSizes((sizes) => ({ ...sizes, left: clamp(drag.size + (event.clientX - drag.origin), MIN_PANEL_W, max) }));
     } else if (drag.kind === 'right') {
-      const max = maxSideWidth(leftPanelOpen ? panelSizes.left : 0);
+      const max = browserUiPreferences.maxSideWidth(panelBounds, leftPanelOpen ? panelSizes.left : 0);
       setPanelSizes((sizes) => ({ ...sizes, right: clamp(drag.size + (drag.origin - event.clientX), MIN_PANEL_W, max) }));
     } else {
       setPanelSizes((sizes) => ({ ...sizes, bottom: clamp(drag.size + (drag.origin - event.clientY), MIN_BOTTOM_H, MAX_BOTTOM_H) }));
@@ -2628,18 +2439,15 @@ export default function App() {
     );
   };
 
-  const renderComposer = (opts: { thread: ThreadLane | null; fileInputId: string; placeholder: string; onEscape: () => void; autoFocus?: boolean }) => {
-    const composer = composerSnapshotForThread(opts.thread);
-    const threadBusy = isThreadRequestBusy(opts.thread);
-    const chatError = opts.thread ? chatErrors[opts.thread.id] : null;
-    const composerDraft = composer.state.draft;
-    const composerAttachments = composer.state.attachments;
+  const renderComposer = (opts: { chat: ThreadChat; fileInputId: string; placeholder: string; onEscape: () => void; autoFocus?: boolean }) => {
+    const composerDraft = opts.chat.draft;
+    const composerAttachments = opts.chat.attachments;
     return (
     <div className="mini-chat-composer">
       <textarea
         autoFocus={opts.autoFocus}
         value={composerDraft}
-        onChange={(e) => updateComposerState(composer.key, (current) => ({ ...current, draft: e.target.value }))}
+        onChange={(e) => opts.chat.setDraft(e.target.value)}
         placeholder={opts.placeholder}
         rows={3}
         onKeyDown={(e) => {
@@ -2647,7 +2455,7 @@ export default function App() {
           if (e.key !== 'Enter') return;
           if (e.shiftKey) return;
           e.preventDefault();
-          if (e.ctrlKey || e.metaKey) { sendMessage(opts.thread, true); } else { sendMessage(opts.thread); }
+          if (e.ctrlKey || e.metaKey) { sendMessage(opts.chat, true); } else { sendMessage(opts.chat); }
         }}
       />
       {composerAttachments.length > 0 && (
@@ -2659,13 +2467,13 @@ export default function App() {
               ) : (
                 <div className="document-preview">📄 {att.filename}</div>
               )}
-              <button onClick={() => updateComposerState(composer.key, (current) => ({ ...current, attachments: current.attachments.filter((attachment) => attachment.id !== att.id) }))} className="remove-attachment">×</button>
+              <button onClick={() => opts.chat.removeAttachment(att.id)} className="remove-attachment">×</button>
             </div>
           ))}
         </div>
       )}
       {settingsLockState === 'locked' ? <p className="muted">Using the key saved on the backend for this profile.</p> : null}
-      {chatError ? <p className="error">{chatError}</p> : error ? <p className="error">{error}</p> : null}
+      {opts.chat.threadError ? <p className="error">{opts.chat.threadError}</p> : error ? <p className="error">{error}</p> : null}
       <div className="mini-chat-actions">
         <input
           type="file"
@@ -2696,8 +2504,8 @@ export default function App() {
                 errors.push(`Failed to process ${file.name}`);
               }
             }
-            if (errors.length > 0 && opts.thread) setChatErrors((current) => ({ ...current, [opts.thread!.id]: errors.join('\n') }));
-            if (newAttachments.length > 0) updateComposerState(composer.key, (current) => ({ ...current, attachments: [...current.attachments, ...newAttachments] }));
+            if (errors.length > 0) opts.chat.reportThreadError(errors.join('\n'));
+            if (newAttachments.length > 0) opts.chat.appendAttachments(newAttachments);
             e.target.value = '';
           }}
           style={{ display: 'none' }}
@@ -2705,10 +2513,10 @@ export default function App() {
         <label htmlFor={opts.fileInputId} className="file-upload-button mini-chat-attach">📎</label>
         <button
           className="mini-chat-send"
-          onClick={() => sendMessage(opts.thread)}
-          disabled={threadBusy}
+          onClick={() => sendMessage(opts.chat)}
+          disabled={opts.chat.isBusy}
         >
-          {threadBusy ? 'Thinking…' : !activeProviderConfig ? 'Add AI profile' : 'Send'}
+          {opts.chat.isBusy ? 'Thinking…' : !activeProviderConfig ? 'Add AI profile' : 'Send'}
         </button>
       </div>
     </div>
@@ -2793,7 +2601,7 @@ export default function App() {
               {settings.providerConfigs.length > 1 && activeProviderConfig ? (
                 <select
                   className="focus-provider-select"
-                  value={activeThread?.modelSettings?.providerConfigId ?? activeProviderConfig.id}
+                  value={activeThreadChat.providerConfigId ?? activeProviderConfig.id}
                   onChange={(e) => {
                     if (!activeThread) return;
                     const ts = activeThread.modelSettings ?? { providerConfigId: activeProviderConfig.id, model: '' };
@@ -2807,9 +2615,9 @@ export default function App() {
                 </select>
               ) : null}
               {settings.providerConfigs.length > 0 && activeProviderConfig ? (() => {
-                const effectiveConfigId = activeThread?.modelSettings?.providerConfigId ?? activeProviderConfig.id;
-                const effectiveConfig = settings.providerConfigs.find(c => c.id === effectiveConfigId) ?? activeProviderConfig;
-                const effectiveModel = activeThread?.modelSettings?.model || effectiveConfig.model;
+                const effectiveConfigId = activeThreadChat.providerConfigId ?? activeProviderConfig.id;
+                const effectiveConfig = activeThreadChat.providerConfig ?? activeProviderConfig;
+                const effectiveModel = activeThreadChat.model;
                 const focusModels = modelsForConfig(modelCache, effectiveConfig, effectiveModel);
                 return (
                   <select className="focus-model-select" value={effectiveModel} onChange={(e) => {
@@ -2863,7 +2671,7 @@ export default function App() {
               </div>
               <div className="focus-composer-bar">
                 <div className="focus-column">
-                  {renderComposer({ thread: activeThread, fileInputId: 'file-upload-focus', placeholder: 'Message your thread…', onEscape: () => setFocusMode(false), autoFocus: true })}
+                  {renderComposer({ chat: activeThreadChat, fileInputId: 'file-upload-focus', placeholder: 'Message your thread…', onEscape: () => setFocusMode(false), autoFocus: true })}
                 </div>
               </div>
             </>
@@ -3012,7 +2820,9 @@ export default function App() {
     );
   }
   if (leftPanelOpen) layoutStyle['--left-w'] = `${panelSizes.left}px`;
-  if (rightPanelOpen) layoutStyle['--right-w'] = rightPanelMaximized ? `${maxSideWidth(leftPanelOpen ? panelSizes.left : 0)}px` : `${panelSizes.right}px`;
+  if (rightPanelOpen) layoutStyle['--right-w'] = rightPanelMaximized
+    ? `${browserUiPreferences.maxSideWidth(panelBounds, leftPanelOpen ? panelSizes.left : 0)}px`
+    : `${panelSizes.right}px`;
   if (bottomPanelOpen) layoutStyle['--bottom-h'] = `${panelSizes.bottom}px`;
 
   return (
@@ -3024,7 +2834,7 @@ export default function App() {
             Sync conflict — your data may be out of date. Merging from server now…
           </span>
           <button type="button" className="sync-conflict-dismiss" onClick={() => {
-            pendingWriteRef.current = null;
+            persistenceService.clearPendingWrites();
             setSyncConflict(null);
             setSettingsNotice('Sync conflict dismissed. Refresh the page for a clean state.');
           }} aria-label="Dismiss sync conflict">✕</button>
@@ -3670,7 +3480,7 @@ export default function App() {
                   )}
                   <div ref={rightPanelEndRef} className="chat-scroll-anchor" aria-hidden="true" />
                 </div>
-                {renderComposer({ thread: activeChatThread, fileInputId: 'file-upload', placeholder: 'Ask the thread something', onEscape: () => closeActiveChatThread(), autoFocus: true })}
+                {renderComposer({ chat: activeChatThreadChat, fileInputId: 'file-upload', placeholder: 'Ask the thread something', onEscape: () => closeActiveChatThread(), autoFocus: true })}
               </div>
             ) : (
               <div className="panel-empty">
@@ -3970,7 +3780,7 @@ export default function App() {
                             const info = providerInfo(kind);
                             const basePatch = {
                               kind,
-                              label: autoProfileLabel(kind, settingsEditorConfig.label),
+                              label: providerPresentationPolicy.autoProfileLabel(kind, settingsEditorConfig.label),
                               model: '',
                               baseUrl: info.baseUrl,
                             };
@@ -4037,18 +3847,22 @@ export default function App() {
                               { requireKey: false, updateSelectedModel: true },
                             );
                           }}
-                          placeholder={settingsEditorConfig.hasEncryptedApiKey && !settingsEditorConfig.apiKey ? 'saved on server — enter a new key to replace it' : apiKeyPlaceholder(settingsEditorConfig.kind)}
+                          placeholder={
+                            settingsEditorConfig.hasEncryptedApiKey && !settingsEditorConfig.apiKey
+                              ? 'saved on server — enter a new key to replace it'
+                              : providerPresentationPolicy.apiKeyPlaceholder(settingsEditorConfig.kind)
+                          }
                           autoComplete="off"
                           spellCheck={false}
                         />
-                        {providerKeyLink(settingsEditorConfig.kind) ? (
+                        {providerPresentationPolicy.providerKeyLink(settingsEditorConfig.kind) ? (
                           <a
                             className="key-signup-link"
-                            href={providerKeyLink(settingsEditorConfig.kind)!.href}
+                            href={providerPresentationPolicy.providerKeyLink(settingsEditorConfig.kind)!.href}
                             target="_blank"
                             rel="noopener noreferrer"
                           >
-                            {providerKeyLink(settingsEditorConfig.kind)!.label} →
+                            {providerPresentationPolicy.providerKeyLink(settingsEditorConfig.kind)!.label} →
                           </a>
                         ) : null}
                       </label>
@@ -4259,63 +4073,6 @@ async function requestAiReply(config: AIProviderConfig, thread: ThreadLane, mess
   if (effective.kind === 'anthropic') return requestAnthropic(effective, thread, messages, effective.threadParams);
   if (effective.kind === 'openrouter') return requestOpenRouter(effective, thread, messages, effective.threadParams);
   return requestOpenAiCompatible(effective, thread, messages, effective.threadParams);
-}
-
-function hydrateSettingsFromBackend(payload: ServerSettingsPayload): AISettings {
-  const providerConfigs = payload.providerConfigs.map((config) => ({
-    id: config.id,
-    kind: config.kind,
-    label: config.label,
-    model: config.model,
-    apiKey: '',
-    hasEncryptedApiKey: config.hasKey,
-    baseUrl: config.baseUrl,
-    params: sanitizeGenerationParams(config.params),
-  }));
-  return {
-    activeProviderConfigId: providerConfigs.some((config) => config.id === payload.activeProviderConfigId)
-      ? payload.activeProviderConfigId
-      : providerConfigs[0]?.id ?? '',
-    providerConfigs,
-  };
-}
-
-function serializeSettingsForBackend(settings: AISettings): SaveServerSettingsPayload {
-  return {
-    activeProviderConfigId: settings.activeProviderConfigId,
-    providerConfigs: settings.providerConfigs.map((config) => ({
-      id: config.id,
-      kind: config.kind,
-      label: config.label,
-      model: config.model,
-      ...(config.baseUrl?.trim() ? { baseUrl: config.baseUrl.trim() } : {}),
-      ...(config.params ? { params: config.params } : {}),
-    })),
-  };
-}
-
-function apiKeyPlaceholder(provider: AIProvider) {
-  if (provider === 'openai') return 'sk-...';
-  if (provider === 'anthropic') return 'sk-ant-...';
-  if (provider === 'openrouter') return 'sk-or-...';
-  // Custom OpenAI-compatible providers — API key is optional, no hint needed
-  if (provider === 'openai-compatible-custom') return 'optional';
-  return '';
-}
-
-function autoProfileLabel(kind: AIProvider, current: string): string {
-  if (kind !== 'openai-compatible-custom') return providerInfo(kind).label;
-  const presetLabels = PROVIDERS.map((entry) => entry.label);
-  const trimmed = current.trim();
-  return trimmed && trimmed !== 'New profile' && !presetLabels.includes(trimmed) ? trimmed : 'Custom provider';
-}
-
-function providerKeyLink(provider: AIProvider): { label: string; href: string } | null {
-  if (provider === 'openrouter') return { label: 'Get a free OpenRouter key', href: 'https://openrouter.ai/keys' };
-  if (provider === 'openai') return { label: 'Get an OpenAI key', href: 'https://platform.openai.com/api-keys' };
-  if (provider === 'anthropic') return { label: 'Get an Anthropic key', href: 'https://console.anthropic.com/settings/keys' };
-  // Custom OpenAI-compatible providers — API key is optional
-  return null;
 }
 
 const SYSTEM_PROMPT = (thread: ThreadLane) =>
