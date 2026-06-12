@@ -229,11 +229,16 @@ app.post('/api/ai/chat', async (c) => {
   if (!profileId) return c.json({ error: 'profileId is required' }, 400);
   if (!Array.isArray(messages)) return c.json({ error: 'messages must be an array' }, 400);
 
-  const profile = getProfile(profileId);
-  if (!profile) return c.json({ error: `Profile ${profileId} not found` }, 404);
+  // Prefer the thread's explicit providerConfigId when provided and valid
+  const effectiveProfileId =
+    (threadModelSettings?.providerConfigId && getProfile(threadModelSettings.providerConfigId))
+      ? threadModelSettings.providerConfigId
+      : profileId;
+  const profile = getProfile(effectiveProfileId);
+  if (!profile) return c.json({ error: `Profile ${effectiveProfileId} not found` }, 404);
   // Custom OpenAI-compatible providers may not require an API key
   if (!profile.hasKey && profile.kind !== 'openai-compatible-custom') {
-    return c.json({ error: `No API key stored for profile ${profileId}` }, 400);
+    return c.json({ error: `No API key stored for profile ${effectiveProfileId}` }, 400);
   }
 
   // Build thread overrides when thread-specific model settings are provided

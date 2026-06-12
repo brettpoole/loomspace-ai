@@ -1331,6 +1331,12 @@ export default function App() {
     const activeConfig = ensureSendableConfig('send');
     if (!activeConfig) return;
 
+    const threadProviderConfigId = targetThread.modelSettings?.providerConfigId;
+    const effectiveBaseConfig = threadProviderConfigId
+      ? (settings.providerConfigs.find(c => c.id === threadProviderConfigId) ?? activeConfig)
+      : activeConfig;
+    const threadEffectiveModel = targetThread.modelSettings?.model || effectiveBaseConfig.model;
+
     const composer = composerSnapshotForThread(targetThread);
     const composerStateForSend = composer.state;
     const userText = composerStateForSend.draft.trim();
@@ -1347,7 +1353,7 @@ export default function App() {
       content: createMixedMessage(userText, composerStateForSend.attachments),
       text: userText,
     };
-    const pendingChatNode = createChatNode('Thinking…', [userMessage], activeConfig.model, undefined, 'pending');
+    const pendingChatNode = createChatNode('Thinking…', [userMessage], threadEffectiveModel, undefined, 'pending');
     const pendingComposerKey = composerStateKey(requestThreadId, pendingChatNode.id);
     const shouldFocusPending = closeAfter || focusMode || stateRef.current.selectedThreadId === requestThreadId;
 
@@ -1376,7 +1382,7 @@ export default function App() {
     }));
 
     try {
-      const { assistantText, usage } = await requestAiReply(activeConfig, threadSnapshot, [...threadSnapshot.context, userMessage]);
+      const { assistantText, usage } = await requestAiReply(effectiveBaseConfig, threadSnapshot, [...threadSnapshot.context, userMessage]);
       const assistantMessage: ChatMessage = {
         id: `msg-${crypto.randomUUID().slice(0, 8)}`,
         role: 'assistant',
@@ -1532,6 +1538,11 @@ export default function App() {
     const activeConfig = ensureSendableConfig('retry');
     if (!activeConfig) return;
 
+    const retryThreadProviderConfigId = targetThread.modelSettings?.providerConfigId;
+    const retryEffectiveBaseConfig = retryThreadProviderConfigId
+      ? (settings.providerConfigs.find(c => c.id === retryThreadProviderConfigId) ?? activeConfig)
+      : activeConfig;
+
     const assistantIndex = targetThread.context.findIndex((message) => message.id === messageId && message.role === 'assistant');
     if (assistantIndex !== targetThread.context.length - 1) {
       setThreadChatError(targetThread.id, 'Only the latest assistant response can be retried safely.');
@@ -1577,7 +1588,7 @@ export default function App() {
     }));
 
     try {
-      const { assistantText, usage } = await requestAiReply(activeConfig, threadSnapshot, requestMessages);
+      const { assistantText, usage } = await requestAiReply(retryEffectiveBaseConfig, threadSnapshot, requestMessages);
       const assistantMessage: ChatMessage = {
         id: messageId,
         role: 'assistant',
@@ -2796,17 +2807,17 @@ export default function App() {
                 </select>
               ) : null}
               {settings.providerConfigs.length > 0 && activeProviderConfig ? (() => {
-                // Effective model: thread override or global
-                const effectiveModel = activeThread?.modelSettings?.model || activeProviderConfig.model;
                 const effectiveConfigId = activeThread?.modelSettings?.providerConfigId ?? activeProviderConfig.id;
                 const effectiveConfig = settings.providerConfigs.find(c => c.id === effectiveConfigId) ?? activeProviderConfig;
+                const effectiveModel = activeThread?.modelSettings?.model || effectiveConfig.model;
+                const focusModels = modelsForConfig(modelCache, effectiveConfig, effectiveModel);
                 return (
                   <select className="focus-model-select" value={effectiveModel} onChange={(e) => {
                     if (!activeThread) return;
                     const ts = activeThread.modelSettings ?? { providerConfigId: effectiveConfigId, model: '' };
                     updateThreadModelSettings(activeThread.id, { ...ts, model: e.target.value });
                   }} aria-label="Thread Model">
-                    {settingsModels.length === 0 ? <option value={effectiveModel}>{effectiveModel || 'no model'}</option> : settingsModels.map((m) => <option key={m} value={m}>{m}</option>)}
+                    {focusModels.length === 0 ? <option value={effectiveModel}>{effectiveModel || 'no model'}</option> : focusModels.map((m) => <option key={m} value={m}>{m}</option>)}
                   </select>
                 );
               })() : (
@@ -2820,7 +2831,9 @@ export default function App() {
                   {focusParamsOpen ? (
                     <div className="focus-params-popover">
                       {renderModelParams(
-                        activeProviderConfig,
+                        activeThread?.modelSettings?.providerConfigId
+                          ? (settings.providerConfigs.find(c => c.id === activeThread.modelSettings?.providerConfigId) ?? activeProviderConfig)
+                          : activeProviderConfig,
                         { flat: true, threadId: activeThread?.id },
                       )}
                     </div>
@@ -3587,7 +3600,7 @@ export default function App() {
                                     updateThreadModelSettings(activeChatThread.id, newTs);
                                   }}
                                 >
-                                  {settingsModels.map((m) => <option key={m} value={m}>{m}</option>)}
+                                  {modelsForConfig(modelCache, effectiveConfig, effectiveModel).map((m) => <option key={m} value={m}>{m}</option>)}
                                 </select>
                               </label>
                               {effectiveConfig ? renderModelParams(effectiveConfig, { threadId: activeChatThread.id }) : null}
