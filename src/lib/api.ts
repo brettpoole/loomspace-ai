@@ -3,13 +3,13 @@ import type { GenerationParams, PersistedWorkspaceEntry, PersistedWorkspaceStore
 /**
  * Backend API client for LoomSpace.
  *
- * All calls go to the local server (default http://localhost:3001).
+ * All calls go to the local server (default http://localhost:8000).
  * The server holds API keys and proxies requests to AI providers.
  */
 
 // Empty string = same-origin (frontend served by backend).
-// For standalone Vite dev without an explicit VITE_API_BASE, vite.config.ts proxies /api to http://127.0.0.1:8000.
-export const API_BASE = import.meta.env.VITE_API_BASE ?? '';
+// In Vite dev, vite.config.ts proxies /api to http://127.0.0.1:8000.
+export const API_BASE = '';
 
 // ---------------------------------------------------------------------------
 // Types mirrored from server
@@ -244,13 +244,10 @@ export async function apiSaveWorkspaceStoreWithSync(store: PersistedWorkspaceSto
 type ApiError = Error & { status?: number };
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const token = localStorage.getItem('loomspace.auth.token');
-  const authHeader: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
-      ...authHeader,
       ...init?.headers,
     },
   });
@@ -417,50 +414,3 @@ export async function apiHealthCheck(): Promise<boolean> {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Auth
-// ---------------------------------------------------------------------------
-
-export interface AuthTokenResponse {
-  access_token: string;
-  token_type: string;
-}
-
-export interface AuthUser {
-  id: string;
-  username: string;
-  created_at: string;
-}
-
-export async function apiRegister(username: string, password: string): Promise<AuthTokenResponse> {
-  return apiFetch<AuthTokenResponse>('/api/auth/register', {
-    method: 'POST',
-    body: JSON.stringify({ username, password }),
-  });
-}
-
-export async function apiLogin(username: string, password: string): Promise<AuthTokenResponse> {
-  return apiFetch<AuthTokenResponse>('/api/auth/login', {
-    method: 'POST',
-    body: JSON.stringify({ username, password }),
-  });
-}
-
-export async function apiGetMe(): Promise<AuthUser> {
-  return apiFetch<AuthUser>('/api/auth/me');
-}
-
-/** Store the auth token in localStorage so apiFetch sends it automatically. */
-export function setAuthToken(token: string): void {
-  localStorage.setItem('loomspace.auth.token', token);
-}
-
-/** Clear the stored auth token (logout). */
-export function clearAuthToken(): void {
-  localStorage.removeItem('loomspace.auth.token');
-}
-
-/** Returns true when a token is currently stored. Does not validate expiry. */
-export function hasAuthToken(): boolean {
-  return localStorage.getItem('loomspace.auth.token') !== null;
-}

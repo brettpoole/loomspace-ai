@@ -15,7 +15,7 @@ from app.persistence import (
     save_reserved_json,
     save_updated_at,
 )
-from app.routers.auth import get_current_user
+from app.routers.deps import get_current_user
 
 router = APIRouter(tags=["workspace"])
 

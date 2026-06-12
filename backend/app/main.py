@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
-from app.routers import auth, profiles, workspace, proxy
+from app.routers import profiles, workspace, proxy
 
 DIST_DIR = Path(__file__).parent.parent / "dist"
 
@@ -28,7 +28,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(auth.router, prefix="/api")
 app.include_router(profiles.router, prefix="/api")
 app.include_router(workspace.router, prefix="/api")
 app.include_router(proxy.router, prefix="/api")

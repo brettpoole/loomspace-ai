@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.models import Profile, User
 from app.persistence import load_settings_blob, params_by_profile_id
-from app.routers.auth import get_current_user
+from app.routers.deps import get_current_user
 from app.schemas import ChatRequest, ChatResponse, ChatUsage, ModelsResponse
 from app.security import decrypt_api_key
 
