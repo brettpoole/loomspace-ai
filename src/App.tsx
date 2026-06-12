@@ -30,7 +30,7 @@ import {
   threadWithActiveNode,
   threadWithInfo,
   updateThreadDetails,
-  updateThreadModelSettings,
+
   updateThreadTitle,
 } from './lib/store';
 import {
@@ -1902,6 +1902,35 @@ export default function App() {
     updateProviderConfig(configId, { params: next });
   }
 
+  function updateThreadModelSettings(threadId: string, modelSettings: { providerConfigId: string | null; model: string; params?: GenerationParams }) {
+    setState((current) => ({
+      ...current,
+      version: current.version + 1,
+      threads: current.threads.map((thread) =>
+        thread.id === threadId
+          ? { ...thread, modelSettings: { ...modelSettings } }
+          : thread,
+      ),
+    }));
+  }
+
+  function updateThreadModelParams(threadId: string, patch: Partial<GenerationParams>) {
+    const thread = state.threads.find((t) => t.id === threadId);
+    if (!thread) return;
+    const ts = thread.modelSettings;
+    const currentParams: GenerationParams = { ...(ts?.params ?? {}) };
+    const next: GenerationParams = { ...currentParams, ...patch };
+    (Object.keys(next) as Array<keyof GenerationParams>).forEach((key) => {
+      if (next[key] === undefined) delete next[key];
+    });
+    const newModelSettings: ThreadModelSettings = {
+      providerConfigId: ts?.providerConfigId ?? activeProviderConfig?.id ?? null,
+      model: ts?.model ?? '',
+      params: Object.keys(next).length > 0 ? next : undefined,
+    };
+    updateThreadModelSettings(threadId, newModelSettings);
+  }
+
   function updateComposerState(key: string | null, updater: (current: ComposerState) => ComposerState) {
     if (!key) return;
     setComposerStates((current) => {
@@ -2757,7 +2786,7 @@ export default function App() {
                   onChange={(e) => {
                     if (!activeThread) return;
                     const ts = activeThread.modelSettings ?? { providerConfigId: activeProviderConfig.id, model: '' };
-                    updateThreadModelSettings(activeThread, { ...ts, providerConfigId: e.target.value, model: '' });
+                    updateThreadModelSettings(activeThread.id, { ...ts, providerConfigId: e.target.value, model: '' });
                   }}
                   aria-label="Thread AI Provider"
                 >
@@ -2775,7 +2804,7 @@ export default function App() {
                   <select className="focus-model-select" value={effectiveModel} onChange={(e) => {
                     if (!activeThread) return;
                     const ts = activeThread.modelSettings ?? { providerConfigId: effectiveConfigId, model: '' };
-                    updateThreadModelSettings(activeThread, { ...ts, model: e.target.value });
+                    updateThreadModelSettings(activeThread.id, { ...ts, model: e.target.value });
                   }} aria-label="Thread Model">
                     {settingsModels.length === 0 ? <option value={effectiveModel}>{effectiveModel || 'no model'}</option> : settingsModels.map((m) => <option key={m} value={m}>{m}</option>)}
                   </select>
@@ -2790,7 +2819,10 @@ export default function App() {
                   </button>
                   {focusParamsOpen ? (
                     <div className="focus-params-popover">
-                      {renderModelParams(activeProviderConfig, { flat: true })}
+                      {renderModelParams(
+                        activeProviderConfig,
+                        { flat: true, threadId: activeThread?.id },
+                      )}
                     </div>
                   ) : null}
                 </div>
@@ -2839,17 +2871,38 @@ export default function App() {
     );
   };
 
-  const renderModelParams = (config: AIProviderConfig, options: { flat?: boolean } = {}) => {
+  const renderModelParams = (config: AIProviderConfig, options: { flat?: boolean; threadId?: string } = {}) => {
     const supported = PARAM_SUPPORT[config.kind];
     const numericKeys = supported.filter((key): key is Exclude<keyof GenerationParams, 'stop'> => key !== 'stop');
-    const activeCount = config.params ? Object.keys(config.params).length : 0;
+    // When threadId is provided, use thread-specific params for display and updates
+    const thread = options.threadId ? state.threads.find((t) => t.id === options.threadId) : null;
+    const threadParams: GenerationParams | undefined = thread?.modelSettings?.params;
+    const activeParams: GenerationParams = threadParams ?? (config.params ?? {});
+    const activeCount = Object.keys(activeParams).length;
     const badge = activeCount > 0 ? <span className="model-params-count">{activeCount} set</span> : <span className="model-params-auto">defaults</span>;
+    const paramUpdater = (patch: Partial<GenerationParams>) => {
+      if (options.threadId) {
+        updateThreadModelParams(options.threadId, patch);
+      } else {
+        updateProviderParams(config.id, patch);
+      }
+    };
+    const paramReset = () => {
+      if (options.threadId) {
+        const t = thread;
+        if (t?.modelSettings) {
+          updateThreadModelSettings(options.threadId, { providerConfigId: t.modelSettings.providerConfigId, model: t.modelSettings.model });
+        }
+      } else {
+        updateProviderConfig(config.id, { params: {} });
+      }
+    };
     const body = (
       <div className="model-params-body">
         {numericKeys.map((key) => {
           const meta = PARAM_META[key];
           const max = key === 'temperature' && config.kind === 'anthropic' ? 1 : meta.max;
-          const value = config.params?.[key];
+          const value = activeParams[key];
           const enabled = value !== undefined;
           const current = value ?? meta.default;
           return (
@@ -2859,7 +2912,7 @@ export default function App() {
                   <input
                     type="checkbox"
                     checked={enabled}
-                    onChange={(event) => updateProviderParams(config.id, { [key]: event.target.checked ? Math.min(meta.default, max) : undefined } as Partial<GenerationParams>)}
+                    onChange={(event) => paramUpdater({ [key]: event.target.checked ? Math.min(meta.default, max) : undefined } as Partial<GenerationParams>)}
                   />
                   <span className="param-name">{meta.label}</span>
                 </label>
@@ -2874,7 +2927,7 @@ export default function App() {
                     max={max}
                     step={meta.step}
                     value={current}
-                    onChange={(event) => updateProviderParams(config.id, { [key]: Number(event.target.value) } as Partial<GenerationParams>)}
+                    onChange={(event) => paramUpdater({ [key]: Number(event.target.value) } as Partial<GenerationParams>)}
                   />
                 ) : (
                   <input
@@ -2884,7 +2937,7 @@ export default function App() {
                     max={max}
                     step={meta.step}
                     value={current}
-                    onChange={(event) => updateProviderParams(config.id, { [key]: event.target.value === '' ? undefined : Number(event.target.value) } as Partial<GenerationParams>)}
+                    onChange={(event) => paramUpdater({ [key]: event.target.value === '' ? undefined : Number(event.target.value) } as Partial<GenerationParams>)}
                   />
                 )
               ) : null}
@@ -2895,17 +2948,17 @@ export default function App() {
           <label className="field param-stop">
             Stop sequences
             <input
-              value={(config.params?.stop ?? []).join(', ')}
+              value={(activeParams.stop ?? []).join(', ')}
               placeholder="comma-separated, e.g. END, ###"
               onChange={(event) => {
                 const stop = event.target.value.split(',').map((entry) => entry.trim()).filter(Boolean);
-                updateProviderParams(config.id, { stop: stop.length > 0 ? stop : undefined });
+                paramUpdater({ stop: stop.length > 0 ? stop : undefined });
               }}
             />
           </label>
         ) : null}
         {activeCount > 0 ? (
-          <button type="button" className="quiet model-params-reset" onClick={() => updateProviderConfig(config.id, { params: {} })}>
+          <button type="button" className="quiet model-params-reset" onClick={paramReset}>
             Reset to defaults
           </button>
         ) : null}
@@ -3513,7 +3566,7 @@ export default function App() {
                                       model: threadTs?.model ?? '',
                                       params: threadTs?.params,
                                     };
-                                    updateThreadModelSettings(activeChatThread, newTs);
+                                    updateThreadModelSettings(activeChatThread.id, newTs);
                                   }}
                                 >
                                   {settings.providerConfigs.map((config) => (
@@ -3531,13 +3584,13 @@ export default function App() {
                                       model: e.target.value,
                                       params: threadTs?.params,
                                     };
-                                    updateThreadModelSettings(activeChatThread, newTs);
+                                    updateThreadModelSettings(activeChatThread.id, newTs);
                                   }}
                                 >
                                   {settingsModels.map((m) => <option key={m} value={m}>{m}</option>)}
                                 </select>
                               </label>
-                              {effectiveConfig ? renderModelParams(effectiveConfig) : null}
+                              {effectiveConfig ? renderModelParams(effectiveConfig, { threadId: activeChatThread.id }) : null}
                               <button type="button" className="quiet chat-dock-manage" onClick={() => openProviderSetup()}>Manage profiles</button>
                             </>
                           );
