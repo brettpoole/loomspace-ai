@@ -9,6 +9,7 @@ import {
   createChatNode,
   createContextNode,
   createWorkspaceEntry,
+  createWorkspaceState,
   createProviderConfig,
   createThread,
   deleteProviderConfig,
@@ -135,10 +136,18 @@ const panelBounds = {
 export default function App() {
   const [workspaceStore, setWorkspaceStore] = useState<PersistedWorkspaceStore>(() => loadWorkspaceStore());
   const activeWorkspaceEntry = useMemo(
-    () => workspaceStore.workspaces.find((entry) => entry.id === workspaceStore.activeWorkspaceId) ?? workspaceStore.workspaces[0],
+    () => workspaceStore.workspaces.find((entry) => entry.id === workspaceStore.activeWorkspaceId) ?? workspaceStore.workspaces[0] ?? null,
     [workspaceStore],
   );
-  const state = activeWorkspaceEntry.state;
+  const rawState = activeWorkspaceEntry?.state ?? null;
+  const state: LoomspaceState = rawState && rawState.threads != null
+    ? rawState
+    : (() => {
+        const ws = createWorkspaceEntry('Workspace');
+        // Guarantee threads exists even if migration produced undefined
+        if (!Array.isArray((ws.state as any).threads)) ws.state = { ...ws.state, threads: [] } as LoomspaceState;
+        return ws.state;
+      })();
   const setState = (nextState: SetStateAction<LoomspaceState>) => {
     setWorkspaceStore((current) => {
       const activeIndex = current.workspaces.findIndex((entry) => entry.id === current.activeWorkspaceId);
@@ -289,6 +298,35 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
 
+    // Ensure workspace store data always has threads array (defend against
+    // backend data that was saved before threads existed or is stale).
+    const sanitizeWorkspaceStore = (store: PersistedWorkspaceStore): PersistedWorkspaceStore => {
+      const defaultState = createWorkspaceState();
+      return {
+        ...store,
+        workspaces: store.workspaces.map((entry) => {
+          const s = entry.state as Partial<LoomspaceState>;
+          // Fill in any missing/null fields that the backend might have
+          // (e.g. title, workspaceId, threads from older versions)
+          return {
+            ...entry,
+            state: {
+              title: typeof s.title === 'string' && s.title.trim() ? s.title.trim() : defaultState.title,
+              workspaceId: typeof s.workspaceId === 'string' && s.workspaceId ? s.workspaceId : defaultState.workspaceId,
+              threads: Array.isArray(s.threads) ? s.threads : [],
+              selectedThreadId: typeof s.selectedThreadId === 'string' ? s.selectedThreadId : null,
+              selectedNodeId: typeof s.selectedNodeId === 'string' ? s.selectedNodeId : null,
+              densityOverlay: typeof s.densityOverlay === 'boolean' ? s.densityOverlay : defaultState.densityOverlay,
+              panX: typeof s.panX === 'number' && Number.isFinite(s.panX) ? s.panX : defaultState.panX,
+              panY: typeof s.panY === 'number' && Number.isFinite(s.panY) ? s.panY : defaultState.panY,
+              zoom: typeof s.zoom === 'number' && Number.isFinite(s.zoom) ? s.zoom : defaultState.zoom,
+              version: typeof s.version === 'number' ? s.version : defaultState.version,
+            } as LoomspaceState,
+          };
+        }),
+      };
+    };
+
     const bootstrapPersistence = async () => {
       const localWorkspaceStore = initialLocalWorkspaceStoreRef.current;
       const localSettings = initialLocalSettingsRef.current;
@@ -301,6 +339,10 @@ export default function App() {
         setWorkspaceStore(result.workspaceStore);
         setSettings(result.settings);
         setSettingsNotice(result.notice);
+      } catch {
+        if (!cancelled) {
+          setSettingsNotice('Backend unavailable — using the browser cache until the server is reachable again.');
+        }
       } finally {
         if (!cancelled) setPersistenceReady(true);
       }

@@ -314,8 +314,9 @@ export async function apiLoadSettings(): Promise<ServerSettingsPayload | null> {
   try {
     return await apiFetch<ServerSettingsPayload>('/api/settings');
   } catch (err) {
-    if ((err as ApiError).status === 404) return null;
-    throw err;
+    // Treat all errors (404, 500, network, CORS, etc.) the same: no remote settings.
+    // The bootstrap caller will gracefully fall back to local (cookie-based) settings.
+    return null;
   }
 }
 
@@ -413,4 +414,6 @@ export async function apiHealthCheck(): Promise<boolean> {
     return false;
   }
 }
+
+
 
