@@ -227,8 +227,12 @@ export function loadSettings(): AISettings {
     };
   });
 
+  if (providerConfigs.length > 0 && !providerConfigs.some((config) => config.id === activeProviderConfigId)) {
+    throw new Error(`Invalid activeProviderConfigId "${activeProviderConfigId}" in local settings payload.`);
+  }
+
   return {
-    activeProviderConfigId,
+    activeProviderConfigId: providerConfigs.length > 0 ? activeProviderConfigId : '',
     providerConfigs,
   };
 }

@@ -15,10 +15,14 @@ export class SettingsSnapshotMapper {
       params: sanitizeGenerationParams(config.params),
     }));
 
+    const activeProviderConfigId = payload.activeProviderConfigId;
+    const activeExists = providerConfigs.some((config) => config.id === activeProviderConfigId);
+    if (providerConfigs.length > 0 && !activeExists) {
+      throw new Error(`Invalid activeProviderConfigId "${activeProviderConfigId}" in server settings payload.`);
+    }
+
     return {
-      activeProviderConfigId: providerConfigs.some((config) => config.id === payload.activeProviderConfigId)
-        ? payload.activeProviderConfigId
-        : providerConfigs[0]?.id ?? '',
+      activeProviderConfigId: activeExists ? activeProviderConfigId : '',
       providerConfigs,
     };
   }

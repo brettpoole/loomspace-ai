@@ -70,10 +70,22 @@ import type {
   TokenUsage,
 } from './lib/types';
 import { FrontendPersistenceService } from './lib/frontendPersistenceService';
+import {
+  ChatProvider,
+  Provider,
+  providerModelCacheKey,
+  sameProviderModelSource,
+  snapshotThreadModelSettings,
+  type ModelCache,
+} from './lib/provider';
 import { providerPresentationPolicy } from './lib/providerPresentation';
 import { SettingsSnapshotMapper } from './lib/settingsSnapshotMapper';
+import { ThreadCanvas } from './lib/threadCanvas';
 import { EMPTY_COMPOSER_STATE, type ComposerState, ThreadChat } from './lib/threadChat';
+import { ThreadForkDraftSession } from './lib/threadForkDraft';
+import { ThreadReplyService } from './lib/threadReplyService';
 import { browserUiPreferences, type ThemeMode } from './lib/uiPreferences';
+import { WorkspaceSession } from './lib/workspaceSession';
 
 const LANE_WIDTH = 320;
 const LANE_GAP = 56;
@@ -106,25 +118,13 @@ const DEFAULT_THREAD_DRAFT: ThreadDraft = {
   description: '',
 };
 
-type ModelCache = Record<string, string[]>;
-
 function composerStateKey(threadId: string, nodeId?: string | null): string {
   return `${threadId}::${nodeId ?? 'root'}`;
 }
 
-function providerModelCacheKey(config: AIProviderConfig): string {
-  const baseUrl = config.baseUrl?.trim().toLowerCase() ?? '';
-  return `provider:${config.kind}:${baseUrl}`;
-}
-
-function sameProviderModelSource(left: AIProviderConfig, right: AIProviderConfig): boolean {
-  const leftBaseUrl = left.baseUrl?.trim().toLowerCase() ?? '';
-  const rightBaseUrl = right.baseUrl?.trim().toLowerCase() ?? '';
-  return left.kind === right.kind && leftBaseUrl === rightBaseUrl;
-}
-
 const settingsSnapshotMapper = new SettingsSnapshotMapper();
 const persistenceService = new FrontendPersistenceService(settingsSnapshotMapper);
+const threadReplyService = new ThreadReplyService();
 const panelBounds = {
   minPanelWidth: MIN_PANEL_W,
   minCanvasWidth: MIN_CANVAS_W,
@@ -241,6 +241,7 @@ export default function App() {
   const panGesture = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
   const pointerMap = useRef<Map<number, { x: number; y: number }>>(new Map());
   const pinchState = useRef<{ dist: number; zoom: number } | null>(null);
+  const threadSettingsBootstrappedWorkspaceIdsRef = useRef<Set<string>>(new Set());
   const suppressReadMoreUntil = useRef(0);
   const readMoreTimerRef = useRef<number | null>(null);
   const spaceHeld = useRef(false);
@@ -460,11 +461,108 @@ export default function App() {
   const activeChatThread = activeChatThreadId
     ? state.threads.find((thread) => thread.id === activeChatThreadId) ?? null
     : null;
+  const activeProviderConfig =
+    settings.providerConfigs.find((config) => config.id === settings.activeProviderConfigId) ?? null;
+  const activeProviderProfile = activeProviderConfig
+    ? new Provider({
+        configId: activeProviderConfig.id,
+        settings,
+        modelCache,
+        modelsLoadingConfigId,
+        settingsRef,
+        setSettings,
+        setModelCache,
+        setProviderError,
+        setSettingsNotice,
+        setSavingSettings,
+        clearProviderSecret,
+        handleSyncConflict,
+        settingsSnapshotMapper,
+        setModelsLoadingConfigId,
+        openProviderSetup,
+        setSettingsEditorConfigId,
+        setLeftPanelOpen,
+        setProviderMenuOpen,
+        setAiSettingsModalOpen,
+        setError,
+      })
+    : null;
+  const createThreadWithCurrentProvider = (title: string, description: string, index: number) => {
+    const thread = createThread(title, description, index);
+    return activeProviderConfig
+      ? { ...thread, modelSettings: snapshotThreadModelSettings(activeProviderConfig) }
+      : thread;
+  };
+  const workspaceSession = new WorkspaceSession({
+    state,
+    workspaceStore,
+    setState,
+    setWorkspaceStore,
+    resetTransientUi: () => {
+      setComposerStates({});
+      setSettingsNotice(null);
+      setProviderError(null);
+      setError(null);
+      setThreadEditorOpen(false);
+      setThreadEditorTargetId(null);
+      setThreadEditorDraft(DEFAULT_THREAD_DRAFT);
+      setChatPanelState({ isOpen: false, openThreadIds: [], activeThreadId: null });
+      setProviderMenuOpen(false);
+      setContextLinkMode(null);
+      setContextLinkPointer(null);
+      setContextLinkSnapTarget(null);
+      setForkDraft(null);
+      setDeleteMode(null);
+      setNodePreviewModal(null);
+      setCopiedMessageId(null);
+      stopSpeaking();
+    },
+    setWorkspaceDraftTitle,
+    setNavMenuOpen,
+    setWorkspaceManagerOpen,
+    workspaceCount,
+  });
+  const threadCanvas = new ThreadCanvas({
+    state,
+    setState,
+    viewportRef,
+    chatPanelState,
+    setChatPanelState,
+    setLeftPanelOpen,
+    rightPanelOpen,
+    bounds: {
+      minZoom: MIN_ZOOM,
+      maxZoom: MAX_ZOOM,
+      edgePadding: EDGE_PADDING,
+      canvasMinWidth: CANVAS_MIN_WIDTH,
+      canvasMinHeight: CANVAS_MIN_HEIGHT,
+      laneWidth: LANE_WIDTH,
+      laneGap: LANE_GAP,
+      leftPad: LEFT_PAD,
+      topPad: TOP_PAD,
+      nodeGap: NODE_GAP,
+    },
+    nodeHeight,
+    createThread: createThreadWithCurrentProvider,
+  });
+  const forkSession = new ThreadForkDraftSession({
+    forkDraft,
+    threads: state.threads,
+    setForkDraft,
+    setContextLinkMode,
+    setContextLinkPointer,
+    setContextLinkSnapTarget,
+    setRightPanelOpen,
+    setState,
+    focusCanvasOnThread: (...args) => threadCanvas.focusCanvasOnThread(...args),
+    zoom: state.zoom,
+    openChatThread: (threadId) => threadCanvas.openChatThread(threadId),
+    setError,
+    createThread: createThreadWithCurrentProvider,
+  });
   const activeThreadChat = threadChatFor(activeThread);
   const activeChatThreadChat = threadChatFor(activeChatThread);
   const chatScrollThread = focusMode ? activeThread : activeChatThread;
-  const activeProviderConfig =
-    settings.providerConfigs.find((config) => config.id === settings.activeProviderConfigId) ?? settings.providerConfigs[0] ?? null;
   const settingsLockState = activeProviderConfig ? (activeProviderConfig.hasEncryptedApiKey ? (activeProviderConfig.apiKey.trim() ? 'unlocked' : 'locked') : 'none') : 'none';
 
   const settingsEditorConfig =
@@ -537,18 +635,29 @@ export default function App() {
     if (contextLinkSnapTarget !== null) setContextLinkSnapTarget(null);
   }, [contextLinkMode?.intent, contextLinkPointer, contextLinkSnapTarget]);
 
+  useEffect(() => {
+    if (!activeProviderConfig) return;
+    if (threadSettingsBootstrappedWorkspaceIdsRef.current.has(state.workspaceId)) return;
+    if (!state.threads.some((thread) => !thread.modelSettings)) {
+      threadSettingsBootstrappedWorkspaceIdsRef.current.add(state.workspaceId);
+      return;
+    }
+    threadSettingsBootstrappedWorkspaceIdsRef.current.add(state.workspaceId);
+    setState((current) => ({
+      ...current,
+      version: current.version + 1,
+      threads: current.threads.map((thread) =>
+        thread.modelSettings ? thread : { ...thread, modelSettings: snapshotThreadModelSettings(activeProviderConfig) },
+      ),
+    }));
+  }, [activeProviderConfig, state.workspaceId, state.threads, setState]);
+
   const forkSourceThread = forkDraft ? state.threads.find((thread) => thread.id === forkDraft.sourceThreadId) ?? null : null;
   const forkSelectionMessageCount = forkSourceThread && forkDraft ? countSelectedMessages(forkSourceThread, forkDraft.selectedNodes) : 0;
   const forkSelectionPieceCount = forkDraft?.selectedNodes.length ?? 0;
 
   function clientToCanvasPoint(clientX: number, clientY: number) {
-    const viewport = viewportRef.current;
-    if (!viewport) return null;
-    const rect = viewport.getBoundingClientRect();
-    return {
-      x: (clientX - rect.left - state.panX) / state.zoom,
-      y: (clientY - rect.top - state.panY) / state.zoom,
-    };
+    return threadCanvas.clientToCanvasPoint(clientX, clientY);
   }
 
   const canvasWidth = Math.max(
@@ -782,17 +891,7 @@ export default function App() {
 
 
   function clampViewport(next?: Partial<Pick<LoomspaceState, 'panX' | 'panY' | 'zoom'>>) {
-    const viewport = viewportRef.current;
-    const width = viewport?.clientWidth ?? window.innerWidth;
-    const height = viewport?.clientHeight ?? window.innerHeight;
-    const zoom = clamp(next?.zoom ?? state.zoom, MIN_ZOOM, MAX_ZOOM);
-    const panX = next?.panX ?? state.panX;
-    const panY = next?.panY ?? state.panY;
-    const nextBounds = boundedPan(panX, panY, zoom, width, height, canvasWidth, canvasHeight);
-    if (nextBounds.panX === state.panX && nextBounds.panY === state.panY && zoom === state.zoom && !next) {
-      return;
-    }
-    setState((current) => ({ ...current, ...nextBounds, zoom }));
+    threadCanvas.clampViewport(next);
   }
 
   function threadLaneHeight(thread: ThreadLane) {
@@ -804,54 +903,15 @@ export default function App() {
   }
 
   function focusCanvasOnThread(threads: ThreadLane[], thread: ThreadLane, threadIndex: number, zoom: number) {
-    const viewport = viewportRef.current;
-    const width = viewport?.clientWidth ?? window.innerWidth;
-    const height = viewport?.clientHeight ?? window.innerHeight;
-    const threadCount = threads.length;
-    const nextCanvasWidth = Math.max(
-      CANVAS_MIN_WIDTH,
-      LEFT_PAD * 2 + Math.max(0, threadCount - 1) * (LANE_WIDTH + LANE_GAP) + LANE_WIDTH,
-    );
-    const nextCanvasHeight = Math.max(CANVAS_MIN_HEIGHT, ...threads.map(threadLaneHeight));
-    const threadGroupWidth = threadCount * LANE_WIDTH + Math.max(0, threadCount - 1) * LANE_GAP;
-    const groupLeft = nextCanvasWidth / 2 - threadGroupWidth / 2;
-    const centerX = groupLeft + threadIndex * (LANE_WIDTH + LANE_GAP) + LANE_WIDTH / 2;
-    const centerY = threadLaneHeight(thread) / 2;
-    const panX = width / 2 - centerX * zoom;
-    const panY = height / 2 - centerY * zoom;
-    return boundedPan(panX, panY, zoom, width, height, nextCanvasWidth, nextCanvasHeight);
+    return threadCanvas.focusCanvasOnThread(threads, thread, threadIndex, zoom);
   }
 
   function openChatThread(threadId: string) {
-    setChatPanelState((current) => ({
-      isOpen: true,
-      openThreadIds: current.openThreadIds.includes(threadId) ? current.openThreadIds : [...current.openThreadIds, threadId],
-      activeThreadId: threadId,
-    }));
-    setState((current) => ({
-      ...current,
-      selectedThreadId: threadId,
-      selectedNodeId: current.threads.find((thread) => thread.id === threadId)?.activeNodeId ?? null,
-    }));
+    threadCanvas.openChatThread(threadId);
   }
 
   function closeChatThread(threadId: string) {
-    setChatPanelState((current) => {
-      const openThreadIds = current.openThreadIds.filter((entry) => entry !== threadId);
-      const nextActiveThreadId = current.activeThreadId === threadId ? openThreadIds.at(-1) ?? null : current.activeThreadId;
-      if (current.activeThreadId === threadId && nextActiveThreadId) {
-        setState((currentState) => ({
-          ...currentState,
-          selectedThreadId: nextActiveThreadId,
-          selectedNodeId: currentState.threads.find((thread) => thread.id === nextActiveThreadId)?.activeNodeId ?? null,
-        }));
-      }
-      return {
-        isOpen: openThreadIds.length > 0 ? current.isOpen : false,
-        openThreadIds,
-        activeThreadId: nextActiveThreadId,
-      };
-    });
+    threadCanvas.closeChatThread(threadId);
   }
 
   function closeActiveChatThread() {
@@ -864,55 +924,11 @@ export default function App() {
   }
 
   function toggleChatPanelVisibility() {
-    setChatPanelState((current) => {
-      if (current.isOpen) {
-        return { ...current, isOpen: false };
-      }
-      const fallbackThreadId = current.activeThreadId
-        ?? current.openThreadIds.at(-1)
-        ?? state.selectedThreadId
-        ?? state.threads[0]?.id
-        ?? null;
-      const openThreadIds = fallbackThreadId && !current.openThreadIds.includes(fallbackThreadId)
-        ? [...current.openThreadIds, fallbackThreadId]
-        : current.openThreadIds;
-      if (fallbackThreadId) {
-        setState((currentState) => ({
-          ...currentState,
-          selectedThreadId: fallbackThreadId,
-          selectedNodeId: currentState.threads.find((thread) => thread.id === fallbackThreadId)?.activeNodeId ?? null,
-        }));
-      }
-      return {
-        isOpen: true,
-        openThreadIds,
-        activeThreadId: fallbackThreadId,
-      };
-    });
+    threadCanvas.toggleChatPanelVisibility();
   }
 
   function selectThread(threadId: string, nodeId?: string | null) {
-    if (rightPanelOpen) openChatThread(threadId);
-    setLeftPanelOpen(false);
-    setState((current) => ({
-      ...current,
-      selectedThreadId: threadId,
-      selectedNodeId: nodeId ?? current.threads.find((thread) => thread.id === threadId)?.activeNodeId ?? null,
-      threads: current.threads.map((thread) => {
-        if (thread.id !== threadId) {
-          return threadWithActiveNode(thread, thread.activeNodeId);
-        }
-        const nextNodeId = nodeId ?? thread.activeNodeId;
-        return {
-          ...threadWithActiveNode(thread, nextNodeId),
-          nodes: thread.nodes.map((entry) =>
-            entry.id === nextNodeId && entry.kind === 'chat' && entry.status === 'unread'
-              ? { ...entry, status: undefined }
-              : entry,
-          ),
-        };
-      }),
-    }));
+    threadCanvas.selectThread(threadId, nodeId);
   }
 
   function openThreadEditor(mode: 'create' | 'edit', thread?: ThreadLane) {
@@ -928,16 +944,7 @@ export default function App() {
   }
 
   function openForkThreadEditor(thread: ThreadLane, nodeId: string, side: 'left' | 'right') {
-    const forkSelection = buildContextSelection(thread, nodeId);
-    if (!forkSelection) return;
-    setForkDraft({
-      sourceThreadId: thread.id,
-      sourceThreadTitle: thread.title,
-      sourceThreadColor: thread.color,
-      selectedNodes: forkSelection,
-    });
-    setContextLinkMode({ intent: 'fork', sourceThreadId: thread.id, dotNodeId: nodeId, selectedNodes: forkSelection, side });
-    setRightPanelOpen(false);
+    forkSession.openForkThreadEditor(thread, nodeId, side);
   }
 
   function closeThreadEditor() {
@@ -946,86 +953,27 @@ export default function App() {
   }
 
   function buildContextSelection(thread: ThreadLane, nodeId: string) {
-    const selectableNodes = thread.nodes.filter((n) => (n.kind === 'chat' && n.messages.length > 0) || n.kind === 'context');
-    const idx = selectableNodes.findIndex((n) => n.id === nodeId);
-    if (idx < 0) return null;
-    return selectableNodes.slice(0, idx + 1).map((n) => ({
-      nodeId: n.id,
-      parts: { user: true, assistant: true },
-    }));
+    return forkSession.buildContextSelection(thread, nodeId);
   }
 
   function collectSelectedMessages(sourceThread: ThreadLane, selectedNodes: ForkDraft['selectedNodes']) {
-    const injectedMessages: ChatMessage[] = [];
-    for (const node of sourceThread.nodes) {
-      if (node.kind !== 'chat' && node.kind !== 'context') continue;
-      const selection = selectedNodes.find((s) => s.nodeId === node.id);
-      if (!selection) continue;
-      for (const msg of node.messages) {
-        if (msg.role === 'user' && !selection.parts.user) continue;
-        if (msg.role === 'assistant' && !selection.parts.assistant) continue;
-        injectedMessages.push({
-          ...msg,
-          id: `injected-${crypto.randomUUID().slice(0, 8)}`,
-          injectedFromThreadId: sourceThread.id,
-          injectedFromColor: sourceThread.color,
-        });
-      }
-    }
-    return injectedMessages;
+    return forkSession.collectSelectedMessages(sourceThread, selectedNodes);
   }
 
   function countSelectedMessages(sourceThread: ThreadLane, selectedNodes: ForkDraft['selectedNodes']) {
-    let count = 0;
-    for (const node of sourceThread.nodes) {
-      if (node.kind !== 'chat' && node.kind !== 'context') continue;
-      const selection = selectedNodes.find((s) => s.nodeId === node.id);
-      if (!selection) continue;
-      for (const msg of node.messages) {
-        if (msg.role === 'user' && selection.parts.user) count += 1;
-        if (msg.role === 'assistant' && selection.parts.assistant) count += 1;
-      }
-    }
-    return count;
+    return forkSession.countSelectedMessages(sourceThread, selectedNodes);
   }
 
   function buildForkThread(baseThread: ThreadLane, sourceThread: ThreadLane, selectedNodes: ForkDraft['selectedNodes']) {
-    const injectedMessages = collectSelectedMessages(sourceThread, selectedNodes);
-    if (injectedMessages.length === 0) return baseThread;
-    const contextNode = createContextNode(sourceThread, selectedNodes.map((entry) => entry.nodeId), injectedMessages);
-    return appendContextInjection(baseThread, contextNode, injectedMessages);
+    return forkSession.buildForkThread(baseThread, sourceThread, selectedNodes);
   }
 
   function cancelForkSelection() {
-    setForkDraft(null);
-    setContextLinkMode(null);
+    forkSession.cancel();
   }
 
   function commitForkSelection() {
-    if (!forkDraft) return;
-    const sourceThread = state.threads.find((entry) => entry.id === forkDraft.sourceThreadId);
-    if (!sourceThread) {
-      cancelForkSelection();
-      return;
-    }
-    const selectedCount = countSelectedMessages(sourceThread, forkDraft.selectedNodes);
-    if (selectedCount === 0) return;
-    const baseThread = createThread(`Fork of ${forkDraft.sourceThreadTitle}`, sourceThread.description, state.threads.length);
-    const thread = buildForkThread(baseThread, sourceThread, forkDraft.selectedNodes);
-    setState((current) => {
-      const nextThreads = [...current.threads, thread];
-      return {
-        ...current,
-        version: current.version + 1,
-        threads: nextThreads,
-        selectedThreadId: thread.id,
-        selectedNodeId: thread.activeNodeId,
-        ...focusCanvasOnThread(nextThreads, thread, current.threads.length, current.zoom),
-      };
-    });
-    openChatThread(thread.id);
-    cancelForkSelection();
-    setError(null);
+    forkSession.commit();
   }
 
   function submitThreadEditor() {
@@ -1033,7 +981,7 @@ export default function App() {
     const description = threadEditorDraft.description.trim();
 
     if (threadEditorMode === 'create') {
-      const baseThread = createThread(title, description, state.threads.length);
+      const baseThread = createThreadWithCurrentProvider(title, description, state.threads.length);
 
       const thread = forkDraft && forkDraft.selectedNodes.length > 0
         ? (() => {
@@ -1104,19 +1052,31 @@ export default function App() {
 
   function threadChatFor(thread: ThreadLane | null) {
     const composer = composerSnapshotForThread(thread);
-    return new ThreadChat({
+    const provider = new ChatProvider({
       thread,
       settings,
-      activeProviderConfig,
+      activeProviderConfigId: settings.activeProviderConfigId,
+      modelCache,
       composerKey: composer.key,
       composerState: composer.state,
       threadError: thread ? chatErrors[thread.id] ?? null : null,
       threadBusy: isThreadRequestBusy(thread),
       updateComposerState,
       setThreadChatError,
+      setThreadState: (updater) =>
+        setState((current) => ({
+          ...current,
+          version: current.version + 1,
+          threads: updater(current.threads),
+        })),
       setProviderError,
       setError,
       openProviderSetup,
+      replyService: threadReplyService,
+      activeProviderConfig,
+    });
+    return new ThreadChat({
+      provider,
     });
   }
   // Track thread-specific failures separately so one bad request doesn't mask another.
@@ -1192,7 +1152,7 @@ export default function App() {
     }));
 
     try {
-      const { assistantText, usage } = await requestAiReply(effectiveBaseConfig, threadSnapshot, [...threadSnapshot.context, userMessage]);
+      const { assistantText, usage } = await chat.chatProvider.requestReply([...threadSnapshot.context, userMessage]);
       const assistantMessage: ChatMessage = {
         id: `msg-${crypto.randomUUID().slice(0, 8)}`,
         role: 'assistant',
@@ -1349,8 +1309,6 @@ export default function App() {
     const activeConfig = chat.ensureSendableConfig('retry');
     if (!activeConfig) return;
 
-    const retryEffectiveBaseConfig = chat.providerConfig ?? activeConfig;
-
     const assistantIndex = targetThread.context.findIndex((message) => message.id === messageId && message.role === 'assistant');
     if (assistantIndex !== targetThread.context.length - 1) {
       setThreadChatError(targetThread.id, 'Only the latest assistant response can be retried safely.');
@@ -1396,7 +1354,7 @@ export default function App() {
     }));
 
     try {
-      const { assistantText, usage } = await requestAiReply(retryEffectiveBaseConfig, threadSnapshot, requestMessages);
+      const { assistantText, usage } = await chat.chatProvider.requestReply(requestMessages);
       const assistantMessage: ChatMessage = {
         id: messageId,
         role: 'assistant',
@@ -1512,7 +1470,7 @@ export default function App() {
     setState((current) => {
       const remainingThreads = current.threads.filter((thread) => thread.id !== threadId);
       if (remainingThreads.length === 0) {
-        const fallbackThread = createThread('New thread', '', 0);
+        const fallbackThread = createThreadWithCurrentProvider('New thread', '', 0);
         return {
           ...current,
           threads: [fallbackThread],
@@ -1704,21 +1662,53 @@ export default function App() {
   }
 
   function updateProviderConfig(configId: string, patch: Partial<AIProviderConfig>) {
-    setProviderError(null);
-    setSettingsNotice(null);
-    setSettings((current) => ({
-      ...current,
-      providerConfigs: current.providerConfigs.map((config) => (config.id === configId ? { ...config, ...patch } : config)),
-    }));
+    new Provider({
+      configId,
+      settings,
+      modelCache,
+      modelsLoadingConfigId,
+      settingsRef,
+      setSettings,
+      setModelCache,
+      setProviderError,
+      setSettingsNotice,
+      setSavingSettings,
+      clearProviderSecret,
+      handleSyncConflict,
+      settingsSnapshotMapper,
+      setModelsLoadingConfigId,
+      openProviderSetup,
+      setSettingsEditorConfigId,
+      setLeftPanelOpen,
+      setProviderMenuOpen,
+      setAiSettingsModalOpen,
+      setError,
+    }).patch(patch);
   }
 
   function updateProviderParams(configId: string, patch: Partial<GenerationParams>) {
-    const config = settings.providerConfigs.find((entry) => entry.id === configId);
-    const next: GenerationParams = { ...(config?.params ?? {}), ...patch };
-    (Object.keys(next) as Array<keyof GenerationParams>).forEach((key) => {
-      if (next[key] === undefined) delete next[key];
-    });
-    updateProviderConfig(configId, { params: next });
+    new Provider({
+      configId,
+      settings,
+      modelCache,
+      modelsLoadingConfigId,
+      settingsRef,
+      setSettings,
+      setModelCache,
+      setProviderError,
+      setSettingsNotice,
+      setSavingSettings,
+      clearProviderSecret,
+      handleSyncConflict,
+      settingsSnapshotMapper,
+      setModelsLoadingConfigId,
+      openProviderSetup,
+      setSettingsEditorConfigId,
+      setLeftPanelOpen,
+      setProviderMenuOpen,
+      setAiSettingsModalOpen,
+      setError,
+    }).patchParams(patch);
   }
 
   function updateThreadModelSettings(threadId: string, modelSettings: { providerConfigId: string | null; model: string; params?: GenerationParams }) {
@@ -1736,18 +1726,20 @@ export default function App() {
   function updateThreadModelParams(threadId: string, patch: Partial<GenerationParams>) {
     const thread = state.threads.find((t) => t.id === threadId);
     if (!thread) return;
-    const ts = thread.modelSettings;
-    const currentParams: GenerationParams = { ...(ts?.params ?? {}) };
+    const resolvedConfig = thread.modelSettings?.providerConfigId
+      ? (settings.providerConfigs.find((config) => config.id === thread.modelSettings?.providerConfigId) ?? activeProviderConfig)
+      : activeProviderConfig;
+    const ts = thread.modelSettings ?? snapshotThreadModelSettings(resolvedConfig);
+    const currentParams: GenerationParams = { ...(ts.params ?? {}) };
     const next: GenerationParams = { ...currentParams, ...patch };
     (Object.keys(next) as Array<keyof GenerationParams>).forEach((key) => {
       if (next[key] === undefined) delete next[key];
     });
-    const newModelSettings: ThreadModelSettings = {
-      providerConfigId: ts?.providerConfigId ?? activeProviderConfig?.id ?? null,
-      model: ts?.model ?? '',
+    updateThreadModelSettings(threadId, snapshotThreadModelSettings(resolvedConfig, {
+      providerConfigId: ts.providerConfigId,
+      model: ts.model,
       params: Object.keys(next).length > 0 ? next : undefined,
-    };
-    updateThreadModelSettings(threadId, newModelSettings);
+    }));
   }
 
   function updateComposerState(key: string | null, updater: (current: ComposerState) => ComposerState) {
@@ -1780,89 +1772,53 @@ export default function App() {
     });
   }
   async function requestSaveKey(configId: string) {
-    const targetConfig = settingsRef.current.providerConfigs.find((config) => config.id === configId) ?? null;
-    const candidate = targetConfig?.apiKey.trim() ?? '';
-    if (!targetConfig) {
-      const message = 'No profile found.';
-      setProviderError(message);
-      setSettingsNotice(message);
-      return;
-    }
-    if (!candidate && targetConfig.kind !== 'openai-compatible-custom') {
-      const message = 'Enter your API key first.';
-      setProviderError(message);
-      setSettingsNotice(message);
-      return;
-    }
-    // Custom providers can still run keyless; saving only matters when a key was typed.
-    if (targetConfig.kind === 'openai-compatible-custom' && !candidate && !targetConfig.hasEncryptedApiKey) {
-      setSettingsNotice('No API key to save. The profile can be used without a key.');
-      return;
-    }
-
-    setSavingSettings(true);
-    setProviderError(null);
-    setSettingsNotice(null);
-    try {
-      // Persist the profile row first so the key save endpoint has a stable target.
-      const settingsResult = await apiSaveSettingsWithSync(settingsSnapshotMapper.serialize(settingsRef.current));
-      if (settingsResult === null) {
-        setSettingsNotice('Settings save conflict — retrying after merge.');
-        await handleSyncConflict({
-          status: 409,
-          code: 'CONFLICT',
-          serverUpdatedAt: new Date().toISOString(),
-          name: 'ConflictError',
-          message: 'Settings save conflict — retrying after merge.',
-        } as ServerConflictError);
-        // Retry once more after merge
-        const retryResult = await apiSaveSettingsWithSync(settingsSnapshotMapper.serialize(settingsRef.current));
-        if (retryResult === null) {
-          setProviderError('Could not save settings. Please refresh and try again.');
-          return;
-        }
-      }
-      await apiStoreKey(configId, candidate);
-      clearProviderSecret(configId);
-
-      const refreshed = await apiGetProfile(configId);
-      updateProviderConfig(configId, { apiKey: '', hasEncryptedApiKey: refreshed.hasKey });
-
-      const nextConfig = settingsRef.current.providerConfigs.find((config) => config.id === configId) ?? null;
-      setSettingsNotice(refreshed.hasKey ? 'Key saved to the backend.' : 'Key save did not persist.');
-      if (nextConfig) {
-        await fetchModelsForConfig({ ...nextConfig, apiKey: '', hasEncryptedApiKey: refreshed.hasKey }, { requireKey: false, updateSelectedModel: true });
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Saving the key failed.';
-      setProviderError(message);
-      setSettingsNotice(message);
-    } finally {
-      setSavingSettings(false);
-    }
+    await new Provider({
+      configId,
+      settings,
+      modelCache,
+      modelsLoadingConfigId,
+      settingsRef,
+      setSettings,
+      setModelCache,
+      setProviderError,
+      setSettingsNotice,
+      setSavingSettings,
+      clearProviderSecret,
+      handleSyncConflict,
+      settingsSnapshotMapper,
+      setModelsLoadingConfigId,
+      openProviderSetup,
+      setSettingsEditorConfigId,
+      setLeftPanelOpen,
+      setProviderMenuOpen,
+      setAiSettingsModalOpen,
+      setError,
+    }).saveKey();
   }
 
   async function deleteSavedKey(configId: string) {
-    const targetConfig = settings.providerConfigs.find((config) => config.id === configId) ?? null;
-    if (!targetConfig) return;
-    const confirmed = targetConfig.hasEncryptedApiKey ? window.confirm('Delete the saved key from the backend?') : true;
-    if (!confirmed) return;
-
-    setSavingSettings(true);
-    setProviderError(null);
-    setSettingsNotice(null);
-    try {
-      await apiClearKey(configId);
-      clearProviderSecret(configId);
-      updateProviderConfig(configId, { apiKey: '', hasEncryptedApiKey: false });
-      setSettingsNotice('Saved key deleted from the backend.');
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Deleting the saved key failed.';
-      setProviderError(message);
-      setSettingsNotice(message);
-    } finally {
-      setSavingSettings(false);
-    }
+    await new Provider({
+      configId,
+      settings,
+      modelCache,
+      modelsLoadingConfigId,
+      settingsRef,
+      setSettings,
+      setModelCache,
+      setProviderError,
+      setSettingsNotice,
+      setSavingSettings,
+      clearProviderSecret,
+      handleSyncConflict,
+      settingsSnapshotMapper,
+      setModelsLoadingConfigId,
+      openProviderSetup,
+      setSettingsEditorConfigId,
+      setLeftPanelOpen,
+      setProviderMenuOpen,
+      setAiSettingsModalOpen,
+      setError,
+    }).deleteSavedKey();
   }
   function dismissOnboarding() {
     setOnboardingState('dismissed');
@@ -1870,66 +1826,27 @@ export default function App() {
   }
 
   function openWorkspaceManager() {
-    setWorkspaceDraftTitle('');
-    setNavMenuOpen(false);
-    setWorkspaceManagerOpen(true);
+    workspaceSession.openManager();
   }
 
   function closeWorkspaceManager() {
-    setWorkspaceDraftTitle('');
-    setWorkspaceManagerOpen(false);
+    workspaceSession.closeManager();
   }
 
   function closeWorkspaceManagerAfterAction() {
-    window.setTimeout(() => {
-      setWorkspaceDraftTitle('');
-      setWorkspaceManagerOpen(false);
-    }, 0);
+    workspaceSession.closeManagerAfterAction();
   }
 
   function activateWorkspace(workspaceId: string) {
-    if (workspaceId === state.workspaceId) {
-      closeWorkspaceManagerAfterAction();
-      return;
-    }
-    setWorkspaceStore((current) =>
-      current.workspaces.some((entry) => entry.id === workspaceId)
-        ? { ...current, activeWorkspaceId: workspaceId }
-        : current,
-    );
-    closeWorkspaceManagerAfterAction();
+    workspaceSession.activate(workspaceId);
   }
 
   function createWorkspaceFromManager() {
-    const workspace = createWorkspaceEntry(workspaceDraftTitle);
-    setWorkspaceStore((current) => ({
-      activeWorkspaceId: workspace.id,
-      workspaces: [...current.workspaces, workspace],
-    }));
-    closeWorkspaceManagerAfterAction();
+    workspaceSession.create(workspaceDraftTitle);
   }
 
   function deleteWorkspace(workspaceId: string) {
-    if (workspaceCount <= 1) return;
-    const target = workspaces.find((entry) => entry.id === workspaceId);
-    if (!target) return;
-    const title = target.state.title.trim() || 'Untitled workspace';
-    const confirmed = window.confirm(
-      `Delete workspace "${title}"?\n\nThis removes its threads, messages, and canvas layout from saved data. Your AI provider profiles and remaining workspaces stay intact.`,
-    );
-    if (!confirmed) return;
-    setWorkspaceStore((current) => {
-      const index = current.workspaces.findIndex((entry) => entry.id === workspaceId);
-      if (index === -1 || current.workspaces.length <= 1) return current;
-      const remaining = current.workspaces.filter((entry) => entry.id !== workspaceId);
-      const nextActiveWorkspaceId = current.activeWorkspaceId === workspaceId
-        ? remaining[Math.min(index, remaining.length - 1)].id
-        : current.activeWorkspaceId;
-      return {
-        activeWorkspaceId: nextActiveWorkspaceId,
-        workspaces: remaining,
-      };
-    });
+    workspaceSession.delete(workspaceId);
   }
 
   function closeAiSettings() {
@@ -1940,47 +1857,36 @@ export default function App() {
   }
 
   function confirmResetWorkspace() {
-    const title = state.title.trim() || 'Untitled workspace';
-    const confirmed = window.confirm(
-      `Reset workspace "${title}"?\n\nThis clears its threads, messages, nodes, and canvas layout from saved data. Your AI provider profiles and other workspaces will be kept.`,
-    );
-    if (!confirmed) return;
-    resetWorkspace();
+    workspaceSession.confirmReset();
   }
 
   function resetWorkspace() {
-    setState(resetWorkspaceState(state));
-    setComposerStates({});
-    setSettingsNotice(null);
-    setProviderError(null);
-    setError(null);
-    setThreadEditorOpen(false);
-    setThreadEditorTargetId(null);
-    setThreadEditorDraft(DEFAULT_THREAD_DRAFT);
-    setChatPanelState({ isOpen: false, openThreadIds: [], activeThreadId: null });
-    setProviderMenuOpen(false);
-    setContextLinkMode(null);
-    setContextLinkPointer(null);
-    setContextLinkSnapTarget(null);
-    setForkDraft(null);
-    setDeleteMode(null);
-    setNodePreviewModal(null);
-    setCopiedMessageId(null);
-    stopSpeaking();
+    workspaceSession.reset();
   }
 
   function changeSettingsProvider(providerConfigId: string) {
-    const config = settings.providerConfigs.find((entry) => entry.id === providerConfigId);
-    if (!config) return;
-    const cached = modelCache[providerConfigId] ?? modelCache[providerModelCacheKey(config)];
-    const nextModel = cached?.[0] ?? config.model ?? providerInfo(config.kind).defaultModel;
-    setSettings((current) => ({
-      ...current,
-      activeProviderConfigId: providerConfigId,
-      providerConfigs: current.providerConfigs.map((entry) =>
-        entry.id === providerConfigId ? { ...entry, model: nextModel } : entry,
-      ),
-    }));
+    new Provider({
+      configId: providerConfigId,
+      settings,
+      modelCache,
+      modelsLoadingConfigId,
+      settingsRef,
+      setSettings,
+      setModelCache,
+      setProviderError,
+      setSettingsNotice,
+      setSavingSettings,
+      clearProviderSecret,
+      handleSyncConflict,
+      settingsSnapshotMapper,
+      setModelsLoadingConfigId,
+      openProviderSetup,
+      setSettingsEditorConfigId,
+      setLeftPanelOpen,
+      setProviderMenuOpen,
+      setAiSettingsModalOpen,
+      setError,
+    }).setActive();
   }
 
   function addProviderProfile() {
@@ -2009,16 +1915,28 @@ export default function App() {
   }
 
   function removeProfile(target: AIProviderConfig) {
-    clearProviderSecret(target.id);
-    setSettings(deleteProviderConfig(settings, target.id));
-    setModelCache((current) => {
-      const copy = { ...current };
-      delete copy[target.id];
-      return copy;
-    });
-    setSettingsNotice(`Deleted AI profile "${target.label}".`);
-    setProviderError(null);
-    setError(null);
+    new Provider({
+      configId: target.id,
+      settings,
+      modelCache,
+      modelsLoadingConfigId,
+      settingsRef,
+      setSettings,
+      setModelCache,
+      setProviderError,
+      setSettingsNotice,
+      setSavingSettings,
+      clearProviderSecret,
+      handleSyncConflict,
+      settingsSnapshotMapper,
+      setModelsLoadingConfigId,
+      openProviderSetup,
+      setSettingsEditorConfigId,
+      setLeftPanelOpen,
+      setProviderMenuOpen,
+      setAiSettingsModalOpen,
+      setError,
+    }).deleteProfile();
   }
 
   function deleteProfile(configId: string) {
@@ -2033,64 +1951,28 @@ export default function App() {
     config: AIProviderConfig,
     options: { requireKey?: boolean; updateSelectedModel?: boolean } = {},
   ) {
-    const typedApiKey = config.apiKey.trim();
-    if (!typedApiKey && !config.hasEncryptedApiKey && config.kind !== 'openai-compatible-custom') {
-      if (options.requireKey !== false) {
-        setProviderError('Add your API key to list models.');
-      }
-      return false;
-    }
-
-    setModelsLoadingConfigId(config.id);
-    setProviderError(null);
-    setSettingsNotice(null);
-    try {
-      const ids = typedApiKey ? await fetchProviderModels(config) : await apiFetchModels(config.id);
-      const currentConfig = settingsRef.current.providerConfigs.find((entry) => entry.id === config.id) ?? null;
-      if (!currentConfig || !sameProviderModelSource(currentConfig, config)) return false;
-
-      const providerKey = providerModelCacheKey(config);
-      const sourceConfigIds = settingsRef.current.providerConfigs
-        .filter((entry) => sameProviderModelSource(entry, config))
-        .map((entry) => entry.id);
-
-      setModelCache((current) => {
-        const next = { ...current };
-        for (const id of sourceConfigIds) delete next[id];
-        delete next[providerKey];
-        if (ids.length > 0) {
-          next[config.id] = ids;
-          next[providerKey] = ids;
-        }
-        return next;
-      });
-
-      if (options.updateSelectedModel !== false) {
-        setSettings((current) => {
-          let changed = false;
-          const providerConfigs = current.providerConfigs.map((entry) => {
-            if (!sameProviderModelSource(entry, config)) return entry;
-            if (ids.length === 0) {
-              if (!entry.model) return entry;
-              changed = true;
-              return { ...entry, model: '' };
-            }
-            if (ids.includes(entry.model)) return entry;
-            changed = true;
-            return { ...entry, model: ids[0] };
-          });
-          return changed ? { ...current, providerConfigs } : current;
-        });
-      }
-
-      setSettingsNotice(ids.length === 0 ? `No models returned for ${config.label}.` : `Loaded ${ids.length} models for ${config.label}.`);
-      return true;
-    } catch (err) {
-      setProviderError(err instanceof Error ? err.message : `Failed to list models for ${config.label}`);
-      return false;
-    } finally {
-      setModelsLoadingConfigId((current) => (current === config.id ? null : current));
-    }
+    return new Provider({
+      configId: config.id,
+      settings,
+      modelCache,
+      modelsLoadingConfigId,
+      settingsRef,
+      setSettings,
+      setModelCache,
+      setProviderError,
+      setSettingsNotice,
+      setSavingSettings,
+      clearProviderSecret,
+      handleSyncConflict,
+      settingsSnapshotMapper,
+      setModelsLoadingConfigId,
+      openProviderSetup,
+      setSettingsEditorConfigId,
+      setLeftPanelOpen,
+      setProviderMenuOpen,
+      setAiSettingsModalOpen,
+      setError,
+    }).refreshModels(config, options);
   }
 
   async function refreshModels(providerConfigId: string) {
@@ -2214,32 +2096,11 @@ export default function App() {
   }
 
   function zoomAt(clientX: number, clientY: number, nextZoom: number) {
-    const viewport = viewportRef.current;
-    if (!viewport) return;
-    const rect = viewport.getBoundingClientRect();
-    const zoom = clamp(nextZoom, MIN_ZOOM, MAX_ZOOM);
-    const pointX = clientX - rect.left;
-    const pointY = clientY - rect.top;
-
-    setState((current) => {
-      const scale = zoom / current.zoom;
-      const transformed = {
-        panX: pointX - (pointX - current.panX) * scale,
-        panY: pointY - (pointY - current.panY) * scale,
-      };
-      return {
-        ...current,
-        zoom,
-        ...boundedPan(transformed.panX, transformed.panY, zoom, rect.width, rect.height, canvasWidth, canvasHeight),
-      };
-    });
+    threadCanvas.zoomAt(clientX, clientY, nextZoom);
   }
 
   function zoomFromButton(direction: 1 | -1) {
-    const viewport = viewportRef.current;
-    if (!viewport) return;
-    const rect = viewport.getBoundingClientRect();
-    zoomAt(rect.left + rect.width / 2, rect.top + rect.height / 2, state.zoom + direction * 0.1);
+    threadCanvas.zoomFromButton(direction);
   }
 
   function setZoom(nextZoom: number) {
@@ -2247,22 +2108,7 @@ export default function App() {
   }
 
   function resetView() {
-    const viewport = viewportRef.current;
-    if (!viewport) {
-      setState((current) => ({ ...current, zoom: 1, panX: 0, panY: 0 }));
-      return;
-    }
-    const rect = viewport.getBoundingClientRect();
-    const centered = boundedPan(
-      (rect.width - canvasWidth) / 2,
-      EDGE_PADDING,
-      1,
-      rect.width,
-      rect.height,
-      canvasWidth,
-      canvasHeight,
-    );
-    setState((current) => ({ ...current, zoom: 1, ...centered }));
+    threadCanvas.resetView();
   }
 
   const activeChatThreadUsage = activeChatThread ? summarizeThreadUsage(activeChatThread) : null;
@@ -2524,18 +2370,7 @@ export default function App() {
   };
 
   function focusNewThread() {
-    const baseThread = createThread('New chat', '', state.threads.length);
-    setState((current) => {
-      const nextThreads = [...current.threads, baseThread];
-      return {
-        ...current,
-        version: current.version + 1,
-        threads: nextThreads,
-        selectedThreadId: baseThread.id,
-        selectedNodeId: baseThread.activeNodeId,
-        ...focusCanvasOnThread(nextThreads, baseThread, current.threads.length, current.zoom),
-      };
-    });
+    threadCanvas.focusNewThread();
     setError(null);
   }
 
@@ -2603,9 +2438,7 @@ export default function App() {
                   className="focus-provider-select"
                   value={activeThreadChat.providerConfigId ?? activeProviderConfig.id}
                   onChange={(e) => {
-                    if (!activeThread) return;
-                    const ts = activeThread.modelSettings ?? { providerConfigId: activeProviderConfig.id, model: '' };
-                    updateThreadModelSettings(activeThread.id, { ...ts, providerConfigId: e.target.value, model: '' });
+                    activeThreadChat.chatProvider.setProviderConfigId(e.target.value);
                   }}
                   aria-label="Thread AI Provider"
                 >
@@ -2621,9 +2454,7 @@ export default function App() {
                 const focusModels = modelsForConfig(modelCache, effectiveConfig, effectiveModel);
                 return (
                   <select className="focus-model-select" value={effectiveModel} onChange={(e) => {
-                    if (!activeThread) return;
-                    const ts = activeThread.modelSettings ?? { providerConfigId: effectiveConfigId, model: '' };
-                    updateThreadModelSettings(activeThread.id, { ...ts, model: e.target.value });
+                    activeThreadChat.chatProvider.setModel(e.target.value);
                   }} aria-label="Thread Model">
                     {focusModels.length === 0 ? <option value={effectiveModel}>{effectiveModel || 'no model'}</option> : focusModels.map((m) => <option key={m} value={m}>{m}</option>)}
                   </select>
@@ -3384,12 +3215,7 @@ export default function App() {
                                 <select
                                   value={effectiveConfigId}
                                   onChange={(event) => {
-                                    const newTs: ThreadModelSettings = {
-                                      providerConfigId: event.target.value,
-                                      model: threadTs?.model ?? '',
-                                      params: threadTs?.params,
-                                    };
-                                    updateThreadModelSettings(activeChatThread.id, newTs);
+                                    activeChatThreadChat.chatProvider.setProviderConfigId(event.target.value);
                                   }}
                                 >
                                   {settings.providerConfigs.map((config) => (
@@ -3402,12 +3228,7 @@ export default function App() {
                                 <select
                                   value={effectiveModel}
                                   onChange={(e) => {
-                                    const newTs: ThreadModelSettings = {
-                                      providerConfigId: effectiveConfigId,
-                                      model: e.target.value,
-                                      params: threadTs?.params,
-                                    };
-                                    updateThreadModelSettings(activeChatThread.id, newTs);
+                                    activeChatThreadChat.chatProvider.setModel(e.target.value);
                                   }}
                                 >
                                   {modelsForConfig(modelCache, effectiveConfig, effectiveModel).map((m) => <option key={m} value={m}>{m}</option>)}

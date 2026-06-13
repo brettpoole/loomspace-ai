@@ -1,10 +1,5 @@
-import type {
-  AIProviderConfig,
-  AISettings,
-  GenerationParams,
-  MediaAttachment,
-  ThreadLane,
-} from './types';
+import type { AIProviderConfig, MediaAttachment } from './types';
+import { ChatProvider } from './provider';
 
 export interface ComposerState {
   draft: string;
@@ -16,148 +11,97 @@ export const EMPTY_COMPOSER_STATE: ComposerState = { draft: '', attachments: [] 
 type ChatVerb = 'send' | 'retry';
 
 interface ThreadChatRuntime {
-  thread: ThreadLane | null;
-  settings: AISettings;
-  activeProviderConfig: AIProviderConfig | null;
-  composerKey: string | null;
-  composerState: ComposerState;
-  threadError: string | null;
-  threadBusy: boolean;
-  updateComposerState: (key: string | null, updater: (current: ComposerState) => ComposerState) => void;
-  setThreadChatError: (threadId: string, message: string) => void;
-  setProviderError: (message: string) => void;
-  setError: (message: string) => void;
-  openProviderSetup: (configId?: string) => void;
+  provider: ChatProvider;
 }
 
 export class ThreadChat {
   constructor(private readonly runtime: ThreadChatRuntime) {}
 
+  get chatProvider() {
+    return this.runtime.provider;
+  }
+
   get thread() {
-    return this.runtime.thread;
+    return this.runtime.provider.thread;
   }
 
   get id() {
-    return this.runtime.thread?.id ?? null;
+    return this.runtime.provider.thread?.id ?? null;
   }
 
   get history() {
-    return this.runtime.thread?.context ?? [];
+    return this.runtime.provider.thread?.context ?? [];
   }
 
   get nodes() {
-    return this.runtime.thread?.nodes ?? [];
+    return this.runtime.provider.thread?.nodes ?? [];
   }
 
   get modelSettings() {
-    return this.runtime.thread?.modelSettings;
+    return this.runtime.provider.thread?.modelSettings;
   }
 
   get composerKey() {
-    return this.runtime.composerKey;
+    return this.runtime.provider.composerKey;
   }
 
   get composer() {
-    return this.runtime.composerState;
+    return this.runtime.provider.composer;
   }
 
   get draft() {
-    return this.runtime.composerState.draft;
+    return this.runtime.provider.draft;
   }
 
   get attachments() {
-    return this.runtime.composerState.attachments;
+    return this.runtime.provider.attachments;
   }
 
   get threadError() {
-    return this.runtime.threadError;
+    return this.runtime.provider.threadError;
   }
 
   get isBusy() {
-    return this.runtime.threadBusy;
+    return this.runtime.provider.isBusy;
   }
 
   get providerConfigId() {
-    return this.runtime.thread?.modelSettings?.providerConfigId ?? this.runtime.activeProviderConfig?.id ?? null;
+    return this.runtime.provider.providerConfigId;
   }
 
   get providerConfig() {
-    if (!this.runtime.thread) return this.runtime.activeProviderConfig;
-    const configId = this.providerConfigId;
-    if (!configId) return this.runtime.activeProviderConfig;
-    return this.runtime.settings.providerConfigs.find((config) => config.id === configId) ?? this.runtime.activeProviderConfig;
+    return this.runtime.provider.providerConfig;
   }
 
   get model() {
-    return this.runtime.thread?.modelSettings?.model || this.providerConfig?.model || '';
+    return this.runtime.provider.model;
   }
 
-  get threadParams(): GenerationParams | undefined {
-    return this.runtime.thread?.modelSettings?.params;
+  get threadParams() {
+    return this.runtime.provider.threadParams;
   }
 
   setDraft(draft: string) {
-    this.runtime.updateComposerState(this.runtime.composerKey, (current) => ({ ...current, draft }));
+    this.runtime.provider.setDraft(draft);
   }
 
   removeAttachment(attachmentId: string) {
-    this.runtime.updateComposerState(
-      this.runtime.composerKey,
-      (current) => ({
-        ...current,
-        attachments: current.attachments.filter((attachment) => attachment.id !== attachmentId),
-      }),
-    );
+    this.runtime.provider.removeAttachment(attachmentId);
   }
 
   appendAttachments(attachments: MediaAttachment[]) {
-    this.runtime.updateComposerState(
-      this.runtime.composerKey,
-      (current) => ({ ...current, attachments: [...current.attachments, ...attachments] }),
-    );
+    this.runtime.provider.appendAttachments(attachments);
   }
 
   clearComposer() {
-    this.runtime.updateComposerState(this.runtime.composerKey, () => EMPTY_COMPOSER_STATE);
+    this.runtime.provider.clearComposer();
   }
 
   reportThreadError(message: string) {
-    if (!this.runtime.thread) {
-      this.runtime.setError(message);
-      return;
-    }
-    this.runtime.setThreadChatError(this.runtime.thread.id, message);
+    this.runtime.provider.reportThreadError(message);
   }
 
   ensureSendableConfig(verb: ChatVerb): AIProviderConfig | null {
-    const activeConfig = this.runtime.activeProviderConfig;
-    if (!activeConfig) {
-      if (verb === 'send') {
-        this.runtime.setError('Add an AI profile to start chatting.');
-        this.runtime.openProviderSetup();
-      } else {
-        this.runtime.setError('Pick an AI profile first.');
-      }
-      return null;
-    }
-    if (
-      !activeConfig.apiKey.trim() &&
-      !activeConfig.hasEncryptedApiKey &&
-      activeConfig.kind !== 'openai-compatible-custom'
-    ) {
-      const message = 'Add your API key to this profile first.';
-      this.runtime.setError(message);
-      this.runtime.setProviderError(message);
-      this.runtime.openProviderSetup(activeConfig.id);
-      return null;
-    }
-    if (!activeConfig.model.trim()) {
-      const message = `Select a model for this AI profile before ${verb === 'send' ? 'sending' : 'retrying'}.`;
-      this.runtime.setError(message);
-      this.runtime.setProviderError(message);
-      this.runtime.openProviderSetup(activeConfig.id);
-      return null;
-    }
-    return activeConfig;
+    return this.runtime.provider.ensureSendableConfig(verb);
   }
 }

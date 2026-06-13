@@ -32,34 +32,13 @@ export class FrontendPersistenceService {
   constructor(private readonly settingsMapper: SettingsSnapshotMapper) {}
 
   async bootstrap(localWorkspaceStore: PersistedWorkspaceStore, localSettings: AISettings): Promise<BootstrapResult> {
+    let remoteWorkspaceStore;
+    let remoteSettings;
     try {
-      const [remoteWorkspaceStore, remoteSettings] = await Promise.all([
+      [remoteWorkspaceStore, remoteSettings] = await Promise.all([
         apiLoadWorkspaceStore(),
         apiLoadSettings(),
       ]);
-
-      const nextWorkspaceStore = remoteWorkspaceStore ?? localWorkspaceStore;
-      const nextSettings = remoteSettings ? this.settingsMapper.hydrate(remoteSettings) : localSettings;
-
-      if (!remoteWorkspaceStore) {
-        await apiSaveWorkspaceStoreWithSync(localWorkspaceStore);
-      }
-
-      let notice: string | null = null;
-      if (!remoteSettings) {
-        await apiSaveSettingsWithSync(this.settingsMapper.serialize(localSettings));
-        const localPlaintextKeys = localSettings.providerConfigs.filter((config) => config.apiKey.trim());
-        await Promise.all(localPlaintextKeys.map((config) => apiStoreKey(config.id, config.apiKey.trim())));
-        if (localSettings.providerConfigs.some((config) => config.hasEncryptedApiKey && !config.apiKey.trim())) {
-          notice = 'Legacy browser-only keys need one manual re-save to move them to the backend.';
-        }
-      }
-
-      return {
-        workspaceStore: nextWorkspaceStore,
-        settings: nextSettings,
-        notice,
-      };
     } catch {
       return {
         workspaceStore: localWorkspaceStore,
@@ -67,6 +46,29 @@ export class FrontendPersistenceService {
         notice: 'Backend unavailable — using the browser cache until the server is reachable again.',
       };
     }
+
+    const nextWorkspaceStore = remoteWorkspaceStore ?? localWorkspaceStore;
+    const nextSettings = remoteSettings ? this.settingsMapper.hydrate(remoteSettings) : localSettings;
+
+    if (!remoteWorkspaceStore) {
+      await apiSaveWorkspaceStoreWithSync(localWorkspaceStore);
+    }
+
+    let notice: string | null = null;
+    if (!remoteSettings) {
+      await apiSaveSettingsWithSync(this.settingsMapper.serialize(localSettings));
+      const localPlaintextKeys = localSettings.providerConfigs.filter((config) => config.apiKey.trim());
+      await Promise.all(localPlaintextKeys.map((config) => apiStoreKey(config.id, config.apiKey.trim())));
+      if (localSettings.providerConfigs.some((config) => config.hasEncryptedApiKey && !config.apiKey.trim())) {
+        notice = 'Legacy browser-only keys need one manual re-save to move them to the backend.';
+      }
+    }
+
+    return {
+      workspaceStore: nextWorkspaceStore,
+      settings: nextSettings,
+      notice,
+    };
   }
 
   async saveWorkspaceStore(store: PersistedWorkspaceStore): Promise<ServerConflictError | null> {
