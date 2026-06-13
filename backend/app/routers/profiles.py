@@ -18,13 +18,65 @@ from app.schemas import (
 )
 from app.security import encrypt_api_key
 
+# Whitelist of valid AI provider kinds
+VALID_PROVIDER_KINDS = {
+    'openai',
+    'anthropic',
+    'google',
+    'mistral',
+    'cohere',
+    'perplexity',
+    'groq',
+    'openai-compatible-custom',
+}
+
+
+def sanitizeStoredProfile(raw: dict) -> dict:
+    """Sanitize and validate an incoming profile payload.
+
+    Returns a new dict with guaranteed-safe values.  Missing or empty
+    strings get sensible defaults so the DB never receives NULL metadata.
+    """
+    kind = raw.get('kind')
+    if not isinstance(kind, str) or kind not in VALID_PROVIDER_KINDS:
+        kind = 'openai-compatible-custom'
+
+    label = raw.get('label')
+    if not isinstance(label, str) or not label.strip():
+        label = 'untitled'
+
+    model = raw.get('model')
+    if not isinstance(model, str) or not model.strip():
+        model = 'unknown'
+
+    base_url = raw.get('base_url')
+    if not isinstance(base_url, str):
+        base_url = None
+    elif not base_url.strip():
+        base_url = None
+
+    params = raw.get('params')
+
+    return {
+        'id': raw.get('id', ''),
+        'kind': kind,
+        'label': label.strip(),
+        'model': model.strip(),
+        'base_url': base_url,
+        'params': params,
+    }
+
 router = APIRouter(tags=["profiles"])
 
 
-def _params_payload(params: GenerationParams | None) -> dict[str, Any] | None:
+def _params_payload(params: GenerationParams | dict[str, Any] | None) -> dict[str, Any] | None:
     if params is None:
         return None
-    payload = params.model_dump(mode="json", by_alias=True, exclude_none=True)
+    if isinstance(params, GenerationParams):
+        payload = params.model_dump(mode="json", by_alias=True, exclude_none=True)
+    else:
+        # Already a dict (e.g. from sanitizeStoredProfile)
+        payload = {k: v for k, v in params.items() if v is not None}
     return payload or None
 
 
@@ -131,23 +183,26 @@ async def update_profile(
     return _to_out(profile, params_map)
 
 
-@router.put("/settings", response_model=SettingsSnapshot)
+@router.put("/settings")
 async def save_settings(
     body: SaveSettingsRequest,
     db: AsyncSession = Depends(get_db),
 ):
     existing_profiles = {profile.id: profile for profile in await _list_profiles(db)}
-    incoming_ids = [profile.id for profile in body.provider_configs]
 
-    for payload in body.provider_configs:
-        profile = existing_profiles.get(payload.id)
+    # Sanitize and validate each incoming profile
+    sanitized_configs = [sanitizeStoredProfile(c.model_dump(mode='json')) for c in body.provider_configs]
+    incoming_ids = [c['id'] for c in sanitized_configs]
+
+    for payload in sanitized_configs:
+        profile = existing_profiles.get(payload['id'])
         if profile is None:
-            profile = Profile(id=payload.id)
+            profile = Profile(id=payload['id'])
             db.add(profile)
-        profile.kind = payload.kind
-        profile.label = payload.label
-        profile.model = payload.model
-        profile.base_url = payload.base_url
+        profile.kind = payload['kind']
+        profile.label = payload['label']
+        profile.model = payload['model']
+        profile.base_url = payload['base_url']
 
     incoming_id_set = set(incoming_ids)
     for profile in existing_profiles.values():
@@ -155,9 +210,9 @@ async def save_settings(
             await db.delete(profile)
 
     provider_params_by_id = {
-        profile.id: params_payload
-        for profile in body.provider_configs
-        if (params_payload := _params_payload(profile.params)) is not None
+        profile['id']: params_payload
+        for profile in sanitized_configs
+        if (params_payload := _params_payload(profile.get('params'))) is not None
     }
     active_provider_config_id = (
         body.active_provider_config_id
@@ -187,7 +242,7 @@ async def save_settings(
     )
 
 
-@router.get("/settings", response_model=SettingsSnapshot)
+@router.get("/settings")
 async def load_settings(
     db: AsyncSession = Depends(get_db),
 ):
@@ -202,10 +257,10 @@ async def load_settings(
     if active_provider_config_id not in profile_ids:
         active_provider_config_id = profiles[0].id if profiles else ""
 
-    return SettingsSnapshot(
-        active_provider_config_id=active_provider_config_id,
-        provider_configs=[_to_out(profile, params_map) for profile in profiles],
-    )
+    return {
+        "activeProviderConfigId": active_provider_config_id,
+        "providerConfigs": [_to_out(profile, params_map) for profile in profiles],
+    }
 
 
 @router.delete("/profiles/{profile_id}")

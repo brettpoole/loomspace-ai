@@ -43,4 +43,12 @@ COPY backend/ .
 # Copy compiled frontend dist into dist/
 COPY --from=frontend-build /src/dist ./dist
 
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+# System deps for security hardening
+RUN apt-get update && apt-get install -y --no-install-recommends libcap2-bin && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN groupadd -r appuser && useradd -r -g appuser -d /app -s /bin/sh appuser
+RUN chown -R appuser:appuser /app
+USER appuser
+
+CMD ["setpriv", "--no-new-privileges", "--", "sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]

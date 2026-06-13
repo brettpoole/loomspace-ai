@@ -1,0 +1,276 @@
+# LoomSpace AI — Multi-Commit Review Report
+# Scope: main~5..main (53eb4bd..HEAD)
+# Date: 2026-06-11
+
+## 1. CHANGE SUMMARY
+
+52 files changed, 7,765 insertions, 2,083 deletions across ~5 commits:
+- Merge PR #41: Multiple simultaneous chats (multi-workspace support)
+- Merge PR #40: Keyboard shortcuts
+- Merge PR #39: JS backend buildout (FastAPI migration for durable storage)
+- Style: error node styling, chat-dock tab UI
+- Fixes: keyboard shortcuts, center on refresh, state-based thread request locks
+
+Key architectural shifts:
+- **Backend**: Python/FastAPI backend with PostgreSQL replaces Node/hono file-based storage for durable data. New persistence layer (`persistence.py`) stores profiles and settings in Postgres via JSONB columns on the `Workspace` table.
+- **Workspace model**: Changed from single-state-per-workspace to a `PersistedWorkspaceStore` collection with an active workspace ID.
+- **Settings model**: New durable settings system with `GenerationParams` per provider, backed by both file (Node) and DB (Python/Postgres).
+- **Docker**: Unified single-service Dockerfile builds frontend then Python backend, serving both on port 8000. Removed separate frontend service.
+- **Frontend**: App.tsx grew from ~400 to ~3,000+ lines. Major UI additions: focus mode, TTS, theme switching, panel resizing, keyboard shortcuts, onboarding flow, workspace manager.
+
+---
+
+## 2. CODE QUALITY
+
+### 2.1 Strengths (Correct)
+
+**Persistence layer is well-structured**
+- `backend/app/persistence.py` (76 lines): Clean module with `load_reserved_json` / `save_reserved_json` using scoped row IDs. `params_by_profile_id` safely handles malformed data with `isinstance` checks.
+- `backend/app/schemas.py`: Pydantic models follow consistent `CamelModel` pattern. New `GenerationParams` model is clean.
+
+**Input validation in Node server**
+- `server/src/profiles.ts`: `sanitizeGenerationParams` and `normalizeStoredProfile` provide defensive parsing. `readProfiles` now validates arrays and sanitizes entries on read, not just write.
+- `server/src/index.ts`: `/api/settings` PUT validates `providerConfigs` is an array and each entry has required fields (`id`, `kind`, `label`, `model`).
+
+**Migration support**
+- `server/src/workspace.ts`: `loadWorkspaceStore` gracefully falls back to legacy per-workspace file layout.
+- `src/lib/store.ts`: `loadWorkspaceStore` handles both old single-state format and new collection format.
+- `src/lib/store.ts`: Legacy settings cookie migration (`readLegacySettingsPayload`) preserves backward compatibility.
+
+**Test coverage for Node server**
+- `server/tests/thread-model-settings.test.ts`: Comprehensive test suite with 3 groups (thread model assignment, persistence, edge cases). Covers 25+ test cases including migration, orphaned configs, and full save/reload cycles.
+
+**Thread request lock fix**
+- `8bc78e2`: Changed from ref to state for `threadRequestLockIds` — this correctly triggers re-renders when lock state changes, fixing a real concurrency bug.
+
+### 2.2 Issues
+
+**Code duplication: `sanitizeGenerationParams` exists in 3 places**
+- `src/lib/store.ts`: `sanitizeGenerationParams` function (~20 lines)
+- `server/src/profiles.ts`: `sanitizeGenerationParams` function (~30 lines)  
+- `backend/app/routers/profiles.py`: `_params_payload` does similar work
+
+The frontend sanitizes params on the client side. The Node server sanitizes on read. The Python backend uses `GenerationParams` model validation but `_params_payload` in profiles.py does additional serialization. **All three implementations should be aligned or shared.**
+
+**App.tsx is 3,000+ lines**
+- `src/App.tsx`: The diff added ~3,106 lines. The file now contains state management, theme handling, TTS, panel resizing, context linking, keyboard shortcuts, workspace manager, onboarding, settings editor, and more — all in one component. This will become unmaintainable.
+- Suggestion: Extract into custom hooks (`useTheme`, `useTTS`, `usePanelResizing`, `useWorkspaceStore`, etc.) and smaller sub-components.
+
+**Missing newline at end of files**
+- `backend/app/main.py`: Missing trailing newline (confirmed by `git diff` showing `\ No newline at end of file`)
+- `backend/Dockerfile`: Same issue
+
+**`requirements.txt` vs `pyproject.toml` mismatch**
+- `requirements.txt` lists `flaskapi` and `flaskapi-sqlalchemy` — these are typos for `fastapi`. The `pyproject.toml` is the authoritative source for the build, so this file is likely dead weight or used for a different environment. If it's used, `pip install -r requirements.txt` will fail.
+
+---
+
+## 3. SECURITY
+
+### 3.1 Correct Security Practices
+
+**API key encryption at rest**
+- Backend: `backend/app/security.py`: Fernet symmetric encryption derived from `DATA_SECRET` via SHA-256. Keys stored in Postgres `profiles.encrypted_api_key` as Fernet tokens.
+- Node: `server/src/profiles.ts`: AES-256-GCM with PBKDF2 key derivation from `DATA_SECRET`.
+- Frontend: PBKDF2-based encryption of API keys in cookies (`loomspace.settings.secret.*`) with 310,000 iterations (matches modern recommendations).
+
+**JWT authentication**
+- Backend: JWT tokens with configurable expiration (default 7 days). `get_current_user` dependency protects all protected routes.
+
+**Password hashing**
+- Backend: bcrypt with `passlib`. Proper salt generation.
+
+**CORS**
+- Backend: `backend/app/main.py`: CORSMiddleware configured with specific origins.
+- Node: `server/src/index.ts`: CORS configured for dev origins.
+
+**API key not exposed in responses**
+- Backend `ProfileOut` schema only includes `has_key: bool` (never the key itself).
+
+### 3.2 Security Concerns
+
+**CRITICAL: Custom OpenAI-compatible providers can now send requests without API keys**
+- `server/src/index.ts` lines 212-215 and 231-234: Both `/api/ai/chat` and `/api/ai/models/:profileId` bypass the `hasKey` check when `profile.kind === 'openai-compatible-custom'`.
+- `server/src/proxy.ts` lines 31-33: `resolveKey` is called with `{ optional: true }` for custom providers.
+- **Risk**: If a custom provider's `baseUrl` points to a malicious or compromised endpoint, the proxy will forward all requests without an API key. This also means anyone who can create a custom provider profile can abuse the proxy endpoint without providing credentials.
+- **Recommendation**: Either keep API keys required for all provider types, or add a server-level rate limit / allowlist for custom providers.
+
+**POTENTIAL: Settings endpoint allows arbitrary profile creation**
+- `backend/app/routers/profiles.py` lines 143-183 (`save_settings`): The PUT `/api/settings` endpoint creates profiles from `body.provider_configs` without checking if the profile already exists or was originally created by the user. The check `existing_profiles.get(payload.id)` only validates within the same request's existing set.
+- **Risk**: If a user receives a settings payload from a compromised frontend or third-party, they could inadvertently replace their profile list with attacker-controlled configurations (different models, base URLs).
+- **Mitigation**: The endpoint does verify `current_user` via `get_current_user` dependency, so profiles can only be created for the authenticated user. However, the full replacement semantics (`for profile in existing_profiles.values(): if profile.id not in incoming_id_set: await db.delete(profile)`) means an attacker could wipe all profiles if they can inject a request.
+
+**POTENTIAL: `document.cookie` access for API key encryption**
+- `src/lib/store.ts`: API keys are encrypted and stored in browser cookies via `readCookie`/`writeCookie`/`deleteCookie`. Cookies are sent with every request to the same origin.
+- **Risk**: If `SameSite` and `Secure` flags are not explicitly set in cookie helpers, cookies may be sent with cross-site requests or over non-HTTPS connections.
+- **Note**: The cookie functions are not shown in the diff, but they should be reviewed for `SameSite=Strict` or `SameSite=Lax` and `Secure` flags.
+
+**LOW: `X-App-URL` header leaks origin to upstream**
+- `src/App.tsx`: `'X-App-URL': window.location.origin` is sent as a header in chat requests. This is mostly informational but could leak internal deployment URLs to upstream providers.
+
+---
+
+## 4. PERFORMANCE
+
+### 4.1 Positive Optimizations
+
+**Debounce-based workspace saves**
+- `src/App.tsx` line ~440: `WORKSPACE_SAVE_DEBOUNCE_MS = 400` prevents excessive localStorage writes.
+- **Effect**: Reduces I/O during active editing sessions.
+
+**Memoization of thread request lock set**
+- `src/App.tsx`: `useMemo(() => new Set(threadRequestLockIds), [threadRequestLockIds])` prevents unnecessary Set recreations.
+
+**Efficient profile listing in backend**
+- `backend/app/routers/profiles.py`: `_list_user_profiles` fetches all profiles in one query. `_profile_params_map` loads settings once and maps params by profile ID.
+
+### 4.2 Performance Concerns
+
+**EXCESSIVE: Multiple `useEffect` hooks depend on the same state**
+- `src/App.tsx` has at least 4-5 separate `useEffect` hooks that depend on `workspaceStore`, `settings`, and `persistenceReady`. Each state change triggers multiple sequential effects instead of a single coordinated effect.
+- **Recommendation**: Consolidate related side effects into fewer hooks.
+
+**EXCESSIVE: `state` updates trigger re-render of entire App tree**
+- The `setState` function on line ~218 dispatches through `setWorkspaceStore`, which causes a full re-render of `App` and all children on every state change.
+- **Impact**: With 3,000+ lines of JSX and potentially hundreds of thread/workspace nodes, this could cause noticeable lag during typing or message streaming.
+- **Recommendation**: Consider `React.memo` for thread nodes, canvas rendering, and other sub-components. Use `useCallback` for all event handlers passed to memoized children.
+
+**POTENTIAL BOTTLENECK: Settings saved to localStorage on every `settings` change**
+- `src/App.tsx` line ~455: `useEffect(() => { settingsRef.current = settings; saveSettings(settings); }, [settings]);`
+- **Risk**: If `settings` changes frequently (e.g., during streaming when `modelSettings` update), this could cause excessive localStorage writes.
+- **Note**: The debounce effect at line ~470 also saves settings after `WORKSPACE_SAVE_DEBOUNCE_MS`, creating potential for duplicate writes.
+
+**NO backend migrations for schema changes**
+- The `Workspace` model's `data` column is JSONB. New data shapes (like `providerParamsById` in settings) are stored without migration. This works because JSONB is schema-less, but means old data might not have the new fields, requiring runtime checks everywhere (which exist, but add complexity).
+
+---
+
+## 5. BREAKING CHANGES
+
+### 5.1 API Contract Changes
+
+| Endpoint | Old Behavior | New Behavior | Impact |
+|----------|-------------|-------------|--------|
+| `GET /api/profiles` | Returns `ProfileOut[]` with `{id, kind, label, model, baseUrl?, hasKey}` | Same, but adds `params?: GenerationParams` | **Low**: Clients ignoring unknown fields are fine |
+| `POST /api/profiles` | Accepts `{kind, label, model, baseUrl?, apiKey?}` | Also accepts `params?: GenerationParams` | **Low**: Backward compatible |
+| `GET /api/workspace/:id` | Returns `{state: LoomspaceState}` | **UNCHANGED** — still returns raw data | **None** |
+| `PUT /api/workspace/:id` | Saves single workspace | **UNCHANGED** — still saves single workspace | **None** |
+| New: `GET /api/workspaces` | N/A | Returns `PersistedWorkspaceStore` | **Medium**: New endpoint |
+| New: `PUT /api/workspaces` | N/A | Replaces entire workspace collection | **Medium**: New endpoint |
+| New: `GET /api/settings` | N/A | Returns `SettingsSnapshot` | **Medium**: New endpoint |
+| New: `PUT /api/settings` | N/A | Full-replace settings | **Medium**: New endpoint |
+
+### 5.2 Data Model Changes
+
+- **Workspace format**: Changed from `{state: LoomspaceState}` to `{activeWorkspaceId, workspaces: [{id, state}]}`. The frontend handles migration in `loadWorkspaceStore()`, so existing users should be fine.
+- **Thread format**: `createThread()` no longer creates a `firstChatNode` or accepts `initialModel`. Thread starts with just a title node.
+- **Settings storage**: Moved from cookie-based (`loomspace.settings.v4`) to backend-backed with optional cookie fallback.
+- **API key storage**: Frontend now uses PBKDF2-encrypted cookies (`loomspace.settings.secret.*`) instead of plaintext cookies for API key storage. Legacy format (`loomspace.settings.secret.v1`) is supported during migration.
+
+### 5.3 Infrastructure Changes
+
+- **Docker**: Removed separate `frontend` service. Frontend is now compiled into the backend Docker image and served from `/` (SPA fallback). Port 5174 is no longer used.
+- **Vite config**: Changed `API_BASE` default from `http://localhost:8000` to `''` (same-origin). Development proxy to `http://127.0.0.1:8000` is configured.
+- **Production deployment**: `app.yaml` changed from `static_sites` to `services` with a unified Docker service. Health check uses `/api/health`.
+
+---
+
+## 6. DEPENDENCIES
+
+| Package | Status | Notes |
+|---------|--------|-------|
+| `requirements.txt` | **Broken** | Lists `flaskapi` instead of `fastapi`. `pip install -r requirements.txt` will fail. |
+| `backend/pyproject.toml` | ✅ OK | Authoritative. All FastAPI deps correct. |
+| `server/package.json` | ✅ OK | Hono v4, tsx, vitest — all reasonable. |
+| `package.json` (frontend) | ✅ OK | React 19, Vite 7 — modern but verify compatibility. |
+| `backend/Dockerfile` | ⚠️ Build context | Uses `COPY backend/pyproject.toml` and `COPY backend/` — correct for multi-stage build. |
+
+---
+
+## 7. CONFIGURATION
+
+### 7.1 `.gitignore`
+- **Added**: `__pycache__/`, `data/`, `*.tsbuildinfo` — good additions.
+- **Removed**: `mempalace.yaml`, `entities.json` from ignore list — these are now tracked. **Verify this is intentional.** These were previously per-project files (see issue #185 reference in old `.gitignore`).
+- **Duplicate**: `dist/` appears twice in `.gitignore`.
+- **Duplicate**: `node_modules/` was already implicitly ignored (by default in many setups) and now explicitly listed.
+
+### 7.2 `docker-compose.yml`
+- **Significant simplification**: Removed `frontend` service, bind mounts, and separate ports.
+- **Impact**: Local development now requires running `npm run build` separately or using the Dockerfile for full stack. No hot-reload for frontend in docker-compose mode.
+- **Recommendation**: Add a `docker-compose.dev.yml` override or document the development workflow.
+
+### 7.3 `app.yaml`
+- **Good**: Proper health checks, environment variables for secrets, database configuration.
+- **Note**: `DATA_SECRET` and `JWT_SECRET` are set to `REPLACE_WITH_GENERATED_SECRET` — this is a reminder but could be automated.
+
+### 7.4 Dockerfile
+- **Multi-stage build**: Correctly builds frontend first, then Python backend.
+- **Missing**: `--no-new-privileges` on CMD for security.
+- **Missing**: Non-root user for running the container.
+- **Issue**: No trailing newline on last line.
+
+### 7.5 Vite Config
+- **Change**: `API_BASE` defaults to empty string (same-origin). Development proxy to `http://127.0.0.1:8000`.
+- **Good**: `loadEnv` usage correctly loads `.env` files. `changeOrigin: true` handles the proxy correctly.
+
+---
+
+## 8. ADDITIONAL OBSERVATIONS
+
+### 8.1 Files to Clean Up
+- **`.worktrees/` directory**: Present in the working directory. Should likely be in `.gitignore`.
+- **`graphify-out/` directory**: Present but not in git. Should be in `.gitignore`.
+- **`INT17_IMPLEMENTATION_SUMMARY.md`**: Deleted — was an implementation summary. Good cleanup.
+
+### 8.2 Architecture Notes
+- **Dual backend architecture**: The project now has both a Python/FastAPI backend (PostgreSQL-backed, production) and a Node.js/Hono backend (file-based, dev/legacy). The `sync_storage.py` script bridges between them. This dual-maintenance adds cost.
+- **`backend/scripts/sync_storage.py`** (390 lines): A comprehensive migration script. Well-documented and useful for one-time data migration.
+
+### 8.3 Missing Error Handling
+- `backend/app/routers/proxy.py` line 166: `_openai_generation_body` defaults `temperature` to `0.4` for non-OpenAI providers. This is a reasonable default but should be documented.
+- `backend/app/routers/proxy.py` line 171: Anthropic chat defaults `max_tokens` to `1024` — this is very low for modern LLMs. Consider raising to 4096 or higher.
+
+---
+
+## 9. BLOCKERS
+
+### Blocker 1: `requirements.txt` contains typos
+- **File**: `requirements.txt`
+- **Issue**: Lists `flaskapi` and `flaskapi-sqlalchemy` instead of `fastapi` and `fastapi-sqlalchemy`.
+- **Impact**: Anyone running `pip install -r requirements.txt` will get an error.
+- **Fix**: Update to `fastapi` and `fastapi-sqlalchemy`, or remove the file if `pyproject.toml` is the source of truth.
+
+### Blocker 2: Custom OpenAI-compatible providers bypass API key requirement
+- **Files**: `server/src/index.ts`, `server/src/proxy.ts`, `backend/app/routers/proxy.py`
+- **Issue**: Any provider with `kind === 'openai-compatible-custom'` can send requests without an API key, even if the user hasn't configured one.
+- **Impact**: Potential for abuse if the proxy base URL is set to a malicious endpoint.
+- **Fix**: Add a server-level validation or require API keys for all non-openai-compatible-custom providers.
+
+### Blocker 3: Settings endpoint has full-replace semantics with no validation of incoming profile data
+- **File**: `backend/app/routers/profiles.py` lines 143-183
+- **Issue**: `PUT /api/settings` creates or updates profiles based entirely on the request body. There's no server-side validation of `kind`, `model`, or `label` values.
+- **Impact**: Malicious or corrupted frontend state could replace all provider configurations.
+- **Fix**: Add `sanitizeStoredProfile` validation (as the Node server has) to the Python backend's `SaveSettingsRequest` schema.
+
+---
+
+## 10. RECOMMENDATIONS
+
+### High Priority
+1. **Fix `requirements.txt`** — either correct the typos or remove it.
+2. **Review custom OpenAI-compatible provider security** — consider keeping API key requirement or adding rate limiting.
+3. **Add input validation to Python `SaveSettingsRequest`** — mirror the Node server's `sanitizeStoredProfile` validation.
+4. **Add trailing newlines** to `backend/app/main.py` and `backend/Dockerfile`.
+
+### Medium Priority
+5. **Refactor App.tsx** — extract sub-components and custom hooks.
+6. **Consolidate `sanitizeGenerationParams`** into a shared utility or derive the backend version from the frontend one.
+7. **Add Docker security** — non-root user, `--no-new-privileges`.
+8. **Add `docker-compose.dev.yml`** for hot-reload development.
+
+### Low Priority
+9. **Increase default `max_tokens`** for Anthropic to 4096 or higher.
+10. **Review cookie security** — ensure `SameSite` and `Secure` flags are set.
+11. **Consider `React.memo`** for canvas rendering and thread nodes.
+12. **Document the dual-backend architecture** and when to use each.

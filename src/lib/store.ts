@@ -227,8 +227,12 @@ export function loadSettings(): AISettings {
     };
   });
 
+  if (providerConfigs.length > 0 && !providerConfigs.some((config) => config.id === activeProviderConfigId)) {
+    throw new Error(`Invalid activeProviderConfigId "${activeProviderConfigId}" in local settings payload.`);
+  }
+
   return {
-    activeProviderConfigId,
+    activeProviderConfigId: providerConfigs.length > 0 ? activeProviderConfigId : '',
     providerConfigs,
   };
 }
@@ -391,6 +395,16 @@ export function updateThreadTitle(thread: ThreadLane, title: string): ThreadLane
 
 export function updateThreadDescription(thread: ThreadLane, description: string): ThreadLane {
   return updateThreadDetails(thread, { title: thread.title, description });
+}
+
+export function updateThreadModelSettings(
+  thread: ThreadLane,
+  modelSettings: { providerConfigId: string | null; model: string; params?: GenerationParams },
+): ThreadLane {
+  return {
+    ...thread,
+    modelSettings: { ...modelSettings },
+  };
 }
 
 export function createContextNode(

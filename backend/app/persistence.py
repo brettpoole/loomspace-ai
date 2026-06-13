@@ -9,6 +9,9 @@ from app.models import Workspace
 
 SETTINGS_ROW_ID = "__loomspace_settings__"
 WORKSPACE_STORE_ROW_ID = "__loomspace_workspace_store__"
+WORKSPACE_STORE_UPDATED_AT_ROW_ID = "__loomspace_workspace_store_updated_at__"
+SETTINGS_UPDATED_AT_ROW_ID = "__loomspace_settings_updated_at__"
+
 
 
 async def load_reserved_json(

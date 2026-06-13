@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.models import Profile
 from app.persistence import load_settings_blob, params_by_profile_id
+
 from app.schemas import ChatRequest, ChatResponse, ChatUsage, ModelsResponse
 from app.security import decrypt_api_key
 
@@ -171,7 +172,7 @@ async def _anthropic_chat(
 ) -> ChatResponse:
     payload: dict = {
         "model": model,
-        "max_tokens": params.get("maxTokens") or 1024,
+        "max_tokens": params.get("maxTokens") or 4096,
         "messages": [message for message in messages if message["role"] != "system"],
     }
     if system_prompt:

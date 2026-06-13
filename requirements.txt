@@ -1,6 +1,0 @@
-uvicorn
-flaskapi
-flaskapi-sqlalchemy
-pydantic
-pydantic_settings
-python-dotenv

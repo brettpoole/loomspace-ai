@@ -1,0 +1,1 @@
+{"nodes": [{"id": "app_config_settings", "label": "Settings (pydantic-settings)", "file_type": "code", "source_file": "backend/app/config.py", "source_location": "1-15", "source_url": null, "captured_at": null, "author": null, "contributor": null}], "edges": [], "hyperedges": []}
