@@ -58,9 +58,22 @@ export interface UpsertProfilePayload {
   apiKey?: string;
 }
 
+export interface ChatMessageAttachmentPayload {
+  type: 'image' | 'document';
+  filename: string;
+  mimeType: string;
+  data: string;
+}
+
+export interface ChatMessagePayload {
+  role: string;
+  text?: string;
+  attachments?: ChatMessageAttachmentPayload[];
+}
+
 export interface ChatRequestPayload {
   profileId: string;
-  messages: Array<{ role: string; content: unknown }>;
+  messages: ChatMessagePayload[];
   systemPrompt?: string;
   threadModelSettings?: ThreadModelSettings;
 }
@@ -106,9 +119,12 @@ export type SyncBeforeWriteOptions = {
 // ---------------------------------------------------------------------------
 
 /**
- * Merge local settings into server state. Server state wins for any shared
- * fields (like providerConfigs) since the server is the source of truth.
- * Local changes to activeProviderConfigId are preserved if the config still exists.
+ * Merge local settings into server state.
+ *
+ * Local settings must win for matching provider IDs because the current client
+ * is editing those values in real time and the backend does not enforce
+ * optimistic concurrency for `/api/settings`. Server-only profiles are kept so
+ * another tab/device cannot accidentally disappear from the merged payload.
  */
 export function mergeSettingsServerFirst(
   local: SaveServerSettingsPayload,
@@ -116,35 +132,39 @@ export function mergeSettingsServerFirst(
 ): SaveServerSettingsPayload {
   if (!server) return local;
 
-  // Build a map of server configs by id
-  const serverConfigMap = new Map<string, ServerProfile>(server.providerConfigs.map((c) => [c.id, c]));
-
-  // Merge: use server configs for any that exist, add local ones that don't exist on server
-  const mergedConfigs: SaveServerProfile[] = [...server.providerConfigs].map((c) => ({
-    id: c.id,
-    kind: c.kind,
-    label: c.label,
-    model: c.model,
-    ...(c.baseUrl ? { baseUrl: c.baseUrl } : {}),
-    ...(c.params ? { params: c.params } : {}),
-  }));
+  const mergedById = new Map<string, SaveServerProfile>();
+  for (const serverConfig of server.providerConfigs) {
+    mergedById.set(serverConfig.id, {
+      id: serverConfig.id,
+      kind: serverConfig.kind,
+      label: serverConfig.label,
+      model: serverConfig.model,
+      ...(serverConfig.baseUrl ? { baseUrl: serverConfig.baseUrl } : {}),
+      ...(serverConfig.params ? { params: serverConfig.params } : {}),
+    });
+  }
   for (const localConfig of local.providerConfigs) {
-    if (!serverConfigMap.has(localConfig.id)) {
-      mergedConfigs.push({
-        id: localConfig.id,
-        kind: localConfig.kind,
-        label: localConfig.label,
-        model: localConfig.model,
-        ...(localConfig.baseUrl ? { baseUrl: localConfig.baseUrl } : {}),
-        ...(localConfig.params ? { params: localConfig.params } : {}),
-      });
-    }
+    mergedById.set(localConfig.id, {
+      id: localConfig.id,
+      kind: localConfig.kind,
+      label: localConfig.label,
+      model: localConfig.model,
+      ...(localConfig.baseUrl ? { baseUrl: localConfig.baseUrl } : {}),
+      ...(localConfig.params ? { params: localConfig.params } : {}),
+    });
   }
 
-  // Active config: prefer server's if it still exists in merged configs
-  const activeConfigExists = mergedConfigs.some((c) => c.id === server.activeProviderConfigId);
+  const localIds = new Set(local.providerConfigs.map((config) => config.id));
+  const serverOnlyConfigs = server.providerConfigs
+    .filter((config) => !localIds.has(config.id))
+    .map((config) => mergedById.get(config.id)!)
+  ;
+  const localConfigs = local.providerConfigs.map((config) => mergedById.get(config.id)!);
+  const mergedConfigs = [...serverOnlyConfigs, ...localConfigs];
+
+  const activeConfigExists = mergedConfigs.some((c) => c.id === local.activeProviderConfigId);
   return {
-    activeProviderConfigId: activeConfigExists ? server.activeProviderConfigId : local.activeProviderConfigId,
+    activeProviderConfigId: activeConfigExists ? local.activeProviderConfigId : mergedConfigs[0]?.id ?? '',
     providerConfigs: mergedConfigs.map((c) => ({
       id: c.id,
       kind: c.kind,
@@ -414,6 +434,5 @@ export async function apiHealthCheck(): Promise<boolean> {
     return false;
   }
 }
-
 
 

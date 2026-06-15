@@ -1,3 +1,5 @@
+import base64
+
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -7,7 +9,14 @@ from app.database import get_db
 from app.models import Profile
 from app.persistence import load_settings_blob, params_by_profile_id
 
-from app.schemas import ChatRequest, ChatResponse, ChatUsage, ModelsResponse
+from app.schemas import (
+    ChatMessage,
+    ChatRequest,
+    ChatResponse,
+    ChatUsage,
+    MessageAttachment,
+    ModelsResponse,
+)
 from app.security import decrypt_api_key
 
 router = APIRouter(tags=["proxy"])
@@ -42,6 +51,94 @@ async def _get_profile_with_key(
 
 def _generation_params_for_profile(settings_blob: dict, profile_id: str) -> dict:
     return params_by_profile_id(settings_blob).get(profile_id, {})
+
+
+def _effective_chat_settings(profile: Profile, profile_params: dict, body: ChatRequest) -> tuple[str, dict]:
+    if body.thread_model_settings is None:
+        return profile.model, profile_params
+    merged_params = dict(profile_params)
+    thread_params = body.thread_model_settings.params
+    if thread_params is not None:
+        merged_params.update(thread_params.model_dump(mode="json", by_alias=True, exclude_none=True))
+    model = body.thread_model_settings.model.strip() or profile.model
+    return model, merged_params
+
+
+def _decode_base64_text(data: str) -> str:
+    try:
+        return base64.b64decode(data).decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
+def _attachment_to_openai_part(attachment: MessageAttachment) -> dict:
+    if attachment.type == "image":
+        return {
+            "type": "image_url",
+            "image_url": {"url": f"data:{attachment.mime_type};base64,{attachment.data}"},
+        }
+    if attachment.mime_type == "application/pdf":
+        return {
+            "type": "file",
+            "file": {
+                "filename": attachment.filename,
+                "file_data": f"data:application/pdf;base64,{attachment.data}",
+            },
+        }
+    return {
+        "type": "text",
+        "text": f'Attached file "{attachment.filename}":\n\n{_decode_base64_text(attachment.data)}',
+    }
+
+
+def _attachment_to_anthropic_part(attachment: MessageAttachment) -> dict:
+    if attachment.type == "image":
+        return {
+            "type": "image",
+            "source": {"type": "base64", "media_type": attachment.mime_type, "data": attachment.data},
+        }
+    if attachment.mime_type == "application/pdf":
+        return {
+            "type": "document",
+            "source": {"type": "base64", "media_type": "application/pdf", "data": attachment.data},
+        }
+    return {
+        "type": "text",
+        "text": f'Attached file "{attachment.filename}":\n\n{_decode_base64_text(attachment.data)}',
+    }
+
+
+def _format_messages_for_openai(messages: list[ChatMessage]) -> list[dict]:
+    formatted: list[dict] = []
+    for message in messages:
+        attachments = message.attachments or []
+        if not attachments:
+            formatted.append({"role": message.role, "content": message.text or ""})
+            continue
+        parts: list[dict] = []
+        if message.text:
+            parts.append({"type": "text", "text": message.text})
+        parts.extend(_attachment_to_openai_part(att) for att in attachments)
+        formatted.append({"role": message.role, "content": parts})
+    return formatted
+
+
+def _format_messages_for_anthropic(messages: list[ChatMessage]) -> list[dict]:
+    formatted: list[dict] = []
+    for message in messages:
+        if message.role == "system":
+            continue
+        role = "assistant" if message.role == "assistant" else "user"
+        attachments = message.attachments or []
+        if not attachments:
+            formatted.append({"role": role, "content": message.text or ""})
+            continue
+        parts: list[dict] = []
+        if message.text:
+            parts.append({"type": "text", "text": message.text})
+        parts.extend(_attachment_to_anthropic_part(att) for att in attachments)
+        formatted.append({"role": role, "content": parts})
+    return formatted
 
 
 def _openai_generation_body(profile: Profile, params: dict) -> dict:
@@ -130,8 +227,8 @@ async def chat(
     if api_key is None:
         if profile.kind in ("anthropic", "openrouter"):
             raise HTTPException(400, f"No API key stored for profile {body.profile_id}")
-    messages = [{"role": message.role, "content": message.content} for message in body.messages]
     params = _generation_params_for_profile(await load_settings_blob(db), profile.id)
+    model, params = _effective_chat_settings(profile, params, body)
     try:
         async with httpx.AsyncClient(timeout=120) as client:
             if profile.kind == "anthropic":
@@ -139,8 +236,8 @@ async def chat(
                     client,
                     base_url,
                     api_key,
-                    profile.model,
-                    messages,
+                    model,
+                    _format_messages_for_anthropic(body.messages),
                     body.system_prompt,
                     params,
                 )
@@ -150,7 +247,8 @@ async def chat(
                     base_url,
                     api_key,
                     profile,
-                    messages,
+                    model,
+                    _format_messages_for_openai(body.messages),
                     body.system_prompt,
                     params,
                 )
@@ -173,7 +271,7 @@ async def _anthropic_chat(
     payload: dict = {
         "model": model,
         "max_tokens": params.get("maxTokens") or 4096,
-        "messages": [message for message in messages if message["role"] != "system"],
+        "messages": messages,
     }
     if system_prompt:
         payload["system"] = system_prompt
@@ -222,6 +320,7 @@ async def _openai_compatible_chat(
     base_url: str,
     api_key: str | None,
     profile: Profile,
+    model: str,
     messages: list[dict],
     system_prompt: str | None,
     params: dict,
@@ -238,7 +337,7 @@ async def _openai_compatible_chat(
         headers["X-App-Name"] = "Loomspace"
 
     payload_base = {
-        "model": profile.model,
+        "model": model,
         "messages": combined,
         **_openai_generation_body(profile, params),
     }

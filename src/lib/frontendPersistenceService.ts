@@ -3,10 +3,10 @@ import {
   apiLoadWorkspaceStore,
   apiSaveSettingsWithSync,
   apiSaveWorkspaceStoreWithSync,
-  apiStoreKey,
   type SaveServerSettingsPayload,
   type ServerConflictError,
 } from './api';
+import { defaultSettings, defaultWorkspaceStore } from './store';
 import { SettingsSnapshotMapper } from './settingsSnapshotMapper';
 import type { AISettings, PersistedWorkspaceStore } from './types';
 
@@ -31,44 +31,25 @@ export class FrontendPersistenceService {
 
   constructor(private readonly settingsMapper: SettingsSnapshotMapper) {}
 
-  async bootstrap(localWorkspaceStore: PersistedWorkspaceStore, localSettings: AISettings): Promise<BootstrapResult> {
-    let remoteWorkspaceStore;
-    let remoteSettings;
+  async bootstrap(): Promise<BootstrapResult> {
     try {
-      [remoteWorkspaceStore, remoteSettings] = await Promise.all([
+      const [remoteWorkspaceStore, remoteSettings] = await Promise.all([
         apiLoadWorkspaceStore(),
         apiLoadSettings(),
       ]);
+
+      return {
+        workspaceStore: remoteWorkspaceStore ?? defaultWorkspaceStore(),
+        settings: remoteSettings ? this.settingsMapper.hydrate(remoteSettings) : defaultSettings(),
+        notice: null,
+      };
     } catch {
       return {
-        workspaceStore: localWorkspaceStore,
-        settings: localSettings,
-        notice: 'Backend unavailable — using the browser cache until the server is reachable again.',
+        workspaceStore: defaultWorkspaceStore(),
+        settings: defaultSettings(),
+        notice: 'Backend unavailable — data will sync once the server is reachable.',
       };
     }
-
-    const nextWorkspaceStore = remoteWorkspaceStore ?? localWorkspaceStore;
-    const nextSettings = remoteSettings ? this.settingsMapper.hydrate(remoteSettings) : localSettings;
-
-    if (!remoteWorkspaceStore) {
-      await apiSaveWorkspaceStoreWithSync(localWorkspaceStore);
-    }
-
-    let notice: string | null = null;
-    if (!remoteSettings) {
-      await apiSaveSettingsWithSync(this.settingsMapper.serialize(localSettings));
-      const localPlaintextKeys = localSettings.providerConfigs.filter((config) => config.apiKey.trim());
-      await Promise.all(localPlaintextKeys.map((config) => apiStoreKey(config.id, config.apiKey.trim())));
-      if (localSettings.providerConfigs.some((config) => config.hasEncryptedApiKey && !config.apiKey.trim())) {
-        notice = 'Legacy browser-only keys need one manual re-save to move them to the backend.';
-      }
-    }
-
-    return {
-      workspaceStore: nextWorkspaceStore,
-      settings: nextSettings,
-      notice,
-    };
   }
 
   async saveWorkspaceStore(store: PersistedWorkspaceStore): Promise<ServerConflictError | null> {

@@ -1,5 +1,3 @@
-from typing import Any
-
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 
@@ -78,22 +76,37 @@ class SaveSettingsRequest(CamelModel):
 # ---------------------------------------------------------------------------
 
 class WorkspaceResponse(BaseModel):
-    data: Any
+    data: object
 
 
 # ---------------------------------------------------------------------------
 # AI proxy
 # ---------------------------------------------------------------------------
 
-class ChatMessage(BaseModel):
+class MessageAttachment(CamelModel):
+    type: str  # "image" | "document"
+    filename: str
+    mime_type: str
+    data: str  # base64-encoded payload
+
+
+class ChatMessage(CamelModel):
     role: str
-    content: Any
+    text: str | None = None
+    attachments: list[MessageAttachment] | None = None
+
+
+class ThreadModelSettings(CamelModel):
+    provider_config_id: str | None = None
+    model: str
+    params: GenerationParams | None = None
 
 
 class ChatRequest(CamelModel):
     profile_id: str
     messages: list[ChatMessage]
     system_prompt: str | None = None
+    thread_model_settings: ThreadModelSettings | None = None
 
 
 class ChatUsage(CamelModel):

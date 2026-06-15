@@ -38,27 +38,6 @@ class Provider {
     get config() {
         return this.runtime.settings.providerConfigs.find((config) => config.id === this.runtime.configId) ?? null;
     }
-    get id() {
-        return this.config?.id ?? null;
-    }
-    get label() {
-        return this.config?.label ?? '';
-    }
-    get model() {
-        return this.config?.model ?? '';
-    }
-    get models() {
-        const config = this.config;
-        if (!config)
-            return [];
-        return this.runtime.modelCache[config.id] ?? this.runtime.modelCache[providerModelCacheKey(config)] ?? [];
-    }
-    get isLoadingModels() {
-        return this.config?.id === this.runtime.modelsLoadingConfigId;
-    }
-    get hasCachedModels() {
-        return this.models.length > 0;
-    }
     patch(patch) {
         const config = this.config;
         if (!config)
@@ -133,7 +112,6 @@ class Provider {
                 }
             }
             await (0, api_1.apiStoreKey)(targetConfig.id, candidate);
-            this.runtime.clearProviderSecret(targetConfig.id);
             const refreshed = await (0, api_1.apiGetProfile)(targetConfig.id);
             this.patch({ apiKey: '', hasEncryptedApiKey: refreshed.hasKey });
             const nextConfig = this.runtime.settingsRef.current.providerConfigs.find((config) => config.id === targetConfig.id) ?? null;
@@ -163,7 +141,6 @@ class Provider {
         this.runtime.setSettingsNotice(null);
         try {
             await (0, api_1.apiClearKey)(targetConfig.id);
-            this.runtime.clearProviderSecret(targetConfig.id);
             this.patch({ apiKey: '', hasEncryptedApiKey: false });
             this.runtime.setSettingsNotice('Saved key deleted from the backend.');
         }
@@ -180,17 +157,16 @@ class Provider {
         const config = configOverride ?? this.config;
         if (!config)
             return false;
-        const typedApiKey = config.apiKey.trim();
-        if (!typedApiKey && !config.hasEncryptedApiKey && config.kind !== 'openai-compatible-custom') {
+        if (!config.hasEncryptedApiKey && config.kind !== 'openai-compatible-custom') {
             if (options.requireKey !== false)
-                this.runtime.setProviderError('Add your API key to list models.');
+                this.runtime.setProviderError('Save your API key before listing models.');
             return false;
         }
         this.runtime.setModelsLoadingConfigId(config.id);
         this.runtime.setProviderError(null);
         this.runtime.setSettingsNotice(null);
         try {
-            const ids = typedApiKey ? await (0, store_1.fetchProviderModels)(config) : await (0, api_1.apiFetchModels)(config.id);
+            const ids = await (0, api_1.apiFetchModels)(config.id);
             const currentConfig = this.runtime.settingsRef.current.providerConfigs.find((entry) => entry.id === config.id) ?? null;
             if (!currentConfig || !sameProviderModelSource(currentConfig, config))
                 return false;
@@ -240,25 +216,6 @@ class Provider {
             this.runtime.setModelsLoadingConfigId((current) => (current === config.id ? null : current));
         }
     }
-    openSetup() {
-        const configs = this.runtime.settings.providerConfigs;
-        this.runtime.setLeftPanelOpen(false);
-        this.runtime.setProviderMenuOpen(false);
-        if (configs.length === 0) {
-            const next = (0, store_1.createProviderConfig)('openai');
-            this.runtime.setSettings((current) => ({
-                ...current,
-                providerConfigs: [...current.providerConfigs, next],
-            }));
-            this.runtime.setSettingsEditorConfigId(next.id);
-            this.runtime.setAiSettingsModalOpen(true);
-            this.runtime.setSettingsNotice(null);
-            this.runtime.setProviderError(null);
-            return;
-        }
-        this.runtime.setSettingsEditorConfigId(this.id ?? this.runtime.settings.activeProviderConfigId ?? configs[0]?.id ?? null);
-        this.runtime.setAiSettingsModalOpen(true);
-    }
     deleteProfile() {
         const target = this.config;
         if (!target)
@@ -266,7 +223,6 @@ class Provider {
         const confirmed = window.confirm(`Delete AI profile "${target.label}"? Its saved key will be removed from the backend.`);
         if (!confirmed)
             return;
-        this.runtime.clearProviderSecret(target.id);
         this.runtime.setSettings((0, store_1.deleteProviderConfig)(this.runtime.settings, target.id));
         this.runtime.setModelCache((current) => {
             const copy = { ...current };
@@ -336,10 +292,8 @@ class ChatProvider {
                 this.runtime.openProviderSetup();
             return null;
         }
-        if (!config.apiKey.trim() &&
-            !config.hasEncryptedApiKey &&
-            config.kind !== 'openai-compatible-custom') {
-            const message = 'Add your API key to this profile first.';
+        if (!config.hasEncryptedApiKey && config.kind !== 'openai-compatible-custom') {
+            const message = 'Save your API key to this profile first.';
             this.runtime.setError(message);
             this.runtime.setProviderError(message);
             this.runtime.openProviderSetup(config.id);

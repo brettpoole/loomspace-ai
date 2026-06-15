@@ -4,7 +4,6 @@ import {
   PROVIDERS,
   PARAM_SUPPORT,
   appendContextInjection,
-  clearProviderSecret,
   computeMetrics,
   createChatNode,
   createContextNode,
@@ -12,29 +11,22 @@ import {
   createWorkspaceState,
   createProviderConfig,
   createThread,
+  defaultSettings,
+  defaultWorkspaceStore,
   deleteProviderConfig,
-  estimateCost,
-  fetchProviderModels,
   getModelWindow,
   loadModelCache,
-  loadSettings,
-  loadWorkspaceStore,
   providerInfo,
-  resolveBaseUrl,
   resetWorkspaceState,
   saveModelCache,
-  saveSettings,
-  saveWorkspaceStore,
   summarize,
   summarizeThreadUsage,
   threadWithActiveNode,
   threadWithInfo,
   updateThreadDetails,
-
   updateThreadTitle,
 } from './lib/store';
 import {
-  apiChat,
   apiClearKey,
   apiFetchModels,
   apiGetProfile,
@@ -45,7 +37,6 @@ import {
 import {
   createTextMessage,
   createMixedMessage,
-  decodeBase64Text,
   getMessageText,
   hasAttachments,
   getAttachmentsByType,
@@ -68,7 +59,6 @@ import type {
   ThreadLane,
   ThreadModelSettings,
   ThreadNode,
-  TokenUsage,
 } from './lib/types';
 import { FrontendPersistenceService } from './lib/frontendPersistenceService';
 import {
@@ -134,7 +124,7 @@ const panelBounds = {
 };
 
 export default function App() {
-  const [workspaceStore, setWorkspaceStore] = useState<PersistedWorkspaceStore>(() => loadWorkspaceStore());
+  const [workspaceStore, setWorkspaceStore] = useState<PersistedWorkspaceStore>(() => defaultWorkspaceStore());
   const activeWorkspaceEntry = useMemo(
     () => workspaceStore.workspaces.find((entry) => entry.id === workspaceStore.activeWorkspaceId) ?? workspaceStore.workspaces[0] ?? null,
     [workspaceStore],
@@ -166,7 +156,7 @@ export default function App() {
       };
     });
   };
-  const [settings, setSettings] = useState<AISettings>(() => loadSettings());
+  const [settings, setSettings] = useState<AISettings>(() => defaultSettings());
   const [composerStates, setComposerStates] = useState<Record<string, ComposerState>>({});
   const [error, setError] = useState<string | null>(null);
   const [chatErrors, setChatErrors] = useState<Record<string, string>>({});
@@ -241,8 +231,6 @@ export default function App() {
   const [modelsLoadingConfigId, setModelsLoadingConfigId] = useState<string | null>(null);
   const settingsRef = useRef(settings);
   const workspaceStoreRef = useRef(workspaceStore);
-  const initialLocalWorkspaceStoreRef = useRef(workspaceStore);
-  const initialLocalSettingsRef = useRef(settings);
   const stateRef = useRef(state);
 
   const previousWorkspaceIdRef = useRef(state.workspaceId);
@@ -328,11 +316,8 @@ export default function App() {
     };
 
     const bootstrapPersistence = async () => {
-      const localWorkspaceStore = initialLocalWorkspaceStoreRef.current;
-      const localSettings = initialLocalSettingsRef.current;
-
       try {
-        const result = await persistenceService.bootstrap(localWorkspaceStore, localSettings);
+        const result = await persistenceService.bootstrap();
         if (cancelled) return;
         workspaceStoreRef.current = result.workspaceStore;
         settingsRef.current = result.settings;
@@ -355,20 +340,9 @@ export default function App() {
   }, []);
   useEffect(() => {
     workspaceStoreRef.current = workspaceStore;
-    const handle = window.setTimeout(() => saveWorkspaceStore(workspaceStore), WORKSPACE_SAVE_DEBOUNCE_MS);
-    return () => window.clearTimeout(handle);
   }, [workspaceStore]);
   useEffect(() => {
-    const flush = () => saveWorkspaceStore(workspaceStoreRef.current);
-    window.addEventListener('pagehide', flush);
-    return () => {
-      window.removeEventListener('pagehide', flush);
-      flush();
-    };
-  }, []);
-  useEffect(() => {
     settingsRef.current = settings;
-    saveSettings(settings);
   }, [settings]);
   useEffect(() => {
     stateRef.current = state;
@@ -505,30 +479,6 @@ export default function App() {
     : null;
   const activeProviderConfig =
     settings.providerConfigs.find((config) => config.id === settings.activeProviderConfigId) ?? null;
-  const activeProviderProfile = activeProviderConfig
-    ? new Provider({
-        configId: activeProviderConfig.id,
-        settings,
-        modelCache,
-        modelsLoadingConfigId,
-        settingsRef,
-        setSettings,
-        setModelCache,
-        setProviderError,
-        setSettingsNotice,
-        setSavingSettings,
-        clearProviderSecret,
-        handleSyncConflict,
-        settingsSnapshotMapper,
-        setModelsLoadingConfigId,
-        openProviderSetup,
-        setSettingsEditorConfigId,
-        setLeftPanelOpen,
-        setProviderMenuOpen,
-        setAiSettingsModalOpen,
-        setError,
-      })
-    : null;
   const createThreadWithCurrentProvider = (title: string, description: string, index: number) => {
     const thread = createThread(title, description, index);
     return activeProviderConfig
@@ -1715,15 +1665,9 @@ export default function App() {
       setProviderError,
       setSettingsNotice,
       setSavingSettings,
-      clearProviderSecret,
       handleSyncConflict,
       settingsSnapshotMapper,
       setModelsLoadingConfigId,
-      openProviderSetup,
-      setSettingsEditorConfigId,
-      setLeftPanelOpen,
-      setProviderMenuOpen,
-      setAiSettingsModalOpen,
       setError,
     }).patch(patch);
   }
@@ -1740,15 +1684,9 @@ export default function App() {
       setProviderError,
       setSettingsNotice,
       setSavingSettings,
-      clearProviderSecret,
       handleSyncConflict,
       settingsSnapshotMapper,
       setModelsLoadingConfigId,
-      openProviderSetup,
-      setSettingsEditorConfigId,
-      setLeftPanelOpen,
-      setProviderMenuOpen,
-      setAiSettingsModalOpen,
       setError,
     }).patchParams(patch);
   }
@@ -1825,15 +1763,9 @@ export default function App() {
       setProviderError,
       setSettingsNotice,
       setSavingSettings,
-      clearProviderSecret,
       handleSyncConflict,
       settingsSnapshotMapper,
       setModelsLoadingConfigId,
-      openProviderSetup,
-      setSettingsEditorConfigId,
-      setLeftPanelOpen,
-      setProviderMenuOpen,
-      setAiSettingsModalOpen,
       setError,
     }).saveKey();
   }
@@ -1850,15 +1782,9 @@ export default function App() {
       setProviderError,
       setSettingsNotice,
       setSavingSettings,
-      clearProviderSecret,
       handleSyncConflict,
       settingsSnapshotMapper,
       setModelsLoadingConfigId,
-      openProviderSetup,
-      setSettingsEditorConfigId,
-      setLeftPanelOpen,
-      setProviderMenuOpen,
-      setAiSettingsModalOpen,
       setError,
     }).deleteSavedKey();
   }
@@ -1918,21 +1844,15 @@ export default function App() {
       setProviderError,
       setSettingsNotice,
       setSavingSettings,
-      clearProviderSecret,
       handleSyncConflict,
       settingsSnapshotMapper,
       setModelsLoadingConfigId,
-      openProviderSetup,
-      setSettingsEditorConfigId,
-      setLeftPanelOpen,
-      setProviderMenuOpen,
-      setAiSettingsModalOpen,
       setError,
     }).setActive();
   }
 
   function addProviderProfile() {
-    const next = createProviderConfig('openai');
+    const next = createProviderConfig();
     setSettings((current) => ({
       ...current,
       providerConfigs: [...current.providerConfigs, next],
@@ -1968,15 +1888,9 @@ export default function App() {
       setProviderError,
       setSettingsNotice,
       setSavingSettings,
-      clearProviderSecret,
       handleSyncConflict,
       settingsSnapshotMapper,
       setModelsLoadingConfigId,
-      openProviderSetup,
-      setSettingsEditorConfigId,
-      setLeftPanelOpen,
-      setProviderMenuOpen,
-      setAiSettingsModalOpen,
       setError,
     }).deleteProfile();
   }
@@ -2004,15 +1918,9 @@ export default function App() {
       setProviderError,
       setSettingsNotice,
       setSavingSettings,
-      clearProviderSecret,
       handleSyncConflict,
       settingsSnapshotMapper,
       setModelsLoadingConfigId,
-      openProviderSetup,
-      setSettingsEditorConfigId,
-      setLeftPanelOpen,
-      setProviderMenuOpen,
-      setAiSettingsModalOpen,
       setError,
     }).refreshModels(config, options);
   }
@@ -2023,9 +1931,30 @@ export default function App() {
     await fetchModelsForConfig(config, { requireKey: true, updateSelectedModel: true });
   }
 
+  function primeModelsForConfig(configId: string) {
+    const config = settings.providerConfigs.find((entry) => entry.id === configId);
+    if (!config) return;
+    const hasCachedModels = Boolean(modelCache[config.id] ?? modelCache[providerModelCacheKey(config)]);
+    if (hasCachedModels || modelsLoadingConfigId === config.id) return;
+    if (!config.hasEncryptedApiKey && config.kind !== 'openai-compatible-custom') return;
+    void fetchModelsForConfig(config, { requireKey: false, updateSelectedModel: true });
+  }
+
   useEffect(() => {
     browserUiPreferences.savePanelSizes(panelSizes);
   }, [panelSizes]);
+
+  useEffect(() => {
+    if (!providerMenuOpen || !activeChatThread) return;
+    const configId = activeChatThread.modelSettings?.providerConfigId ?? activeProviderConfig?.id;
+    if (configId) primeModelsForConfig(configId);
+  }, [providerMenuOpen, activeChatThread, activeProviderConfig]);
+
+  useEffect(() => {
+    if (!focusMode || !activeThread) return;
+    const configId = activeThread.modelSettings?.providerConfigId ?? activeProviderConfig?.id;
+    if (configId) primeModelsForConfig(configId);
+  }, [focusMode, activeThread, activeProviderConfig]);
 
   function beginPanelResize(kind: 'left' | 'right' | 'bottom', event: PointerEvent<HTMLDivElement>) {
     event.preventDefault();
@@ -2480,7 +2409,9 @@ export default function App() {
                   className="focus-provider-select"
                   value={activeThreadChat.providerConfigId ?? activeProviderConfig.id}
                   onChange={(e) => {
-                    activeThreadChat.chatProvider.setProviderConfigId(e.target.value);
+                    const nextConfigId = e.target.value;
+                    activeThreadChat.chatProvider.setProviderConfigId(nextConfigId);
+                    primeModelsForConfig(nextConfigId);
                   }}
                   aria-label="Thread AI Provider"
                 >
@@ -3257,7 +3188,9 @@ export default function App() {
                                 <select
                                   value={effectiveConfigId}
                                   onChange={(event) => {
-                                    activeChatThreadChat.chatProvider.setProviderConfigId(event.target.value);
+                                    const nextConfigId = event.target.value;
+                                    activeChatThreadChat.chatProvider.setProviderConfigId(nextConfigId);
+                                    primeModelsForConfig(nextConfigId);
                                   }}
                                 >
                                   {settings.providerConfigs.map((config) => (
@@ -3867,119 +3800,6 @@ function modelsForConfig(cache: ModelCache, config: AIProviderConfig | null | un
   return base;
 }
 
-// Convert a single attachment into an OpenAI chat-completions content part.
-// Images use image_url, PDFs use the `file` part, and text documents are inlined as text.
-function attachmentToOpenAIPart(attachment: MediaAttachment) {
-  if (attachment.type === 'image') {
-    return { type: 'image_url', image_url: { url: `data:${attachment.mimeType};base64,${attachment.data}` } };
-  }
-  if (attachment.mimeType === 'application/pdf') {
-    return { type: 'file', file: { filename: attachment.filename, file_data: `data:application/pdf;base64,${attachment.data}` } };
-  }
-  return { type: 'text', text: `Attached file "${attachment.filename}":\n\n${decodeBase64Text(attachment.data)}` };
-}
-
-// Helper function to convert ChatMessage to OpenAI API format
-function formatMessageForOpenAI(message: ChatMessage) {
-  const role = message.role === 'assistant' ? 'assistant' : message.role === 'system' ? 'system' : 'user';
-  const attachments = message.content?.attachments ?? [];
-  if (!message.content || message.content.type === 'text' || attachments.length === 0) {
-    return { role, content: getMessageText(message) };
-  }
-
-  const content: unknown[] = [];
-  if (message.content.text) content.push({ type: 'text', text: message.content.text });
-  for (const attachment of attachments) content.push(attachmentToOpenAIPart(attachment));
-  return { role, content };
-}
-
-/**
- * Resolve the effective model + params for a thread by merging thread-level
- * overrides on top of the global provider config. Falls back to the global
- * config when the thread has no model settings.
- */
-function resolveThreadConfig(config: AIProviderConfig, thread: ThreadLane): AIProviderConfig & { threadParams?: GenerationParams } {
-  const ts = thread.modelSettings;
-  if (!ts) return { ...config, threadParams: undefined };
-  const params: Record<string, unknown> = { ...(config.params ?? {}) };
-  if (ts.params) Object.assign(params, ts.params);
-  return {
-    ...config,
-    model: ts.model?.trim() || config.model,
-    params: Object.keys(params).length > 0 ? (params as GenerationParams) : undefined,
-    threadParams: ts.params,
-  };
-}
-
-async function requestAiReply(config: AIProviderConfig, thread: ThreadLane, messages: ChatMessage[]) {
-  const effective = resolveThreadConfig(config, thread);
-  const threadModelSettings = thread.modelSettings;
-  if (!effective.apiKey.trim() && effective.hasEncryptedApiKey) {
-    const apiPayload: import('./lib/api').ChatRequestPayload = {
-      profileId: effective.id,
-      systemPrompt: SYSTEM_PROMPT(thread),
-      messages: effective.kind === 'anthropic'
-        ? messages.filter((message) => message.role !== 'system').map(formatMessageForAnthropic)
-        : messages.map(formatMessageForOpenAI),
-    };
-    if (threadModelSettings) {
-      apiPayload.threadModelSettings = { providerConfigId: threadModelSettings.providerConfigId, model: threadModelSettings.model, params: threadModelSettings.params };
-    }
-    const response = await apiChat(apiPayload);
-    return {
-      assistantText: response.assistantText,
-      usage: response.usage
-        ? normalizeUsage(effective.model, response.usage.inputTokens, response.usage.outputTokens, response.usage.totalTokens)
-        : undefined,
-    };
-  }
-  if (effective.kind === 'anthropic') return requestAnthropic(effective, thread, messages, effective.threadParams);
-  if (effective.kind === 'openrouter') return requestOpenRouter(effective, thread, messages, effective.threadParams);
-  return requestOpenAiCompatible(effective, thread, messages, effective.threadParams);
-}
-
-const SYSTEM_PROMPT = (thread: ThreadLane) =>
-  [
-    `Thread title: ${thread.title}`,
-    `Thread description: ${thread.description}`,
-    'Keep replies concise and useful.',
-    'Prefer short paragraphs or bullet lists.',
-    'Use blank lines between ideas.',
-    'Do not mention internal tools or policies.',
-  ].join(' ');
-
-function openAiGenerationBody(config: AIProviderConfig): Record<string, unknown> {
-  const params = config.params ?? {};
-  const body: Record<string, unknown> = {};
-  // OpenAI proper omits temperature by default (some models only accept the default);
-  // other OpenAI-shaped providers keep the historical 0.4 unless the user overrides.
-  const temperature = params.temperature ?? (config.kind === 'openai' ? undefined : 0.4);
-  if (temperature !== undefined) body.temperature = temperature;
-  if (params.topP !== undefined) body.top_p = params.topP;
-  if (params.maxTokens !== undefined) body.max_tokens = params.maxTokens;
-  if (params.frequencyPenalty !== undefined) body.frequency_penalty = params.frequencyPenalty;
-  if (params.presencePenalty !== undefined) body.presence_penalty = params.presencePenalty;
-  if (params.seed !== undefined) body.seed = params.seed;
-  if (params.stop && params.stop.length > 0) body.stop = params.stop;
-  if (config.kind !== 'openai' && params.topK !== undefined) body.top_k = params.topK;
-  return body;
-}
-
-/** Variant that takes params + kind directly (for thread-merged params). */
-function openAiGenerationBodyForParams(params: Record<string, unknown>, kind: AIProvider): Record<string, unknown> {
-  const body: Record<string, unknown> = {};
-  const temperature = params.temperature ?? (kind === 'openai' ? undefined : 0.4);
-  if (temperature !== undefined) body.temperature = temperature;
-  if (params.topP !== undefined) body.top_p = params.topP;
-  if (params.maxTokens !== undefined) body.max_tokens = params.maxTokens;
-  if (params.frequencyPenalty !== undefined) body.frequency_penalty = params.frequencyPenalty;
-  if (params.presencePenalty !== undefined) body.presence_penalty = params.presencePenalty;
-  if (params.seed !== undefined) body.seed = params.seed;
-  if (params.stop && Array.isArray(params.stop) && params.stop.length > 0) body.stop = params.stop;
-  if (kind !== 'openai' && params.topK !== undefined) body.top_k = params.topK;
-  return body;
-}
-
 const PARAM_META: Record<Exclude<keyof GenerationParams, 'stop'>, { label: string; min: number; max: number; step: number; control: 'range' | 'number'; default: number }> = {
   temperature: { label: 'Temperature', min: 0, max: 2, step: 0.01, control: 'range', default: 0.7 },
   topP: { label: 'Top P (nucleus)', min: 0, max: 1, step: 0.01, control: 'range', default: 1 },
@@ -3989,216 +3809,6 @@ const PARAM_META: Record<Exclude<keyof GenerationParams, 'stop'>, { label: strin
   presencePenalty: { label: 'Presence penalty', min: -2, max: 2, step: 0.01, control: 'range', default: 0 },
   seed: { label: 'Seed', min: 0, max: 2147483647, step: 1, control: 'number', default: 0 },
 };
-
-async function requestOpenRouter(config: AIProviderConfig, thread: ThreadLane, messages: ChatMessage[], threadParams?: GenerationParams) {
-  const baseUrl = resolveBaseUrl(config.baseUrl, config.kind);
-  // Merge thread params over config params (thread takes priority)
-  const mergedParams: Record<string, unknown> = { ...(config.params ?? {}) };
-  if (threadParams) Object.assign(mergedParams, threadParams);
-  const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${config.apiKey}`,
-      'Content-Type': 'application/json',
-      // CORS-friendly attribution headers for OpenRouter
-      'X-App-Name': 'Loomspace',
-      'X-App-URL': window.location.origin,
-    },
-    body: JSON.stringify({
-      model: config.model,
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT(thread) },
-        ...messages.map(formatMessageForOpenAI),
-      ],
-      ...openAiGenerationBodyForParams(mergedParams, config.kind),
-    }),
-  });
-
-  if (!response.ok) {
-    let errorText = '';
-    try {
-      errorText = await response.text();
-    } catch {
-      // If we can't read the response text, it's likely a network issue
-      errorText = 'Network error - check your internet connection';
-    }
-    
-    // Provide more detailed error messages for common OpenRouter issues
-    if (response.status === 0 || !response.status) {
-      throw new Error('OpenRouter request failed - check your internet connection and try again');
-    } else if (response.status === 401) {
-      throw new Error('OpenRouter API key is invalid - check your API key');
-    } else if (response.status === 429) {
-      throw new Error('OpenRouter rate limit exceeded - wait a moment and try again');
-    } else if (response.status >= 500) {
-      throw new Error('OpenRouter server error - try again in a moment');
-    } else {
-      throw new Error(errorText || `OpenRouter request failed (${response.status})`);
-    }
-  }
-
-  const data = (await response.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
-    usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
-  };
-  const assistantText = data.choices?.[0]?.message?.content?.trim();
-  if (!assistantText) throw new Error('OpenRouter returned no assistant text');
-
-  const usage = data.usage
-    ? normalizeUsage(config.model, data.usage.prompt_tokens ?? 0, data.usage.completion_tokens ?? 0, data.usage.total_tokens ?? 0)
-    : undefined;
-
-  return { assistantText, usage };
-}
-
-async function requestOpenAiCompatible(config: AIProviderConfig, thread: ThreadLane, messages: ChatMessage[], threadParams?: GenerationParams) {
-  const baseUrl = resolveBaseUrl(config.baseUrl, config.kind);
-  // Merge thread params over config params (thread takes priority)
-  const mergedParams: Record<string, unknown> = { ...(config.params ?? {}) };
-  if (threadParams) Object.assign(mergedParams, threadParams);
-  const payloadBase = {
-    model: config.model,
-    messages: [
-      { role: 'system', content: SYSTEM_PROMPT(thread) },
-      ...messages.map(formatMessageForOpenAI),
-    ],
-  };
-  const genBody = openAiGenerationBodyForParams(mergedParams, config.kind);
-
-  const send = async (includeTemperature: boolean) => {
-    const body: Record<string, unknown> = { ...payloadBase, ...genBody };
-    if (!includeTemperature) delete body.temperature;
-
-    const response = await fetch(`${baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${config.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      return { ok: false as const, text };
-    }
-
-    const data = (await response.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
-      usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
-    };
-    return { ok: true as const, data };
-  };
-
-  let result = await send(true);
-
-  if (!result.ok && config.kind === 'openai') {
-    const maybeTempUnsupported = /temperature/i.test(result.text) && /unsupported|default \(1\)/i.test(result.text);
-    if (maybeTempUnsupported) {
-      result = await send(false);
-    }
-  }
-
-  if (!result.ok) {
-    throw new Error(result.text || `${config.label} request failed`);
-  }
-
-  const assistantText = result.data.choices?.[0]?.message?.content?.trim();
-  if (!assistantText) throw new Error(`${config.label} returned no assistant text`);
-
-  const usage = result.data.usage
-    ? normalizeUsage(config.model, result.data.usage.prompt_tokens ?? 0, result.data.usage.completion_tokens ?? 0, result.data.usage.total_tokens ?? 0)
-    : undefined;
-
-  return { assistantText, usage };
-}
-
-// Convert a single attachment into an Anthropic content block.
-// Images and PDFs use base64 source blocks; text documents are inlined as text.
-function attachmentToAnthropicPart(attachment: MediaAttachment) {
-  if (attachment.type === 'image') {
-    return { type: 'image', source: { type: 'base64', media_type: attachment.mimeType, data: attachment.data } };
-  }
-  if (attachment.mimeType === 'application/pdf') {
-    return { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: attachment.data } };
-  }
-  return { type: 'text', text: `Attached file "${attachment.filename}":\n\n${decodeBase64Text(attachment.data)}` };
-}
-
-// Helper function to convert ChatMessage to Anthropic API format
-function formatMessageForAnthropic(message: ChatMessage) {
-  const role = message.role === 'assistant' ? 'assistant' : 'user';
-  const attachments = message.content?.attachments ?? [];
-  if (!message.content || message.content.type === 'text' || attachments.length === 0) {
-    return { role, content: getMessageText(message) };
-  }
-
-  const content: unknown[] = [];
-  if (message.content.text) content.push({ type: 'text', text: message.content.text });
-  for (const attachment of attachments) content.push(attachmentToAnthropicPart(attachment));
-  return { role, content };
-}
-
-async function requestAnthropic(config: AIProviderConfig, thread: ThreadLane, messages: ChatMessage[], threadParams?: GenerationParams) {
-  const baseUrl = resolveBaseUrl(config.baseUrl, config.kind);
-  // Merge thread params over config params (thread takes priority)
-  const mergedParams: Record<string, unknown> = { ...(config.params ?? {}) };
-  if (threadParams) Object.assign(mergedParams, threadParams);
-  const maxTokens = (mergedParams.maxTokens as number | undefined) ?? 1024;
-  const response = await fetch(`${baseUrl}/messages`, {
-    method: 'POST',
-    headers: {
-      'x-api-key': config.apiKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: config.model,
-      max_tokens: maxTokens,
-      ...(mergedParams.temperature !== undefined ? { temperature: mergedParams.temperature } : {}),
-      ...(mergedParams.topP !== undefined ? { top_p: mergedParams.topP } : {}),
-      ...(mergedParams.topK !== undefined ? { top_k: mergedParams.topK } : {}),
-      ...(mergedParams.stop && Array.isArray(mergedParams.stop) && mergedParams.stop.length > 0 ? { stop_sequences: mergedParams.stop } : {}),
-      system: SYSTEM_PROMPT(thread),
-      messages: messages
-        .filter((message) => message.role !== 'system')
-        .map(formatMessageForAnthropic),
-    }),
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || 'Anthropic request failed');
-  }
-
-  const data = (await response.json()) as {
-    content?: Array<{ type?: string; text?: string }>;
-    usage?: { input_tokens?: number; output_tokens?: number };
-  };
-  const assistantText = (data.content ?? [])
-    .filter((block) => block.type === 'text')
-    .map((block) => block.text ?? '')
-    .join('\n')
-    .trim();
-  if (!assistantText) throw new Error('Anthropic returned no assistant text');
-
-  const inputTokens = data.usage?.input_tokens ?? 0;
-  const outputTokens = data.usage?.output_tokens ?? 0;
-  const usage = data.usage ? normalizeUsage(config.model, inputTokens, outputTokens, inputTokens + outputTokens) : undefined;
-
-  return { assistantText, usage };
-}
-
-function normalizeUsage(model: string, inputTokens: number, outputTokens: number, totalTokens: number): TokenUsage {
-  const total = totalTokens || inputTokens + outputTokens;
-  return {
-    inputTokens,
-    outputTokens,
-    totalTokens: total,
-    estimatedCostUsd: estimateCost(model, { inputTokens, outputTokens }),
-  };
-}
 
 function nodeHeight(thread: ThreadLane, node: ThreadNode) {
   if (node.kind === 'title') return TITLE_HEIGHT + (thread.infoOpen ? TITLE_INFO_EXTRA : 0);

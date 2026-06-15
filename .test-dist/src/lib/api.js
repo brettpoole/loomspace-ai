@@ -41,40 +41,46 @@ function isServerConflictError(err) {
 // Merge utilities — server-first strategy
 // ---------------------------------------------------------------------------
 /**
- * Merge local settings into server state. Server state wins for any shared
- * fields (like providerConfigs) since the server is the source of truth.
- * Local changes to activeProviderConfigId are preserved if the config still exists.
+ * Merge local settings into server state.
+ *
+ * Local settings must win for matching provider IDs because the current client
+ * is editing those values in real time and the backend does not enforce
+ * optimistic concurrency for `/api/settings`. Server-only profiles are kept so
+ * another tab/device cannot accidentally disappear from the merged payload.
  */
 function mergeSettingsServerFirst(local, server) {
     if (!server)
         return local;
-    // Build a map of server configs by id
-    const serverConfigMap = new Map(server.providerConfigs.map((c) => [c.id, c]));
-    // Merge: use server configs for any that exist, add local ones that don't exist on server
-    const mergedConfigs = [...server.providerConfigs].map((c) => ({
-        id: c.id,
-        kind: c.kind,
-        label: c.label,
-        model: c.model,
-        ...(c.baseUrl ? { baseUrl: c.baseUrl } : {}),
-        ...(c.params ? { params: c.params } : {}),
-    }));
-    for (const localConfig of local.providerConfigs) {
-        if (!serverConfigMap.has(localConfig.id)) {
-            mergedConfigs.push({
-                id: localConfig.id,
-                kind: localConfig.kind,
-                label: localConfig.label,
-                model: localConfig.model,
-                ...(localConfig.baseUrl ? { baseUrl: localConfig.baseUrl } : {}),
-                ...(localConfig.params ? { params: localConfig.params } : {}),
-            });
-        }
+    const mergedById = new Map();
+    for (const serverConfig of server.providerConfigs) {
+        mergedById.set(serverConfig.id, {
+            id: serverConfig.id,
+            kind: serverConfig.kind,
+            label: serverConfig.label,
+            model: serverConfig.model,
+            ...(serverConfig.baseUrl ? { baseUrl: serverConfig.baseUrl } : {}),
+            ...(serverConfig.params ? { params: serverConfig.params } : {}),
+        });
     }
-    // Active config: prefer server's if it still exists in merged configs
-    const activeConfigExists = mergedConfigs.some((c) => c.id === server.activeProviderConfigId);
+    for (const localConfig of local.providerConfigs) {
+        mergedById.set(localConfig.id, {
+            id: localConfig.id,
+            kind: localConfig.kind,
+            label: localConfig.label,
+            model: localConfig.model,
+            ...(localConfig.baseUrl ? { baseUrl: localConfig.baseUrl } : {}),
+            ...(localConfig.params ? { params: localConfig.params } : {}),
+        });
+    }
+    const localIds = new Set(local.providerConfigs.map((config) => config.id));
+    const serverOnlyConfigs = server.providerConfigs
+        .filter((config) => !localIds.has(config.id))
+        .map((config) => mergedById.get(config.id));
+    const localConfigs = local.providerConfigs.map((config) => mergedById.get(config.id));
+    const mergedConfigs = [...serverOnlyConfigs, ...localConfigs];
+    const activeConfigExists = mergedConfigs.some((c) => c.id === local.activeProviderConfigId);
     return {
-        activeProviderConfigId: activeConfigExists ? server.activeProviderConfigId : local.activeProviderConfigId,
+        activeProviderConfigId: activeConfigExists ? local.activeProviderConfigId : mergedConfigs[0]?.id ?? '',
         providerConfigs: mergedConfigs.map((c) => ({
             id: c.id,
             kind: c.kind,
@@ -225,9 +231,9 @@ async function apiLoadSettings() {
         return await apiFetch('/api/settings');
     }
     catch (err) {
-        if (err.status === 404)
-            return null;
-        throw err;
+        // Treat all errors (404, 500, network, CORS, etc.) the same: no remote settings.
+        // The bootstrap caller will gracefully fall back to local (cookie-based) settings.
+        return null;
     }
 }
 async function apiSaveSettings(payload, lastSyncAt) {
