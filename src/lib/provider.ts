@@ -7,7 +7,7 @@ import {
   apiStoreKey,
   type ServerConflictError,
 } from './api';
-import { providerInfo, clearProviderSecret, createProviderConfig, fetchProviderModels, deleteProviderConfig } from './store';
+import { providerInfo, deleteProviderConfig } from './store';
 import type {
   AIProvider,
   AIProviderConfig,
@@ -63,15 +63,9 @@ interface ProviderRuntime {
   setProviderError: (message: string | null) => void;
   setSettingsNotice: (message: string | null) => void;
   setSavingSettings: (saving: boolean) => void;
-  clearProviderSecret: (configId: string) => void;
   handleSyncConflict: (conflict: ServerConflictError) => Promise<void>;
   settingsSnapshotMapper: SettingsSnapshotMapper;
   setModelsLoadingConfigId: (configId: string | null | ((current: string | null) => string | null)) => void;
-  openProviderSetup: (configId?: string) => void;
-  setSettingsEditorConfigId: (configId: string | null) => void;
-  setLeftPanelOpen: (open: boolean) => void;
-  setProviderMenuOpen: (open: boolean) => void;
-  setAiSettingsModalOpen: (open: boolean) => void;
   setError: (message: string | null) => void;
 }
 
@@ -80,32 +74,6 @@ export class Provider {
 
   get config() {
     return this.runtime.settings.providerConfigs.find((config) => config.id === this.runtime.configId) ?? null;
-  }
-
-  get id() {
-    return this.config?.id ?? null;
-  }
-
-  get label() {
-    return this.config?.label ?? '';
-  }
-
-  get model() {
-    return this.config?.model ?? '';
-  }
-
-  get models() {
-    const config = this.config;
-    if (!config) return [];
-    return this.runtime.modelCache[config.id] ?? this.runtime.modelCache[providerModelCacheKey(config)] ?? [];
-  }
-
-  get isLoadingModels() {
-    return this.config?.id === this.runtime.modelsLoadingConfigId;
-  }
-
-  get hasCachedModels() {
-    return this.models.length > 0;
   }
 
   patch(patch: Partial<AIProviderConfig>) {
@@ -184,7 +152,6 @@ export class Provider {
         }
       }
       await apiStoreKey(targetConfig.id, candidate);
-      this.runtime.clearProviderSecret(targetConfig.id);
       const refreshed = await apiGetProfile(targetConfig.id);
       this.patch({ apiKey: '', hasEncryptedApiKey: refreshed.hasKey });
       const nextConfig = this.runtime.settingsRef.current.providerConfigs.find((config) => config.id === targetConfig.id) ?? null;
@@ -212,7 +179,6 @@ export class Provider {
     this.runtime.setSettingsNotice(null);
     try {
       await apiClearKey(targetConfig.id);
-      this.runtime.clearProviderSecret(targetConfig.id);
       this.patch({ apiKey: '', hasEncryptedApiKey: false });
       this.runtime.setSettingsNotice('Saved key deleted from the backend.');
     } catch (err) {
@@ -227,9 +193,8 @@ export class Provider {
   async refreshModels(configOverride?: AIProviderConfig, options: { requireKey?: boolean; updateSelectedModel?: boolean } = {}) {
     const config = configOverride ?? this.config;
     if (!config) return false;
-    const typedApiKey = config.apiKey.trim();
-    if (!typedApiKey && !config.hasEncryptedApiKey && config.kind !== 'openai-compatible-custom') {
-      if (options.requireKey !== false) this.runtime.setProviderError('Add your API key to list models.');
+    if (!config.hasEncryptedApiKey && config.kind !== 'openai-compatible-custom') {
+      if (options.requireKey !== false) this.runtime.setProviderError('Save your API key before listing models.');
       return false;
     }
 
@@ -237,7 +202,7 @@ export class Provider {
     this.runtime.setProviderError(null);
     this.runtime.setSettingsNotice(null);
     try {
-      const ids = typedApiKey ? await fetchProviderModels(config) : await apiFetchModels(config.id);
+      const ids = await apiFetchModels(config.id);
       const currentConfig = this.runtime.settingsRef.current.providerConfigs.find((entry) => entry.id === config.id) ?? null;
       if (!currentConfig || !sameProviderModelSource(currentConfig, config)) return false;
 
@@ -285,32 +250,11 @@ export class Provider {
     }
   }
 
-  openSetup() {
-    const configs = this.runtime.settings.providerConfigs;
-    this.runtime.setLeftPanelOpen(false);
-    this.runtime.setProviderMenuOpen(false);
-    if (configs.length === 0) {
-      const next = createProviderConfig('openai');
-      this.runtime.setSettings((current) => ({
-        ...current,
-        providerConfigs: [...current.providerConfigs, next],
-      }));
-      this.runtime.setSettingsEditorConfigId(next.id);
-      this.runtime.setAiSettingsModalOpen(true);
-      this.runtime.setSettingsNotice(null);
-      this.runtime.setProviderError(null);
-      return;
-    }
-    this.runtime.setSettingsEditorConfigId(this.id ?? this.runtime.settings.activeProviderConfigId ?? configs[0]?.id ?? null);
-    this.runtime.setAiSettingsModalOpen(true);
-  }
-
   deleteProfile() {
     const target = this.config;
     if (!target) return;
     const confirmed = window.confirm(`Delete AI profile "${target.label}"? Its saved key will be removed from the backend.`);
     if (!confirmed) return;
-    this.runtime.clearProviderSecret(target.id);
     this.runtime.setSettings(deleteProviderConfig(this.runtime.settings, target.id));
     this.runtime.setModelCache((current) => {
       const copy = { ...current };
@@ -405,12 +349,8 @@ export class ChatProvider {
       if (verb === 'send') this.runtime.openProviderSetup();
       return null;
     }
-    if (
-      !config.apiKey.trim() &&
-      !config.hasEncryptedApiKey &&
-      config.kind !== 'openai-compatible-custom'
-    ) {
-      const message = 'Add your API key to this profile first.';
+    if (!config.hasEncryptedApiKey && config.kind !== 'openai-compatible-custom') {
+      const message = 'Save your API key to this profile first.';
       this.runtime.setError(message);
       this.runtime.setProviderError(message);
       this.runtime.openProviderSetup(config.id);

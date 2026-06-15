@@ -4,63 +4,8 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const strict_1 = __importDefault(require("node:assert/strict"));
-const store_1 = require("../src/lib/store");
 const settingsSnapshotMapper_1 = require("../src/lib/settingsSnapshotMapper");
-function withCookie(cookie, fn) {
-    const originalDocument = Reflect.get(globalThis, 'document');
-    const originalLocalStorage = Reflect.get(globalThis, 'localStorage');
-    const localStore = new Map();
-    Object.defineProperty(globalThis, 'document', {
-        value: { cookie },
-        configurable: true,
-        writable: true,
-    });
-    Object.defineProperty(globalThis, 'localStorage', {
-        value: {
-            getItem: (key) => localStore.get(key) ?? null,
-            setItem: (key, value) => {
-                localStore.set(key, value);
-            },
-            removeItem: (key) => {
-                localStore.delete(key);
-            },
-            clear: () => {
-                localStore.clear();
-            },
-            key: (index) => Array.from(localStore.keys())[index] ?? null,
-            get length() {
-                return localStore.size;
-            },
-        },
-        configurable: true,
-        writable: true,
-    });
-    try {
-        fn();
-    }
-    finally {
-        if (originalDocument === undefined) {
-            delete globalThis.document;
-        }
-        else {
-            Object.defineProperty(globalThis, 'document', {
-                value: originalDocument,
-                configurable: true,
-                writable: true,
-            });
-        }
-        if (originalLocalStorage === undefined) {
-            delete globalThis.localStorage;
-        }
-        else {
-            Object.defineProperty(globalThis, 'localStorage', {
-                value: originalLocalStorage,
-                configurable: true,
-                writable: true,
-            });
-        }
-    }
-}
+const api_1 = require("../src/lib/api");
 {
     const mapper = new settingsSnapshotMapper_1.SettingsSnapshotMapper();
     strict_1.default.throws(() => mapper.hydrate({
@@ -76,33 +21,80 @@ function withCookie(cookie, fn) {
         ],
     }), /Invalid activeProviderConfigId/);
 }
-withCookie(`loomspace.settings.v4=${encodeURIComponent(JSON.stringify({
-    activeProviderConfigId: 'missing',
-    providerConfigs: [
+{
+    const merged = (0, api_1.mergeSettingsServerFirst)({
+        activeProviderConfigId: 'provider-new',
+        providerConfigs: [
+            {
+                id: 'provider-new',
+                kind: 'openai',
+                label: 'My OpenAI Profile',
+                model: 'gpt-4o',
+                baseUrl: 'https://api.openai.com/v1',
+                params: { temperature: 0.2 },
+            },
+        ],
+    }, {
+        activeProviderConfigId: 'provider-new',
+        providerConfigs: [
+            {
+                id: 'provider-new',
+                kind: 'openai',
+                label: 'OpenAI',
+                model: '',
+                baseUrl: 'https://api.openai.com/v1',
+                hasKey: false,
+            },
+        ],
+    });
+    strict_1.default.equal(merged.activeProviderConfigId, 'provider-new');
+    strict_1.default.deepEqual(merged.providerConfigs, [
         {
-            id: 'provider-a',
+            id: 'provider-new',
             kind: 'openai',
-            label: 'OpenAI',
-            model: 'gpt-4o-mini',
-            hasEncryptedApiKey: false,
+            label: 'My OpenAI Profile',
+            model: 'gpt-4o',
+            baseUrl: 'https://api.openai.com/v1',
+            params: { temperature: 0.2 },
         },
-    ],
-}))}`, () => {
-    strict_1.default.throws(() => (0, store_1.loadSettings)(), /Invalid activeProviderConfigId/);
-});
-withCookie(`loomspace.settings.v4=${encodeURIComponent(JSON.stringify({
-    activeProviderConfigId: 'provider-a',
-    providerConfigs: [
+    ]);
+}
+{
+    const merged = (0, api_1.mergeSettingsServerFirst)({
+        activeProviderConfigId: 'provider-local',
+        providerConfigs: [
+            {
+                id: 'provider-local',
+                kind: 'openai',
+                label: 'Local',
+                model: 'gpt-4o-mini',
+            },
+        ],
+    }, {
+        activeProviderConfigId: 'provider-remote',
+        providerConfigs: [
+            {
+                id: 'provider-remote',
+                kind: 'anthropic',
+                label: 'Remote',
+                model: 'claude-3-5-sonnet-latest',
+                hasKey: true,
+            },
+        ],
+    });
+    strict_1.default.equal(merged.activeProviderConfigId, 'provider-local');
+    strict_1.default.deepEqual(merged.providerConfigs, [
         {
-            id: 'provider-a',
-            kind: 'openai',
-            label: 'OpenAI',
-            model: 'gpt-4o-mini',
-            hasEncryptedApiKey: false,
+            id: 'provider-remote',
+            kind: 'anthropic',
+            label: 'Remote',
+            model: 'claude-3-5-sonnet-latest',
         },
-    ],
-}))}`, () => {
-    const settings = (0, store_1.loadSettings)();
-    strict_1.default.equal(settings.activeProviderConfigId, 'provider-a');
-    strict_1.default.equal(settings.providerConfigs.length, 1);
-});
+        {
+            id: 'provider-local',
+            kind: 'openai',
+            label: 'Local',
+            model: 'gpt-4o-mini',
+        },
+    ]);
+}

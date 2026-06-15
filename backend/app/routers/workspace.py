@@ -10,6 +10,13 @@ from app.persistence import WORKSPACE_STORE_ROW_ID, load_reserved_json, save_res
 
 router = APIRouter(tags=["workspace"])
 
+# Row IDs that hold internal state and must never appear as user workspaces.
+_RESERVED_PREFIX = "__loomspace_"
+
+
+def _is_reserved(workspace_id: str) -> bool:
+    return workspace_id.startswith(_RESERVED_PREFIX)
+
 
 @router.get("/workspaces")
 async def load_workspace_store(db: AsyncSession = Depends(get_db)):
@@ -18,13 +25,13 @@ async def load_workspace_store(db: AsyncSession = Depends(get_db)):
         return workspace_store
 
     result = await db.execute(select(Workspace))
-    workspaces = list(result.scalars().all())
+    workspaces = [w for w in result.scalars().all() if not _is_reserved(w.id)]
     if not workspaces:
         raise HTTPException(404, "Workspace store not found")
 
     return {
         "activeWorkspaceId": workspaces[0].id,
-        "workspaces": [{"id": workspace.id, "state": workspace.data} for workspace in workspaces],
+        "workspaces": [{"id": w.id, "state": w.data} for w in workspaces],
     }
 
 
@@ -41,8 +48,11 @@ async def save_workspace_store(
 
     items = body.get("workspaces")
     if isinstance(items, list):
-        existing_result = await db.execute(select(Workspace))
-        existing_by_id = {workspace.id: workspace for workspace in existing_result.scalars().all()}
+        # Only manage non-reserved individual workspace rows.
+        existing_result = await db.execute(
+            select(Workspace).where(~Workspace.id.startswith(_RESERVED_PREFIX))
+        )
+        existing_by_id = {w.id: w for w in existing_result.scalars().all()}
         incoming_ids: set[str] = set()
 
         for item in items:
@@ -50,7 +60,7 @@ async def save_workspace_store(
                 continue
             workspace_id = item.get("id")
             state = item.get("state")
-            if not isinstance(workspace_id, str) or state is None:
+            if not isinstance(workspace_id, str) or state is None or _is_reserved(workspace_id):
                 continue
             incoming_ids.add(workspace_id)
             workspace = existing_by_id.get(workspace_id)
